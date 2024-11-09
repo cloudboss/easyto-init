@@ -29,9 +29,13 @@ impl SsmClient {
         self.get_parameters(ssm_path).map(|parameters| {
             parameters
                 .into_iter()
-                .map(|p| SsmParameterValue {
-                    name: p.name.clone().unwrap(),
-                    value: p.value.clone().unwrap(),
+                .map(|p| {
+                    let mut name = p.name.clone().unwrap();
+                    name = name[ssm_path.len()..].to_string();
+                    SsmParameterValue {
+                        name,
+                        value: p.value.clone().unwrap(),
+                    }
                 })
                 .collect()
         })

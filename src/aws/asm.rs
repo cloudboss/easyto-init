@@ -29,14 +29,12 @@ impl AsmClient {
         let secret = self.get_secret(secret_id)?;
         if let Some(secret_string) = secret.secret_string {
             return Ok(vec![AsmSecretValue {
-                secret_id: secret_id.to_string(),
                 string: Some(secret_string),
                 ..Default::default()
             }]);
         }
         if let Some(secret_binary) = secret.secret_binary {
             return Ok(vec![AsmSecretValue {
-                secret_id: secret_id.to_string(),
                 binary: Some(secret_binary),
                 ..Default::default()
             }]);
@@ -72,7 +70,6 @@ impl AsmClient {
 
 #[derive(Debug, Default)]
 pub struct AsmSecretValue {
-    pub secret_id: String,
     pub binary: Option<Vec<u8>>,
     pub string: Option<String>,
 }
@@ -99,6 +96,6 @@ impl Writable for AsmSecretValue {
     }
 
     fn name(&self) -> &str {
-        &self.secret_id
+        ""
     }
 }
