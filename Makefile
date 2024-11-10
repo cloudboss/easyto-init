@@ -1,13 +1,9 @@
 PROJECT = $(shell basename ${PWD})
 OS = $(shell uname | tr [:upper:] [:lower:])
-ARCH = $(shell arch=$$(uname -m); [ "$${arch}" = "x86_64" ] && echo "amd64" || echo $${arch})
 VERSION =
 DIR_OUT = _output
 
 DIR_STG = $(DIR_OUT)/staging
-DIR_STG_EASYTO = $(DIR_STG)/easyto/$(OS)/$(ARCH)
-DIR_STG_ASSETS = $(DIR_STG_EASYTO)/assets
-DIR_STG_BIN = $(DIR_STG_EASYTO)/bin
 DIR_STG_INIT = $(DIR_STG)/init
 DIRS_STG_CLEAN = $(DIR_STG_INIT)
 
@@ -76,20 +72,20 @@ $(DIR_OUT)/target/$(RUST_TARGET)/release/init: \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "cargo build --target $(RUST_TARGET) --release"
 
-$(DIR_STG_ASSETS)/init.tar: \
+$(DIR_OUT)/init.tar: \
 		$(DIR_STG_INIT)/$(DIR_ET)/sbin/init \
 		| $(HAS_COMMAND_FAKEROOT) $(DIR_STG_ASSETS)/
-	@cd $(DIR_STG_INIT) && fakeroot tar cf $(DIR_ROOT)/$(DIR_STG_ASSETS)/init.tar .
+	@cd $(DIR_STG_INIT) && fakeroot tar cf $(DIR_ROOT)/$(DIR_OUT)/init.tar .
 
-$(DIR_RELEASE)/easyto-init-$(VERSION)-$(ARCH).tar.gz: \
-		$(DIR_STG_ASSETS)/init.tar \
+$(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz: \
+		$(DIR_OUT)/init.tar \
 		| $(HAS_COMMAND_FAKEROOT) $(DIR_RELEASE)/
 	@[ -n "$(VERSION)" ] || (echo "VERSION is required"; exit 1)
 	@[ $$(echo $(VERSION) | cut -c 1) = v ] || (echo "VERSION must begin with a 'v'"; exit 1)
-	@cd $(DIR_STG_EASYTO) && \
+	@cd $(DIR_OUT) && \
 		fakeroot tar -cz \
 		--xform "s|^|easyto-init-$(VERSION)/|" \
-		-f $(DIR_ROOT)/$(DIR_RELEASE)/easyto-init-$(VERSION)-$(ARCH).tar.gz assets
+		-f $(DIR_ROOT)/$(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz init.tar
 
 test: $(HAS_IMAGE_LOCAL) | $(DIR_OUT)/cargo-home/registry/
 	@docker run --rm -t \
@@ -99,7 +95,7 @@ test: $(HAS_IMAGE_LOCAL) | $(DIR_OUT)/cargo-home/registry/
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -ec "cargo clippy -- -Dwarnings; cargo test"
 
-release: $(DIR_RELEASE)/easyto-init-$(VERSION)-$(ARCH).tar.gz
+release: $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz
 
 clean:
 	@rm -rf $(DIR_OUT)
