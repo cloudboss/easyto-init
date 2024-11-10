@@ -1,0 +1,29 @@
+name: easyto-init-common
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test
+
+  build-release:
+    runs-on: ubuntu-24.04
+    needs:
+      - test
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          make release VERSION=${{ inputs.version }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: _output/release/*.tar.gz
+
