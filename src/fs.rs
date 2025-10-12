@@ -1,4 +1,5 @@
 use std::{
+    ffi::CString,
     fs::create_dir,
     path::{Path, PathBuf, MAIN_SEPARATOR_STR},
 };
@@ -6,8 +7,8 @@ use std::{
 use anyhow::{anyhow, Result};
 use log::debug;
 use rustix::{
-    fs::{chmod, chown, Gid, Mode, MountFlags, Uid},
-    mount::mount,
+    fs::{chmod, chown, Gid, Mode, Uid},
+    mount::{mount, MountFlags},
 };
 
 #[derive(Debug)]
@@ -30,14 +31,10 @@ impl<'a> Mount<'a> {
     pub fn execute(&self) -> Result<()> {
         let path = Path::new(&self.target);
         mkdir_p(path, self.mode)?;
-        mount(
-            self.source,
-            path,
-            self.fs_type,
-            self.flags,
-            self.options.unwrap_or_default(),
-        )
-        .map_err(|e| anyhow!("unable to mount {} on {:?}: {}", self.source, path, e))?;
+        let options_cstring = self.options.map(|s| CString::new(s).unwrap());
+        let options_cstr = options_cstring.as_ref().map(|s| s.as_c_str());
+        mount(self.source, path, self.fs_type, self.flags, options_cstr)
+            .map_err(|e| anyhow!("unable to mount {} on {:?}: {}", self.source, path, e))?;
         Ok(())
     }
 }

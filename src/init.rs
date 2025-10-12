@@ -15,9 +15,9 @@ use crossbeam::sync::WaitGroup;
 use k8s_expand::{expand, mapping_func_for};
 use log::{debug, error, info, Level};
 use minaws::imds::{Credentials, Imds};
-use rustix::fs::{chown, remount, stat, symlink, unmount, Gid, Mode, Uid, UnmountFlags};
+use rustix::fs::{chown, stat, symlink, Gid, Mode, Uid};
 use rustix::io::Errno;
-use rustix::mount::{mount, MountFlags};
+use rustix::mount::{mount, mount_remount, unmount, MountFlags, UnmountFlags};
 use rustix::process::{chdir, umask};
 use rustix::runtime::execve;
 use rustix::thread::{set_thread_gid, set_thread_uid};
@@ -299,12 +299,10 @@ fn handle_volume_ebs(volume: &EbsVolumeSource) -> Result<()> {
     mkdir_p(&volume.mount.destination, mode)?;
     debug!("Created mount point {:?}", volume.mount.destination);
 
-    let (owner, group) = unsafe {
-        (
-            volume.mount.user_id.map(|u| Uid::from_raw(u)),
-            volume.mount.group_id.map(|g| Gid::from_raw(g)),
-        )
-    };
+    let (owner, group) = (
+        volume.mount.user_id.map(|u| Uid::from_raw(u)),
+        volume.mount.group_id.map(|g| Gid::from_raw(g)),
+    );
     chown(&volume.mount.destination, owner, group).map_err(|e| {
         anyhow!(
             "unable to change ownership of {}: {}",
@@ -324,7 +322,7 @@ fn handle_volume_ebs(volume: &EbsVolumeSource) -> Result<()> {
         &volume.mount.destination,
         volume.fs_type.as_ref().unwrap(),
         MountFlags::empty(),
-        "",
+        None,
     )
     .map_err(|e| {
         anyhow!(
@@ -636,19 +634,17 @@ fn replace_init(vmspec: VmSpec, command: Vec<String>, env: NameValues) -> Result
     }
 
     if let Some(true) = vmspec.security.readonly_root_fs {
-        remount(constants::DIR_ROOT, MountFlags::RDONLY, "")
+        mount_remount(constants::DIR_ROOT, MountFlags::RDONLY, "")
             .map_err(|e| anyhow!("unable to remount root filesystem as readonly: {}", e))?;
     }
 
     chdir(&vmspec.working_dir)
         .map_err(|e| anyhow!("unable to chdir to {}: {}", &vmspec.working_dir, e))?;
 
-    let (uid, gid) = unsafe {
-        (
-            Uid::from_raw(vmspec.security.run_as_user_id.unwrap()),
-            Gid::from_raw(vmspec.security.run_as_group_id.unwrap()),
-        )
-    };
+    let (uid, gid) = (
+        Uid::from_raw(vmspec.security.run_as_user_id.unwrap()),
+        Gid::from_raw(vmspec.security.run_as_group_id.unwrap()),
+    );
     // This calls setgid and setuid only for the current thread, but since this thread
     // is calling execve(), the new process will inherit the new user and group.
     set_thread_gid(gid).map_err(|e| {
@@ -722,7 +718,7 @@ fn supervise(vmspec: VmSpec, command: Vec<String>, env: NameValues) -> Result<()
 fn unmount_all(mount_points: &[String]) -> Result<()> {
     let mut error_count = 0;
 
-    if let Err(e) = remount(constants::DIR_ROOT, MountFlags::RDONLY, "") {
+    if let Err(e) = mount_remount(constants::DIR_ROOT, MountFlags::RDONLY, "") {
         error_count += 1;
         error!(
             "unable to remount {} as read-only: {}",

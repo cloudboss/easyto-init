@@ -27,7 +27,7 @@ where
         };
         let dest_dir = final_dest.parent().ok_or(anyhow!("no parent directory"))?;
 
-        let (uid, gid) = unsafe { (Uid::from_raw(user_id), Gid::from_raw(group_id)) };
+        let (uid, gid) = (Uid::from_raw(user_id), Gid::from_raw(group_id));
         mkdir_p_own(dest_dir, mode_dir, Some(uid), Some(gid))?;
 
         let mut f = File::options()
