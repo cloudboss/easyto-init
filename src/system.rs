@@ -109,7 +109,7 @@ pub fn link_nvme_device(device: &DeviceInfo) -> Result<()> {
                 }
             })
             .unwrap_or(ec2_device_name.into());
-        let link_path = Path::new("/dev").join(&link_device_name);
+        let link_path = Path::new("/dev").join(link_device_name);
         debug!("linking {} to {:?}", &device.name, &link_path);
         if let Err(e) = symlink(&device.name, &link_path) {
             if e.kind() != ErrorKind::AlreadyExists {
@@ -334,7 +334,7 @@ fn disk_partitions(device: &str) -> Result<Vec<DeviceInfo>> {
 }
 
 fn has_digit_suffix(string: &str) -> bool {
-    string.chars().last().map_or(false, |c| c.is_ascii_digit())
+    string.chars().last().is_some_and(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]

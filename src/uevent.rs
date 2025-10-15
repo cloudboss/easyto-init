@@ -83,11 +83,11 @@ fn handle_message(buf: &[u8], len: usize) -> Result<Option<DeviceInfo>> {
             partn = fields[1].into();
         }
     }
-    if devname.len() == 0 {
+    if devname.is_empty() {
         return Ok(None);
     }
     Ok(Some(DeviceInfo {
         name: devname,
-        part_num: if partn.len() > 0 { Some(partn) } else { None },
+        part_num: if !partn.is_empty() { Some(partn) } else { None },
     }))
 }

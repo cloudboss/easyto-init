@@ -424,8 +424,8 @@ fn handle_volume_ebs(
     debug!("Created mount point {:?}", mnt.destination);
 
     let (owner, group) = (
-        mnt.user_id.map(|u| Uid::from_raw(u)),
-        mnt.group_id.map(|g| Gid::from_raw(g)),
+        mnt.user_id.map(Uid::from_raw),
+        mnt.group_id.map(Gid::from_raw),
     );
     chown(&mnt.destination, owner, group)
         .map_err(|e| anyhow!("unable to change ownership of {}: {}", &mnt.destination, e))?;

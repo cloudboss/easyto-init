@@ -701,7 +701,7 @@ fn start_main(service_ref: Arc<Mutex<dyn Service>>) -> Result<()> {
                     .lock()
                     .unwrap()
                     .stop_tx()
-                    .send(wait_result.map_err(Into::into));
+                    .send(wait_result);
             }
         }
     });
@@ -749,7 +749,7 @@ fn start_service(service_ref: Arc<Mutex<dyn Service>>) -> Result<()> {
                             .lock()
                             .unwrap()
                             .stop_tx()
-                            .send(wait_result.map_err(Into::into));
+                            .send(wait_result);
                         return;
                     }
                     wait_result

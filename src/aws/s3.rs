@@ -146,10 +146,7 @@ impl Read for S3Object {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.download().map_err(|e| {
             let s3_url = format!("s3://{}/{}", self.bucket, self.key);
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("unable to download S3 object {}: {}", s3_url, e),
-            )
+            io::Error::other(format!("unable to download S3 object {}: {}", s3_url, e))
         })?;
         debug!("reading from S3 object s3://{}/{}", self.bucket, self.key);
         self.object.as_mut().unwrap().body.read(buf)

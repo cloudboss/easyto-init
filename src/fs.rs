@@ -32,7 +32,7 @@ impl<'a> Mount<'a> {
         let path = Path::new(&self.target);
         mkdir_p(path, self.mode)?;
         let options_cstring = self.options.map(|s| CString::new(s).unwrap());
-        let options_cstr = options_cstring.as_ref().map(|s| s.as_c_str());
+        let options_cstr = options_cstring.as_deref();
         mount(self.source, path, self.fs_type, self.flags, options_cstr)
             .map_err(|e| anyhow!("unable to mount {} on {:?}: {}", self.source, path, e))?;
         Ok(())
