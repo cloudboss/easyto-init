@@ -77,45 +77,48 @@ pub fn link_nvme_devices() -> Result<()> {
             )
         })?;
         let device_name = entry.file_name().to_string_lossy().to_string();
-        let device_path = Path::new("/dev").join(&device_name);
-        let device_fd = File::open(&device_path)
-            .map_err(|e| anyhow!("unable to open {:?}: {}", &device_path, e))?;
-        if let Ok(nvme) = Nvme::try_from(device_fd) {
-            debug!("nvme device: {:?}", nvme);
-            let ec2_device_name = nvme.name();
-            let device_link_path = Path::new("/dev").join(ec2_device_name);
-            debug!("linking {} to {:?}", &device_name, &device_link_path);
-            symlink(&device_name, &device_link_path).map_err(|e| {
-                anyhow!(
-                    "unable to link {} to {:?}: {}",
-                    &device_name,
-                    &device_link_path,
-                    e
-                )
-            })?;
+        let disk_device = DeviceInfo {
+            name: device_name.clone(),
+            part_num: None,
+        };
+        link_nvme_device(&disk_device)?;
+        let partition_devices = disk_partitions(&device_name)
+            .map_err(|e| anyhow!("unable to get partitions of {:?}: {}", &device_name, e))?;
+        for partition_device in partition_devices {
+            link_nvme_device(&partition_device)?;
+        }
+    }
+    Ok(())
+}
 
-            // Link partitions too if they exist.
-            let partitions = disk_partitions(&device_name)
-                .map_err(|e| anyhow!("unable to get partitions of {:?}: {}", &device_name, e))?;
-            for partition in partitions {
-                let partition_name = if has_digit_suffix(ec2_device_name) {
-                    format!("{}p{}", &ec2_device_name, &partition.partition)
+pub fn link_nvme_device(device: &DeviceInfo) -> Result<()> {
+    let device_path = Path::new("/dev").join(&device.name);
+    let device_fd = File::open(&device_path)
+        .map_err(|e| anyhow!("unable to open {:?}: {}", &device_path, e))?;
+    if let Ok(nvme) = Nvme::try_from(device_fd) {
+        debug!("nvme device: {:?}", nvme);
+        let ec2_device_name = nvme.name();
+        let link_device_name = &device
+            .part_num
+            .as_ref()
+            .map(|n| {
+                if has_digit_suffix(ec2_device_name) {
+                    format!("{}p{}", ec2_device_name, n)
                 } else {
-                    format!("{}{}", &ec2_device_name, &partition.partition)
-                };
-                let partition_link_path = Path::new("/dev").join(&partition_name);
-                debug!(
-                    "linking {} to {:?}",
-                    &partition.device, &partition_link_path
-                );
-                symlink(&partition.device, &partition_link_path).map_err(|e| {
-                    anyhow!(
-                        "unable to link {} to {:?}: {}",
-                        &partition.device,
-                        &partition_link_path,
-                        e
-                    )
-                })?;
+                    format!("{}{}", ec2_device_name, n)
+                }
+            })
+            .unwrap_or(ec2_device_name.into());
+        let link_path = Path::new("/dev").join(&link_device_name);
+        debug!("linking {} to {:?}", &device.name, &link_path);
+        if let Err(e) = symlink(&device.name, &link_path) {
+            if e.kind() != ErrorKind::AlreadyExists {
+                return Err(anyhow!(
+                    "unable to link {} to {:?}: {}",
+                    &device.name,
+                    &link_path,
+                    e
+                ));
             }
         }
     }
@@ -295,12 +298,12 @@ fn grow_filesystem(path: &PathBuf) -> Result<()> {
 }
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct PartitionInfo {
-    device: String,
-    partition: String,
+pub struct DeviceInfo {
+    pub name: String,
+    pub part_num: Option<String>,
 }
 
-fn disk_partitions(device: &str) -> Result<Vec<PartitionInfo>> {
+fn disk_partitions(device: &str) -> Result<Vec<DeviceInfo>> {
     let mut partitions = Vec::new();
     let sys_device_dir = Path::new(SYS_BLOCK_PATH).join(device);
     let dir_fd = File::open(&sys_device_dir)?;
@@ -320,9 +323,9 @@ fn disk_partitions(device: &str) -> Result<Vec<PartitionInfo>> {
                 let mut contents = String::new();
                 f.read_to_string(&mut contents)?;
                 contents.truncate(contents.trim_end().len());
-                partitions.push(PartitionInfo {
-                    device: name,
-                    partition: contents,
+                partitions.push(DeviceInfo {
+                    name,
+                    part_num: Some(contents),
                 });
             }
         };

@@ -14,9 +14,9 @@ pub struct SsmClient {
 }
 
 impl SsmClient {
-    pub fn new(credentials: Credentials, region: &str) -> Result<Self> {
+    pub fn new(credentials: Credentials, region: &str) -> Self {
         let api = ssm::Api::new(region, credentials);
-        Ok(Self { api: api.into() })
+        Self { api: api.into() }
     }
 
     pub fn from_imds(imds: &Imds, region: &str) -> Result<Self> {

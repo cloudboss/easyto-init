@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use crossbeam::channel::{bounded, Receiver, Select, Sender};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use minaws::imds::Imds;
 use rustix::{
     fs::{chmod, chown, stat, Dir, FileType, Gid, Mode, Uid},
@@ -785,7 +785,7 @@ fn find_enabled_services(
         } else if entry_name == "ssh" {
             services.push(Arc::new(Mutex::new(Ssh::new())));
         } else {
-            info!("Unknown service {}", entry_name);
+            warn!("Unknown service {}", entry_name);
         }
     }
     Ok(services)

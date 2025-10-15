@@ -12,6 +12,7 @@ use anyhow::{anyhow, Result};
 use base64::prelude::*;
 use crossbeam::channel::{bounded, Select};
 use crossbeam::sync::WaitGroup;
+use crossbeam::utils::Backoff;
 use k8s_expand::{expand, mapping_func_for};
 use log::{debug, error, info, Level};
 use minaws::imds::{Credentials, Imds};
@@ -23,11 +24,13 @@ use rustix::runtime::execve;
 use rustix::thread::{set_thread_gid, set_thread_uid};
 
 use crate::aws::asm::AsmClient;
+use crate::aws::ec2::Ec2Client;
 use crate::aws::s3::S3Client;
 use crate::aws::ssm::SsmClient;
 use crate::fs::{mkdir_p, Link, Mount};
 use crate::service::Supervisor;
 use crate::system::{device_has_fs, link_nvme_devices, resize_root_volume};
+use crate::uevent::start_uevent_listener;
 use crate::vmspec::{
     EbsVolumeSource, EnvFromSources, ImdsEnvSource, NameValue, NameValues, NameValuesExt,
     S3EnvSource, S3VolumeSource, SecretsManagerEnvSource, SecretsManagerVolumeSource, SsmEnvSource,
@@ -53,6 +56,10 @@ pub fn initialize() -> Result<()> {
 
     base_mounts()?;
     base_links()?;
+
+    // Start listener to link newly attached NVMe devices.
+    start_uevent_listener()?;
+    // Run initial scan and link of existing NVMe devices.
     link_nvme_devices()?;
 
     let config_file_path = Path::new(constants::DIR_ET).join(constants::FILE_METADATA);
@@ -79,34 +86,28 @@ pub fn initialize() -> Result<()> {
     let credentials = imds_client
         .get_credentials()
         .map_err(|e| anyhow!("unable to get AWS credentials from IMDS: {}", e))?;
+
+    let ec2_client = try_get_ec2_client(&vmspec, credentials.clone(), &aws_region);
+    let s3_client = try_get_s3_client(&vmspec, credentials.clone(), &aws_region);
+    let asm_client = try_get_asm_client(&vmspec, credentials.clone(), &aws_region);
+    let ssm_client = try_get_ssm_client(&vmspec, credentials.clone(), &aws_region);
     for volume in &vmspec.volumes {
         debug!("Processing volume {:?}", volume);
         if let Some(source) = &volume.ebs {
-            handle_volume_ebs(source)?;
+            handle_volume_ebs(ec2_client.as_ref().unwrap(), &imds_client, source)?;
         }
         if let Some(source) = &volume.s3 {
-            handle_volume_s3(
-                Path::new(base_dir),
-                source,
-                credentials.clone(),
-                &aws_region,
-            )?;
+            handle_volume_s3(s3_client.as_ref().unwrap(), Path::new(base_dir), source)?;
         }
         if let Some(source) = &volume.secrets_manager {
             handle_volume_secretsmanager(
+                asm_client.as_ref().unwrap(),
                 Path::new(base_dir),
                 source,
-                credentials.clone(),
-                &aws_region,
             )?;
         }
         if let Some(source) = &volume.ssm {
-            handle_volume_ssm(
-                Path::new(base_dir),
-                source,
-                credentials.clone(),
-                &aws_region,
-            )?;
+            handle_volume_ssm(ssm_client.as_ref().unwrap(), Path::new(base_dir), source)?;
         }
     }
 
@@ -137,6 +138,70 @@ pub fn initialize() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn try_get_ec2_client(
+    vmspec: &VmSpec,
+    credentials: Credentials,
+    aws_region: &str,
+) -> Option<Ec2Client> {
+    let ebs_count = vmspec
+        .volumes
+        .iter()
+        .filter(|vol| vol.ebs.is_some())
+        .count();
+    if ebs_count > 0 {
+        Some(Ec2Client::new(credentials.clone(), aws_region))
+    } else {
+        None
+    }
+}
+
+fn try_get_s3_client(
+    vmspec: &VmSpec,
+    credentials: Credentials,
+    aws_region: &str,
+) -> Option<S3Client> {
+    let s3_count = vmspec.volumes.iter().filter(|vol| vol.s3.is_some()).count();
+    if s3_count > 0 {
+        Some(S3Client::new(credentials.clone(), aws_region))
+    } else {
+        None
+    }
+}
+
+fn try_get_asm_client(
+    vmspec: &VmSpec,
+    credentials: Credentials,
+    aws_region: &str,
+) -> Option<AsmClient> {
+    let asm_count = vmspec
+        .volumes
+        .iter()
+        .filter(|vol| vol.secrets_manager.is_some())
+        .count();
+    if asm_count > 0 {
+        Some(AsmClient::new(credentials.clone(), aws_region))
+    } else {
+        None
+    }
+}
+
+fn try_get_ssm_client(
+    vmspec: &VmSpec,
+    credentials: Credentials,
+    aws_region: &str,
+) -> Option<SsmClient> {
+    let ssm_count = vmspec
+        .volumes
+        .iter()
+        .filter(|vol| vol.ssm.is_some())
+        .count();
+    if ssm_count > 0 {
+        Some(SsmClient::new(credentials.clone(), aws_region))
+    } else {
+        None
+    }
 }
 
 fn base_links() -> Result<()> {
@@ -278,49 +343,101 @@ fn parse_mode(mode: &str) -> Result<Mode> {
     Ok(Mode::from(m))
 }
 
-fn handle_volume_ebs(volume: &EbsVolumeSource) -> Result<()> {
+fn wait_for_device(device: &str, timeout: Duration) -> Result<()> {
+    let start = std::time::Instant::now();
+    let path = Path::new(device);
+    let backoff = Backoff::new();
+    loop {
+        match path.try_exists() {
+            Ok(true) => break,
+            _ => backoff.snooze(),
+        }
+        if start.elapsed() > timeout {
+            return Err(anyhow!("timeout waiting for device {} to exist", device));
+        }
+    }
+    Ok(())
+}
+
+fn handle_volume_ebs(
+    ec2_client: &Ec2Client,
+    imds_client: &Imds,
+    volume: &EbsVolumeSource,
+) -> Result<()> {
     info!("Handling volume {:?}", volume);
 
     if volume.device.is_empty() {
-        return Err(anyhow!("volume must have a device"));
+        return Err(anyhow!("EBS volume must have a device"));
     }
 
-    if volume.fs_type.is_none() {
-        return Err(anyhow!("volume must have a filesystem type"));
+    if let Some(mnt) = &volume.mount {
+        if mnt.destination.is_empty() {
+            return Err(anyhow!("EBS volume mount must have a destination"));
+        }
+        if mnt
+            .fs_type
+            .as_ref()
+            .is_none_or(|fs_type| fs_type.is_empty())
+        {
+            return Err(anyhow!("EBS volume mount must have a filesystem type"));
+        }
     }
 
-    if volume.mount.destination.is_empty() {
-        return Err(anyhow!("volume must have a mount point"));
+    if let Some(ref attachment) = volume.attachment {
+        let az_path = Path::new("placement/availability-zone");
+        let availability_zone = imds_client.get_metadata(az_path)?;
+        let id_path = Path::new("instance-id");
+        let instance_id = imds_client.get_metadata(id_path)?;
+        ec2_client
+            .ensure_ebs_volume_attached(
+                attachment,
+                &volume.device,
+                &availability_zone,
+                &instance_id,
+            )
+            .map_err(|e| {
+                anyhow!(
+                    "unable to ensure EBS volume {} is attached: {}",
+                    &volume.device,
+                    e
+                )
+            })?;
+        info!("EBS volume {} is attached", &volume.device);
+        // Wait for uevent listener to create the device link.
+        wait_for_device(
+            &volume.device,
+            Duration::from_secs(attachment.timeout.unwrap_or(300)),
+        )?;
+        info!("EBS volume device {} is available", &volume.device);
     }
 
-    let mode = parse_mode(volume.mount.mode.as_ref().unwrap())?;
+    if volume.mount.is_none() {
+        return Ok(());
+    }
+
+    let mnt = volume.mount.as_ref().unwrap();
+
+    let mode = parse_mode(mnt.mode.as_ref().unwrap())?;
     debug!("Parsed mode, before: {:?}, after: {:?}", volume, mode);
 
-    mkdir_p(&volume.mount.destination, mode)?;
-    debug!("Created mount point {:?}", volume.mount.destination);
+    mkdir_p(&mnt.destination, mode)?;
+    debug!("Created mount point {:?}", mnt.destination);
 
     let (owner, group) = (
-        volume.mount.user_id.map(|u| Uid::from_raw(u)),
-        volume.mount.group_id.map(|g| Gid::from_raw(g)),
+        mnt.user_id.map(|u| Uid::from_raw(u)),
+        mnt.group_id.map(|g| Gid::from_raw(g)),
     );
-    chown(&volume.mount.destination, owner, group).map_err(|e| {
-        anyhow!(
-            "unable to change ownership of {}: {}",
-            &volume.mount.destination,
-            e
-        )
-    })?;
-    debug!(
-        "Changed ownership of mount point {:?}",
-        volume.mount.destination
-    );
+    chown(&mnt.destination, owner, group)
+        .map_err(|e| anyhow!("unable to change ownership of {}: {}", &mnt.destination, e))?;
+    debug!("Changed ownership of mount point {:?}", mnt.destination);
 
-    try_mkfs(&volume.device, volume.fs_type.as_ref().unwrap())?;
+    let fs_type = mnt.fs_type.as_ref().unwrap();
+    try_mkfs(&volume.device, fs_type)?;
 
     mount(
         &volume.device,
-        &volume.mount.destination,
-        volume.fs_type.as_ref().unwrap(),
+        &mnt.destination,
+        fs_type,
         MountFlags::empty(),
         None,
     )
@@ -328,14 +445,11 @@ fn handle_volume_ebs(volume: &EbsVolumeSource) -> Result<()> {
         anyhow!(
             "unable to mount {} on {}: {}",
             &volume.device,
-            &volume.mount.destination,
+            &mnt.destination,
             e
         )
     })?;
-    info!(
-        "Mounted volume {} on {}",
-        &volume.device, &volume.mount.destination
-    );
+    info!("Mounted volume {} on {}", &volume.device, &mnt.destination);
 
     Ok(())
 }
@@ -365,13 +479,11 @@ fn try_mkfs(device: &str, fs_type: &str) -> Result<()> {
 }
 
 fn handle_volume_ssm(
+    ssm_client: &SsmClient,
     base_dir: &Path,
     volume: &SsmVolumeSource,
-    credentials: Credentials,
-    region: &str,
 ) -> Result<()> {
-    let client = SsmClient::new(credentials, region)?;
-    match client.get_parameter_list(&volume.path) {
+    match ssm_client.get_parameter_list(&volume.path) {
         Ok(mut parameters) => {
             debug!("SSM parameters: {:?}", parameters);
             for parameter in parameters.iter_mut() {
@@ -393,13 +505,11 @@ fn handle_volume_ssm(
 }
 
 fn handle_volume_secretsmanager(
+    asm_client: &AsmClient,
     base_dir: &Path,
     volume: &SecretsManagerVolumeSource,
-    credentials: Credentials,
-    region: &str,
 ) -> Result<()> {
-    let client = AsmClient::new(credentials, region)?;
-    match client.get_secret_list(&volume.secret_id) {
+    match asm_client.get_secret_list(&volume.secret_id) {
         Ok(mut secrets) => {
             debug!("Secrets Manager secrets: {:?}", secrets);
             for secret in secrets.iter_mut() {
@@ -420,16 +530,9 @@ fn handle_volume_secretsmanager(
     }
 }
 
-fn handle_volume_s3(
-    base_dir: &Path,
-    volume: &S3VolumeSource,
-    credentials: Credentials,
-    region: &str,
-) -> Result<()> {
-    let client = S3Client::new(credentials, region)
-        .map_err(|e| anyhow!("unable to create S3 client: {}", e))?;
+fn handle_volume_s3(s3_client: &S3Client, base_dir: &Path, volume: &S3VolumeSource) -> Result<()> {
     let s3_url = format!("s3://{}/{}", volume.bucket, volume.key_prefix);
-    match client.get_object_list(&volume.bucket, &volume.key_prefix) {
+    match s3_client.get_object_list(&volume.bucket, &volume.key_prefix) {
         Ok(mut objects) => {
             debug!("S3 objects: {:?}", objects);
             for object in objects.iter_mut() {
@@ -510,11 +613,11 @@ fn resolve_env_from_s3(
     region: &str,
 ) -> Result<NameValues> {
     let get_bytes = || {
-        let client = S3Client::new(credentials.clone(), region)?;
+        let client = S3Client::new(credentials.clone(), region);
         client.get_object_bytes(&source.bucket, &source.key)
     };
     let get_map = || {
-        let client = S3Client::new(credentials.clone(), region)?;
+        let client = S3Client::new(credentials.clone(), region);
         client.get_object_map(&source.bucket, &source.key)
     };
     resolve_env_from(
@@ -530,7 +633,7 @@ fn resolve_env_from_secretsmanager(
     credentials: Credentials,
     region: &str,
 ) -> Result<NameValues> {
-    let client = &AsmClient::new(credentials, region)?;
+    let client = &AsmClient::new(credentials, region);
     let get_bytes = || client.get_secret_value(&source.secret_id);
     let get_map = || client.get_secret_map(&source.secret_id);
     resolve_env_from(
@@ -546,7 +649,7 @@ fn resolve_env_from_ssm(
     credentials: Credentials,
     region: &str,
 ) -> Result<NameValues> {
-    let client = &SsmClient::new(credentials, region)?;
+    let client = &SsmClient::new(credentials, region);
     let get_bytes = || client.get_parameter_value(&source.path);
     let get_map = || client.get_parameter_map(&source.path);
     resolve_env_from(
@@ -699,8 +802,17 @@ fn supervise(vmspec: VmSpec, command: Vec<String>, env: NameValues) -> Result<()
     let mount_points: Vec<String> = vmspec
         .volumes
         .iter()
-        .filter(|v| v.ebs.is_some())
-        .map(|v| v.ebs.as_ref().unwrap().mount.destination.clone())
+        .filter(|v| v.ebs.is_some() && v.ebs.as_ref().unwrap().mount.is_some())
+        .map(|v| {
+            v.ebs
+                .as_ref()
+                .unwrap()
+                .mount
+                .as_ref()
+                .unwrap()
+                .destination
+                .clone()
+        })
         .collect();
 
     let mut supervisor = Supervisor::new(vmspec, command, env)?;

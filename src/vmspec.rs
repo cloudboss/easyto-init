@@ -175,14 +175,16 @@ impl VmSpec {
     fn update_defaults(&mut self) {
         for volume in &mut self.volumes {
             if let Some(ebs) = &mut volume.ebs {
-                if ebs.mount.group_id.is_none() {
-                    ebs.mount.group_id = self.security.run_as_group_id;
-                }
-                if ebs.mount.user_id.is_none() {
-                    ebs.mount.user_id = self.security.run_as_user_id;
-                }
-                if ebs.mount.mode.is_none() {
-                    ebs.mount.mode = Some("0755".into());
+                if let Some(mount) = &mut ebs.mount {
+                    if mount.group_id.is_none() {
+                        mount.group_id = self.security.run_as_group_id;
+                    }
+                    if mount.user_id.is_none() {
+                        mount.user_id = self.security.run_as_user_id;
+                    }
+                    if mount.mode.is_none() {
+                        mount.mode = Some("0755".into());
+                    }
                 }
             }
             if let Some(s3) = &mut volume.s3 {
@@ -417,12 +419,21 @@ pub type Volumes = Vec<Volume>;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct EbsVolumeSource {
+    pub attachment: Option<EbsVolumeAttachment>,
     pub device: String,
-    #[serde(rename = "fs-type")]
-    pub fs_type: Option<String>,
-    #[serde(rename = "make-fs")]
-    pub make_fs: Option<bool>,
-    pub mount: Mount,
+    pub mount: Option<Mount>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct EbsVolumeAttachment {
+    pub tags: Vec<AwsTag>,
+    pub timeout: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AwsTag {
+    pub key: String,
+    pub value: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -452,6 +463,8 @@ pub struct SsmVolumeSource {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Mount {
     pub destination: String,
+    #[serde(rename = "fs-type")]
+    pub fs_type: Option<String>,
     #[serde(rename = "group-id")]
     pub group_id: Option<u32>,
     pub mode: Option<String>,

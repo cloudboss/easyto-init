@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "easyto-init"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -413,7 +413,6 @@ dependencies = [
  "serde_yml",
  "signal-hook",
  "simple_logger",
- "ureq",
 ]
 
 [[package]]
@@ -462,9 +461,9 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.1"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
+checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
 ]
@@ -668,14 +667,15 @@ checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 
 [[package]]
 name = "minaws"
-version = "0.1.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b341908e5aea14b5af3f5dd4b5a862facccb5409f2c9d20bdc606e475feee8b9"
+checksum = "7b123d65d6982687151ddc170249e3aca8a16877ac6d1a6f16d0c234f6364d51"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
  "aws-smithy-runtime-api",
  "chrono",
+ "form_urlencoded",
  "once_cell",
  "serde",
  "serde-xml-rs",
