@@ -12,11 +12,12 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use crossbeam::channel::{bounded, Receiver, Select, Sender};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use minaws::imds::Imds;
 use rustix::{
-    fs::{chmod, chown, remount, stat, Dir, FileType, Gid, Mode, MountFlags, Uid},
+    fs::{chmod, chown, stat, Dir, FileType, Gid, Mode, Uid},
     io::Errno,
+    mount::{mount_remount, MountFlags},
     process::{kill_process, wait, Signal, WaitOptions},
     thread::Pid,
 };
@@ -79,8 +80,8 @@ impl Default for ServiceBase {
             args: Vec::new(),
             working_dir: "/".into(),
             env: Vec::new(),
-            gid: unsafe { Gid::from_raw(0) },
-            uid: unsafe { Uid::from_raw(0) },
+            gid: Gid::from_raw(0),
+            uid: Uid::from_raw(0),
             init: None,
             stop_rx: err_recv,
             stop_tx: err_send,
@@ -230,7 +231,7 @@ impl Chrony {
         let chrony_run_path = Path::new(constants::DIR_ET_RUN).join("chrony");
         mkdir_p(&chrony_run_path, Mode::from(0o750))?;
 
-        let (uid, gid) = unsafe { (Uid::from_raw(user.uid), (Gid::from_raw(user.gid))) };
+        let (uid, gid) = (Uid::from_raw(user.uid), (Gid::from_raw(user.gid)));
         chown(&chrony_run_path, Some(uid), Some(gid))?;
 
         Ok(())
@@ -301,7 +302,7 @@ impl Ssh {
             .ok_or_else(|| anyhow!("user {} not found", login_user))?;
 
         let ssh_dir = Path::new(&user.home_dir).join(".ssh");
-        let (uid, gid) = unsafe { (Uid::from_raw(user.uid), (Gid::from_raw(user.gid))) };
+        let (uid, gid) = (Uid::from_raw(user.uid), (Gid::from_raw(user.gid)));
         Self::ssh_write_pub_key(&ssh_dir, uid, gid)?;
 
         let rsa_key_path = Path::new(constants::DIR_ET_ETC)
@@ -402,7 +403,7 @@ impl SupervisorBase {
     }
 
     fn kill(&self) -> Result<()> {
-        self.signal(Signal::Kill)
+        self.signal(Signal::KILL)
     }
 
     // Return the PIDs of all current non-kernel processes excluding init.
@@ -462,7 +463,7 @@ impl SupervisorBase {
                 let init_rx = service_ref.lock().unwrap().init_rx().clone();
                 let _ = init_rx.recv();
             }
-            remount(constants::DIR_ROOT, MountFlags::RDONLY, "")?;
+            mount_remount(constants::DIR_ROOT, MountFlags::RDONLY, "")?;
         }
 
         start_main(self.main_ref.clone())
@@ -500,7 +501,7 @@ impl SupervisorBase {
         }
 
         info!("Shutting down all processes");
-        if let Err(e) = self.signal(Signal::Term) {
+        if let Err(e) = self.signal(Signal::TERM) {
             error!("Error sending TERM signal: {}", e);
         }
 
@@ -538,12 +539,10 @@ pub struct Supervisor {
 
 impl Supervisor {
     pub fn new(vmspec: VmSpec, command: Vec<String>, env: NameValues) -> Result<Self> {
-        let (uid, gid) = unsafe {
-            (
-                Uid::from_raw(vmspec.security.run_as_user_id.unwrap()),
-                Gid::from_raw(vmspec.security.run_as_group_id.unwrap()),
-            )
-        };
+        let (uid, gid) = (
+            Uid::from_raw(vmspec.security.run_as_user_id.unwrap()),
+            Gid::from_raw(vmspec.security.run_as_group_id.unwrap()),
+        );
         let working_dir = vmspec.working_dir.clone();
         let main = Main::new(command, working_dir, env, gid, uid);
 
@@ -702,7 +701,7 @@ fn start_main(service_ref: Arc<Mutex<dyn Service>>) -> Result<()> {
                     .lock()
                     .unwrap()
                     .stop_tx()
-                    .send(wait_result.map_err(Into::into));
+                    .send(wait_result);
             }
         }
     });
@@ -750,7 +749,7 @@ fn start_service(service_ref: Arc<Mutex<dyn Service>>) -> Result<()> {
                             .lock()
                             .unwrap()
                             .stop_tx()
-                            .send(wait_result.map_err(Into::into));
+                            .send(wait_result);
                         return;
                     }
                     wait_result
@@ -786,7 +785,7 @@ fn find_enabled_services(
         } else if entry_name == "ssh" {
             services.push(Arc::new(Mutex::new(Ssh::new())));
         } else {
-            info!("Unknown service {}", entry_name);
+            warn!("Unknown service {}", entry_name);
         }
     }
     Ok(services)

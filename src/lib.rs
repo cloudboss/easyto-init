@@ -7,5 +7,6 @@ pub mod login;
 pub mod rdev;
 pub mod service;
 pub mod system;
+pub mod uevent;
 pub mod vmspec;
 pub mod writable;

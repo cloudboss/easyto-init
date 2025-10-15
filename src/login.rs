@@ -136,7 +136,7 @@ pub fn create_home_dir(home_dir: &Path, uid: u32, gid: u32) -> Result<()> {
     mkdir(parent, Mode::from_bits(0o755).unwrap())?;
     mkdir(home_dir, Mode::from_bits(0o700).unwrap())?;
     mkdir(ssh_dir, Mode::from_bits(0o700).unwrap())?;
-    let (uid, gid) = unsafe { (Uid::from_raw(uid), Gid::from_raw(gid)) };
+    let (uid, gid) = (Uid::from_raw(uid), Gid::from_raw(gid));
     chown(home_dir, Some(uid), Some(gid))?;
     chown(ssh_dir, Some(uid), Some(gid))?;
     umask(old_mask);
