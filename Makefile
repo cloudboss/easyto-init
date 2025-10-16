@@ -12,7 +12,7 @@ include $(DIR_OUT)/Makefile.inc
 endif
 
 # Override Makefile.inc.
-CTR_IMAGE_RUST = rust:1.82.0-alpine3.20
+CTR_IMAGE_RUST = rust:1.90.0-alpine3.22
 CTR_IMAGE_RUST_SHA256 = $(shell echo -n $(CTR_IMAGE_RUST) | sha256sum | awk '{print $$1}')
 DOCKER_INPUTS_SHA256 = $(shell echo -n $(UID_SHA256)$(GID_SHA256)$(CTR_IMAGE_RUST_SHA256)$(DOCKERFILE_SHA256) | \
 	sha256sum | awk '{print $$1}' | cut -c 1-40)
