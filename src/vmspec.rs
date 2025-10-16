@@ -71,7 +71,7 @@ impl UserData {
             .get_user_data()
             .map_err(|e| anyhow!("unable to get user data: {}", e))
             .and_then(|user_data| {
-                serde_yml::from_str::<UserData>(&user_data)
+                serde_yaml2::from_str::<UserData>(&user_data)
                     .map_err(|e| anyhow!("unable to parse user data: {}", e))
             })
     }
