@@ -788,14 +788,15 @@ checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 
 [[package]]
 name = "minaws"
-version = "0.2.2"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b123d65d6982687151ddc170249e3aca8a16877ac6d1a6f16d0c234f6364d51"
+checksum = "9c7fd007695b935edca180afbef7052c700f7da640e6b162cd39252b43878b46"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
  "aws-smithy-runtime-api",
  "chrono",
+ "crossbeam",
  "form_urlencoded",
  "once_cell",
  "serde",

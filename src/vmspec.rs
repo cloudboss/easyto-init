@@ -8,7 +8,8 @@ use std::process::{Command, Stdio};
 use anyhow::{anyhow, Error, Result};
 use k8s_expand::{expand, mapping_func_for};
 use log::{debug, info};
-use minaws::imds::Imds;
+use minaws::imds::{self, Imds};
+use minaws::request;
 use rustix::fs::{chmod, Mode};
 use serde::{Deserialize, Serialize};
 
@@ -66,14 +67,25 @@ pub struct UserData {
 }
 
 impl UserData {
-    pub fn from_imds(imds_client: &Imds) -> Result<Self> {
-        imds_client
-            .get_user_data()
-            .map_err(|e| anyhow!("unable to get user data: {}", e))
-            .and_then(|user_data| {
-                serde_yaml2::from_str::<UserData>(&user_data)
-                    .map_err(|e| anyhow!("unable to parse user data: {}", e))
-            })
+    pub fn from_imds(imds_client: &Imds) -> Result<Option<Self>> {
+        imds_client.get_user_data().map_or_else(
+            |e| match e {
+                imds::Error::Request(ref req_err) => match **req_err {
+                    request::Error::Api(404, _) => Ok(None),
+                    _ => Err(anyhow!("unable to get user data: {}", e)),
+                },
+                _ => Err(anyhow!("unable to get user data: {}", e)),
+            },
+            |user_data| {
+                if user_data.is_empty() {
+                    return Ok(None);
+                }
+                serde_yaml2::from_str::<UserData>(&user_data).map_or_else(
+                    |e| Err(anyhow!("unable to parse user data: {}", e)),
+                    |ud| Ok(Some(ud)),
+                )
+            },
+        )
     }
 }
 
