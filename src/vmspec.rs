@@ -5,12 +5,10 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use k8s_expand::{expand, mapping_func_for};
 use log::{debug, info};
-use minaws::imds::{self, Imds};
-use minaws::request;
-use rustix::fs::{chmod, Mode};
+use rustix::fs::{Mode, chmod};
 use serde::{Deserialize, Serialize};
 
 use crate::constants;
@@ -27,11 +25,11 @@ struct UserGroupNames {
 impl TryFrom<String> for UserGroupNames {
     type Error = Error;
 
-    fn try_from(user_str: String) -> Result<Self> {
-        if user_str.is_empty() {
+    fn try_from(user_data_str: String) -> Result<Self> {
+        if user_data_str.is_empty() {
             return Err(anyhow!("user group string cannot be empty"));
         }
-        let mut fields = user_str.split(':');
+        let mut fields = user_data_str.split(':');
         let user = fields.next();
         let group = fields.next();
         if fields.next().is_some() {
@@ -67,24 +65,13 @@ pub struct UserData {
 }
 
 impl UserData {
-    pub fn from_imds(imds_client: &Imds) -> Result<Option<Self>> {
-        imds_client.get_user_data().map_or_else(
-            |e| match e {
-                imds::Error::Request(ref req_err) => match **req_err {
-                    request::Error::Api(404, _) => Ok(None),
-                    _ => Err(anyhow!("unable to get user data: {}", e)),
-                },
-                _ => Err(anyhow!("unable to get user data: {}", e)),
-            },
-            |user_data| {
-                if user_data.is_empty() {
-                    return Ok(None);
-                }
-                serde_yaml2::from_str::<UserData>(&user_data).map_or_else(
-                    |e| Err(anyhow!("unable to parse user data: {}", e)),
-                    |ud| Ok(Some(ud)),
-                )
-            },
+    pub fn from_string(value: &str) -> Result<Option<Self>> {
+        if value.is_empty() {
+            return Ok(None);
+        }
+        serde_yaml2::from_str::<UserData>(value).map_or_else(
+            |e| Err(anyhow!("unable to parse user data: {}", e)),
+            |ud| Ok(Some(ud)),
         )
     }
 }

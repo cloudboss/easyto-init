@@ -1,32 +1,52 @@
-use std::{collections::HashMap, io::Read, sync::Arc};
+use std::{collections::HashMap, io::Read};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
+use aws_sdk_ssm::types::Parameter;
 use log::debug;
-use minaws::{
-    imds::{Credentials, Imds},
-    ssm::{self, GetParametersByPathInput, Parameter},
-};
+use tokio::runtime::Handle;
 
 use crate::writable::Writable;
 
+#[derive(Debug)]
 pub struct SsmClient {
-    api: Arc<ssm::Api>,
+    rt: Handle,
+    client: SsmClientAsync,
 }
 
 impl SsmClient {
-    pub fn new(credentials: Credentials, region: &str) -> Self {
-        let api = ssm::Api::new(region, credentials);
-        Self { api: api.into() }
-    }
-
-    pub fn from_imds(imds: &Imds, region: &str) -> Result<Self> {
-        let credentials = imds.get_credentials()?;
-        let api = ssm::Api::new(region, credentials);
-        Ok(Self { api: api.into() })
+    pub fn new(rt: Handle, client: aws_sdk_ssm::Client) -> Self {
+        let client_async = SsmClientAsync::new(client);
+        Self {
+            rt,
+            client: client_async,
+        }
     }
 
     pub fn get_parameter_list(&self, ssm_path: &str) -> Result<Vec<SsmParameterValue>> {
-        self.get_parameters(ssm_path).map(|parameters| {
+        self.rt.block_on(self.client.get_parameter_list(ssm_path))
+    }
+
+    pub fn get_parameter_map(&self, ssm_path: &str) -> Result<HashMap<String, String>> {
+        self.rt.block_on(self.client.get_parameter_map(ssm_path))
+    }
+
+    pub fn get_parameter_value(&self, ssm_path: &str) -> Result<Vec<u8>> {
+        self.rt.block_on(self.client.get_parameter_value(ssm_path))
+    }
+}
+
+#[derive(Debug)]
+pub struct SsmClientAsync {
+    client: aws_sdk_ssm::Client,
+}
+
+impl SsmClientAsync {
+    pub fn new(client: aws_sdk_ssm::Client) -> Self {
+        Self { client }
+    }
+
+    pub async fn get_parameter_list(&self, ssm_path: &str) -> Result<Vec<SsmParameterValue>> {
+        self.get_parameters(ssm_path).await.map(|parameters| {
             parameters
                 .into_iter()
                 .map(|p| {
@@ -41,53 +61,58 @@ impl SsmClient {
         })
     }
 
-    pub fn get_parameter_map(&self, ssm_path: &str) -> Result<HashMap<String, String>> {
-        let parameter = self.get_parameter(ssm_path)?;
+    pub async fn get_parameter_map(&self, ssm_path: &str) -> Result<HashMap<String, String>> {
+        let parameter = self.get_parameter(ssm_path).await?;
         let value = parameter
             .value
-            .ok_or_else(|| anyhow!("value of parameter at path {} not found", ssm_path))?;
+            .ok_or_else(|| anyhow!("value of SSM parameter at path {} not found", ssm_path))?;
         let map: HashMap<String, String> = serde_json::from_str(&value)?;
         Ok(map)
     }
 
-    pub fn get_parameter_value(&self, ssm_path: &str) -> Result<Vec<u8>> {
-        let parameter = self.get_parameter(ssm_path)?;
+    pub async fn get_parameter_value(&self, ssm_path: &str) -> Result<Vec<u8>> {
+        let parameter = self.get_parameter(ssm_path).await?;
         let value = parameter
             .value
-            .ok_or_else(|| anyhow!("value of parameter at path {} not found", ssm_path))?;
+            .ok_or_else(|| anyhow!("value of SSM parameter at path {} not found", ssm_path))?;
         Ok(value.into_bytes())
     }
 
-    fn get_parameters(&self, ssm_path: &str) -> Result<Vec<Parameter>> {
+    async fn get_parameters(&self, ssm_path: &str) -> Result<Vec<Parameter>> {
         let mut parameters = Vec::new();
         if ssm_path.starts_with("/") {
-            parameters = self.get_parameters_by_path(ssm_path)?;
+            parameters = self.get_parameters_by_path(ssm_path).await?;
         }
         if parameters.is_empty() {
-            let parameter = self.get_parameter(ssm_path)?;
+            let parameter = self.get_parameter(ssm_path).await?;
             parameters.push(parameter);
         }
         Ok(parameters)
     }
 
-    fn get_parameters_by_path(&self, ssm_path: &str) -> Result<Vec<Parameter>> {
+    async fn get_parameters_by_path(&self, ssm_path: &str) -> Result<Vec<Parameter>> {
         let mut parameters = Vec::new();
         let mut next_token: Option<String> = None;
         loop {
-            let mut input = GetParametersByPathInput::default()
+            let mut req = self
+                .client
+                .get_parameters_by_path()
                 .path(ssm_path)
                 .recursive(true)
                 .with_decryption(true);
             if let Some(ref token) = next_token {
-                input = input.next_token(token);
+                req = req.next_token(token);
             }
-            let out = self
-                .api
-                .get_parameters_by_path(input)
-                .map_err(|e| anyhow!("unable to get SSM parameters at path {}: {}", ssm_path, e))?;
+            let out = req.send().await.map_err(|e| {
+                anyhow!(
+                    "unable to get SSM parameters at path {}: {}",
+                    ssm_path,
+                    e.into_service_error()
+                )
+            })?;
             let p = out
                 .parameters
-                .ok_or(anyhow!("no SSM parameters in result"))?;
+                .ok_or(anyhow!("no SSM parameters in path {}", ssm_path))?;
             parameters.extend(p);
             if out.next_token.is_none() {
                 break;
@@ -97,15 +122,24 @@ impl SsmClient {
         Ok(parameters)
     }
 
-    fn get_parameter(&self, ssm_path: &str) -> Result<Parameter> {
-        let out = self.api.get_parameter(
-            ssm::GetParameterInput::default()
-                .name(ssm_path)
-                .with_decryption(true),
-        )?;
+    async fn get_parameter(&self, ssm_path: &str) -> Result<Parameter> {
+        let out = self
+            .client
+            .get_parameter()
+            .name(ssm_path)
+            .with_decryption(true)
+            .send()
+            .await
+            .map_err(|e| {
+                anyhow!(
+                    "failed to get SSM parameter {}: {}",
+                    ssm_path,
+                    e.into_service_error()
+                )
+            })?;
         let parameter = out
             .parameter
-            .ok_or_else(|| anyhow!("parameter not found"))?;
+            .ok_or_else(|| anyhow!("parameter {} not found in SSM", ssm_path))?;
         Ok(parameter)
     }
 }

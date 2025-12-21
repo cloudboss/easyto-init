@@ -1,32 +1,51 @@
-use std::{collections::HashMap, io::Read, sync::Arc};
+use std::{collections::HashMap, io::Read};
 
-use anyhow::{anyhow, Result};
-use minaws::{
-    imds::{Credentials, Imds},
-    secretsmanager::{self, GetSecretValueInput, GetSecretValueOutput},
-};
+use anyhow::{Result, anyhow};
+use aws_sdk_secretsmanager::operation::get_secret_value::GetSecretValueOutput;
+use tokio::runtime::Handle;
 
 use crate::writable::Writable;
 
 #[derive(Debug, Clone)]
 pub struct AsmClient {
-    api: Arc<secretsmanager::Api>,
+    rt: Handle,
+    client: AsmClientAsync,
 }
 
 impl AsmClient {
-    pub fn new(credentials: Credentials, region: &str) -> Self {
-        let api = secretsmanager::Api::new(region, credentials);
-        Self { api: api.into() }
-    }
-
-    pub fn from_imds(imds: &Imds, region: &str) -> Result<Self> {
-        let credentials = imds.get_credentials()?;
-        let api = secretsmanager::Api::new(region, credentials);
-        Ok(Self { api: api.into() })
+    pub fn new(rt: Handle, client: aws_sdk_secretsmanager::Client) -> Self {
+        let client_async = AsmClientAsync::new(client);
+        Self {
+            rt,
+            client: client_async,
+        }
     }
 
     pub fn get_secret_list(&self, secret_id: &str) -> Result<Vec<AsmSecretValue>> {
-        let secret = self.get_secret(secret_id)?;
+        self.rt.block_on(self.client.get_secret_list(secret_id))
+    }
+
+    pub fn get_secret_map(&self, secret_id: &str) -> Result<HashMap<String, String>> {
+        self.rt.block_on(self.client.get_secret_map(secret_id))
+    }
+
+    pub fn get_secret_value(&self, secret_id: &str) -> Result<Vec<u8>> {
+        self.rt.block_on(self.client.get_secret_value(secret_id))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AsmClientAsync {
+    client: aws_sdk_secretsmanager::Client,
+}
+
+impl AsmClientAsync {
+    pub fn new(client: aws_sdk_secretsmanager::Client) -> Self {
+        Self { client }
+    }
+
+    pub async fn get_secret_list(&self, secret_id: &str) -> Result<Vec<AsmSecretValue>> {
+        let secret = self.get_secret(secret_id).await?;
         if let Some(secret_string) = secret.secret_string {
             return Ok(vec![AsmSecretValue {
                 string: Some(secret_string),
@@ -35,35 +54,45 @@ impl AsmClient {
         }
         if let Some(secret_binary) = secret.secret_binary {
             return Ok(vec![AsmSecretValue {
-                binary: Some(secret_binary),
+                binary: Some(secret_binary.into_inner()),
                 ..Default::default()
             }]);
         }
         Err(anyhow!("secret with ID {} has no value", secret_id))
     }
 
-    pub fn get_secret_map(&self, secret_id: &str) -> Result<HashMap<String, String>> {
-        let secret = self.get_secret_value(secret_id)?;
+    pub async fn get_secret_map(&self, secret_id: &str) -> Result<HashMap<String, String>> {
+        let secret = self.get_secret_value(secret_id).await?;
         let map: HashMap<String, String> = serde_json::from_slice(&secret)?;
         Ok(map)
     }
 
-    pub fn get_secret_value(&self, secret_id: &str) -> Result<Vec<u8>> {
-        let secret = self.get_secret(secret_id)?;
+    pub async fn get_secret_value(&self, secret_id: &str) -> Result<Vec<u8>> {
+        let secret = self.get_secret(secret_id).await?;
         if let Some(secret_string) = secret.secret_string {
             return Ok(secret_string.into_bytes());
         }
         if let Some(secret_binary) = secret.secret_binary {
-            let bytes = secret_binary.to_vec();
+            let bytes = secret_binary.into_inner();
             return Ok(bytes);
         }
         Err(anyhow!("secret with ID {} has no value", secret_id))
     }
 
-    pub fn get_secret(&self, secret_id: &str) -> Result<GetSecretValueOutput> {
+    pub async fn get_secret(&self, secret_id: &str) -> Result<GetSecretValueOutput> {
         let value = self
-            .api
-            .get_secret_value(GetSecretValueInput::default().secret_id(secret_id))?;
+            .client
+            .get_secret_value()
+            .secret_id(secret_id)
+            .send()
+            .await
+            .map_err(|e| {
+                anyhow!(
+                    "failed to get secret {} from Secrets Manager: {}",
+                    secret_id,
+                    e.into_service_error()
+                )
+            })?;
         Ok(value)
     }
 }

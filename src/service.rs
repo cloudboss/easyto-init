@@ -10,20 +10,21 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Result};
-use crossbeam::channel::{bounded, Receiver, Select, Sender};
+use anyhow::{Result, anyhow};
+use aws_config::imds::client::SensitiveString;
+use crossbeam::channel::{Receiver, Select, Sender, bounded};
 use log::{debug, error, info, warn};
-use minaws::imds::Imds;
 use rustix::{
-    fs::{chmod, chown, stat, Dir, FileType, Gid, Mode, Uid},
+    fs::{Dir, FileType, Gid, Mode, Uid, chmod, chown, stat},
     io::Errno,
-    mount::{mount_remount, MountFlags},
-    process::{kill_process, wait, Signal, WaitOptions},
+    mount::{MountFlags, mount_remount},
+    process::{Signal, WaitOptions, kill_process, wait},
     thread::Pid,
 };
 use signal_hook::iterator::Signals;
 
 use crate::{
+    aws::aws::AwsCtx,
     constants,
     fs::mkdir_p,
     login::{self, Find},
@@ -37,12 +38,11 @@ const SIGPOWEROFF: c_int = 38;
 // Process flag for kernel threads, from include/linux/sched.h in kernel source.
 const PF_KTHREAD: u32 = 0x00200000;
 
-#[derive(Debug)]
 struct ServiceBase {
     args: Vec<String>,
     env: NameValues,
     gid: Gid,
-    init: Option<fn() -> Result<()>>,
+    init: Option<Box<dyn Fn() -> Result<()>>>,
     init_rx: Receiver<()>,
     init_tx: Sender<()>,
     optional: bool,
@@ -113,8 +113,8 @@ trait Service: Send + Sync {
         self.base().command()
     }
 
-    fn init_fn(&self) -> Option<fn() -> Result<()>> {
-        self.base().init
+    fn init_fn(&self) -> Option<&Box<dyn Fn() -> Result<()>>> {
+        self.base().init.as_ref()
     }
 
     fn init_rx(&self) -> Receiver<()> {
@@ -160,7 +160,6 @@ trait Service: Send + Sync {
     }
 }
 
-#[derive(Debug)]
 pub struct Main(ServiceBase);
 
 unsafe impl Send for Main {}
@@ -199,7 +198,7 @@ impl Main {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Chrony(ServiceBase);
 
 unsafe impl Send for Chrony {}
@@ -245,13 +244,12 @@ impl Chrony {
         let args = vec![path, "-d".into()];
         Self(ServiceBase {
             args,
-            init: Some(Self::init),
+            init: Some(Box::new(Self::init)),
             ..Default::default()
         })
     }
 }
 
-#[derive(Debug, Default)]
 struct Ssh(ServiceBase);
 
 unsafe impl Send for Ssh {}
@@ -272,7 +270,7 @@ impl Service for Ssh {
 }
 
 impl Ssh {
-    pub fn new() -> Self {
+    pub fn new(ssh_pub_key: SensitiveString) -> Self {
         let path = Path::new(constants::DIR_ET_SBIN).join("sshd");
         let sshd_config = Path::new(constants::DIR_ET_ETC)
             .join("ssh")
@@ -286,13 +284,13 @@ impl Ssh {
         ];
         Self(ServiceBase {
             args,
-            init: Some(Self::init),
+            init: Some(Box::new(move || Self::init(ssh_pub_key.clone()))),
             optional: true,
             ..Default::default()
         })
     }
 
-    fn init() -> Result<()> {
+    fn init(ssh_pub_key: SensitiveString) -> Result<()> {
         info!("Initializing sshd");
 
         let login_user = Self::get_login_user()?;
@@ -303,7 +301,7 @@ impl Ssh {
 
         let ssh_dir = Path::new(&user.home_dir).join(".ssh");
         let (uid, gid) = (Uid::from_raw(user.uid), (Gid::from_raw(user.gid)));
-        Self::ssh_write_pub_key(&ssh_dir, uid, gid)?;
+        Self::ssh_write_pub_key(&ssh_dir, uid, gid, ssh_pub_key.into())?;
 
         let rsa_key_path = Path::new(constants::DIR_ET_ETC)
             .join("ssh")
@@ -336,8 +334,7 @@ impl Ssh {
         Ok(())
     }
 
-    fn ssh_write_pub_key(dir: &Path, uid: Uid, gid: Gid) -> Result<()> {
-        let pub_key = Self::get_ssh_key()?;
+    fn ssh_write_pub_key(dir: &Path, uid: Uid, gid: Gid, pub_key: String) -> Result<()> {
         let key_path = Path::new(dir).join("authorized_keys");
         let mut file = File::options()
             .create(true)
@@ -367,12 +364,6 @@ impl Ssh {
             return Ok(entry_name);
         }
         Err(anyhow!("login user not found"))
-    }
-
-    fn get_ssh_key() -> Result<String> {
-        Imds::default()
-            .get_metadata(Path::new("public-keys/0/openssh-key"))
-            .map_err(Into::into)
     }
 }
 
@@ -538,7 +529,12 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    pub fn new(vmspec: VmSpec, command: Vec<String>, env: NameValues) -> Result<Self> {
+    pub fn new(
+        vmspec: VmSpec,
+        command: Vec<String>,
+        env: NameValues,
+        aws_ctx: &AwsCtx,
+    ) -> Result<Self> {
         let (uid, gid) = (
             Uid::from_raw(vmspec.security.run_as_user_id.unwrap()),
             Gid::from_raw(vmspec.security.run_as_group_id.unwrap()),
@@ -547,6 +543,7 @@ impl Supervisor {
         let main = Main::new(command, working_dir, env, gid, uid);
 
         let service_refs = find_enabled_services(
+            aws_ctx,
             Path::new(constants::DIR_ET_SERVICES),
             &vmspec.disable_services,
         )?;
@@ -767,6 +764,7 @@ fn start_service(service_ref: Arc<Mutex<dyn Service>>) -> Result<()> {
 }
 
 fn find_enabled_services(
+    aws_ctx: &AwsCtx,
     path: &Path,
     disabled_services: &[String],
 ) -> Result<Vec<Arc<Mutex<dyn Service>>>> {
@@ -783,7 +781,12 @@ fn find_enabled_services(
         } else if entry_name == "chrony" {
             services.push(Arc::new(Mutex::new(Chrony::new())));
         } else if entry_name == "ssh" {
-            services.push(Arc::new(Mutex::new(Ssh::new())));
+            let imds_client = aws_ctx.imds()?;
+            if let Some(ssh_pub_key) = imds_client.get_ssh_key()? {
+                services.push(Arc::new(Mutex::new(Ssh::new(ssh_pub_key))));
+            } else {
+                info!("Disabling service ssh as no public key was assigned");
+            }
         } else {
             warn!("Unknown service {}", entry_name);
         }

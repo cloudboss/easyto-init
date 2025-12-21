@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -8,27 +8,27 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use base64::prelude::*;
-use crossbeam::channel::{bounded, Select};
+use crossbeam::channel::{Select, bounded};
 use crossbeam::sync::WaitGroup;
 use crossbeam::utils::Backoff;
 use k8s_expand::{expand, mapping_func_for};
-use log::{debug, error, info, Level};
-use minaws::imds::{self, Credentials, Imds};
-use minaws::request;
-use rustix::fs::{chown, stat, symlink, Gid, Mode, Uid};
+use log::{Level, debug, error, info};
+use rustix::fs::{Gid, Mode, Uid, chown, stat, symlink};
 use rustix::io::Errno;
-use rustix::mount::{mount, mount_remount, unmount, MountFlags, UnmountFlags};
+use rustix::mount::{MountFlags, UnmountFlags, mount, mount_remount, unmount};
 use rustix::process::{chdir, umask};
 use rustix::runtime::execve;
 use rustix::thread::{set_thread_gid, set_thread_uid};
 
 use crate::aws::asm::AsmClient;
+use crate::aws::aws::AwsCtx;
 use crate::aws::ec2::Ec2Client;
+use crate::aws::imds::ImdsClient;
 use crate::aws::s3::S3Client;
 use crate::aws::ssm::SsmClient;
-use crate::fs::{mkdir_p, Link, Mount};
+use crate::fs::{Link, Mount, mkdir_p};
 use crate::service::Supervisor;
 use crate::system::{device_has_fs, link_nvme_devices, resize_root_volume};
 use crate::uevent::start_uevent_listener;
@@ -43,8 +43,16 @@ use crate::{constants, container};
 pub fn initialize() -> Result<()> {
     let base_dir = "/";
 
-    let imds_client = Imds::default();
-    let user_data_opt = UserData::from_imds(&imds_client).map_err(|e| anyhow!("{}", e))?;
+    let aws_ctx = AwsCtx::new()?;
+    let imds_client = aws_ctx.imds()?;
+    let user_data_opt = imds_client.get_user_data().and_then(|user_data_str_opt| {
+        if let Some(user_data_str) = user_data_str_opt {
+            let user_data = UserData::from_string(&user_data_str)?;
+            Ok(user_data)
+        } else {
+            Ok(None)
+        }
+    })?;
 
     let debug = user_data_opt
         .as_ref()
@@ -77,46 +85,30 @@ pub fn initialize() -> Result<()> {
     debug!("VM spec: {:?}", vmspec);
 
     vmspec.set_sysctls(base_dir)?;
-    let aws_region = imds_client
-        .get_region()
-        .map_err(|e| anyhow!("unable to get AWS region from IMDS: {}", e))?;
-    debug!("AWS region: {}", aws_region);
 
     resize_root_volume().map_err(|e| anyhow!("unable to resize root volume: {}", e))?;
 
-    let credentials_opt = try_get_imds_credentials(&imds_client, &vmspec)?;
-    let ec2_client = try_get_ec2_client(&vmspec, credentials_opt.clone(), &aws_region);
-    let s3_client = try_get_s3_client(&vmspec, credentials_opt.clone(), &aws_region);
-    let asm_client = try_get_asm_client(&vmspec, credentials_opt.clone(), &aws_region);
-    let ssm_client = try_get_ssm_client(&vmspec, credentials_opt.clone(), &aws_region);
     for volume in &vmspec.volumes {
         debug!("Processing volume {:?}", volume);
         if let Some(source) = &volume.ebs {
-            handle_volume_ebs(&ec2_client, &imds_client, source)?;
+            let ec2_client = aws_ctx.ec2()?;
+            handle_volume_ebs(ec2_client, imds_client, source)?;
         }
         if let Some(source) = &volume.s3 {
-            handle_volume_s3(s3_client.as_ref().unwrap(), Path::new(base_dir), source)?;
+            let s3_client = aws_ctx.s3()?;
+            handle_volume_s3(s3_client, Path::new(base_dir), source)?;
         }
         if let Some(source) = &volume.secrets_manager {
-            handle_volume_secretsmanager(
-                asm_client.as_ref().unwrap(),
-                Path::new(base_dir),
-                source,
-            )?;
+            let asm_client = aws_ctx.asm()?;
+            handle_volume_secretsmanager(asm_client, Path::new(base_dir), source)?;
         }
         if let Some(source) = &volume.ssm {
-            handle_volume_ssm(ssm_client.as_ref().unwrap(), Path::new(base_dir), source)?;
+            let ssm_client = aws_ctx.ssm()?;
+            handle_volume_ssm(ssm_client, Path::new(base_dir), source)?;
         }
     }
 
-    let resolved_env = resolve_all_envs(
-        &imds_client,
-        credentials_opt.clone(),
-        &aws_region,
-        &vmspec.env,
-        &vmspec.env_from,
-    )
-    .map_err(|e| {
+    let resolved_env = resolve_all_envs(&aws_ctx, &vmspec.env, &vmspec.env_from).map_err(|e| {
         anyhow!(
             "unable to resolve environment variables from external sources: {}",
             e
@@ -130,114 +122,13 @@ pub fn initialize() -> Result<()> {
     vmspec.run_init_scripts(base_dir, &resolved_env)?;
 
     if vmspec.replace_init {
+        drop(aws_ctx);
         replace_init(vmspec, command, resolved_env)?;
     } else {
-        supervise(vmspec, command, resolved_env)?;
+        supervise(vmspec, command, resolved_env, &aws_ctx)?;
     }
 
     Ok(())
-}
-
-fn try_get_imds_credentials(imds_client: &Imds, vmspec: &VmSpec) -> Result<Option<Credentials>> {
-    let aws_env_from_count = vmspec
-        .env_from
-        .iter()
-        .filter(|source| {
-            source.s3.is_some() || source.secrets_manager.is_some() || source.ssm.is_some()
-        })
-        .count();
-    let aws_vol_count = vmspec
-        .volumes
-        .iter()
-        .filter(|vol| {
-            vol.ebs.as_ref().is_some_and(|ebs| ebs.attachment.is_some())
-                || vol.s3.is_some()
-                || vol.secrets_manager.is_some()
-                || vol.ssm.is_some()
-        })
-        .count();
-
-    if aws_env_from_count + aws_vol_count == 0 {
-        return Ok(None);
-    }
-
-    imds_client.get_credentials().map_or_else(
-        |e| match e {
-            imds::Error::Request(ref req_err) => match **req_err {
-                request::Error::Api(404, _) => {
-                    Err(anyhow!("user data configuration requires IAM credentials"))
-                }
-                _ => Err(anyhow!("unable to get IAM credentials: {}", e)),
-            },
-            _ => Err(anyhow!("unable to get IAM credentials: {}", e)),
-        },
-        |credentials| Ok(Some(credentials)),
-    )
-}
-
-fn try_get_ec2_client(
-    vmspec: &VmSpec,
-    credentials_opt: Option<Credentials>,
-    aws_region: &str,
-) -> Option<Ec2Client> {
-    let attachment_count = vmspec
-        .volumes
-        .iter()
-        .filter(|vol| vol.ebs.is_some())
-        .filter(|vol| vol.ebs.as_ref().unwrap().attachment.is_some())
-        .count();
-    if attachment_count > 0 {
-        Some(Ec2Client::new(credentials_opt.unwrap(), aws_region))
-    } else {
-        None
-    }
-}
-
-fn try_get_s3_client(
-    vmspec: &VmSpec,
-    credentials_opt: Option<Credentials>,
-    aws_region: &str,
-) -> Option<S3Client> {
-    let s3_count = vmspec.volumes.iter().filter(|vol| vol.s3.is_some()).count();
-    if s3_count > 0 {
-        Some(S3Client::new(credentials_opt.unwrap(), aws_region))
-    } else {
-        None
-    }
-}
-
-fn try_get_asm_client(
-    vmspec: &VmSpec,
-    credentials_opt: Option<Credentials>,
-    aws_region: &str,
-) -> Option<AsmClient> {
-    let asm_count = vmspec
-        .volumes
-        .iter()
-        .filter(|vol| vol.secrets_manager.is_some())
-        .count();
-    if asm_count > 0 {
-        Some(AsmClient::new(credentials_opt.unwrap(), aws_region))
-    } else {
-        None
-    }
-}
-
-fn try_get_ssm_client(
-    vmspec: &VmSpec,
-    credentials_opt: Option<Credentials>,
-    aws_region: &str,
-) -> Option<SsmClient> {
-    let ssm_count = vmspec
-        .volumes
-        .iter()
-        .filter(|vol| vol.ssm.is_some())
-        .count();
-    if ssm_count > 0 {
-        Some(SsmClient::new(credentials_opt.unwrap(), aws_region))
-    } else {
-        None
-    }
 }
 
 fn base_links() -> Result<()> {
@@ -396,8 +287,8 @@ fn wait_for_device(device: &str, timeout: Duration) -> Result<()> {
 }
 
 fn handle_volume_ebs(
-    ec2_client: &Option<Ec2Client>,
-    imds_client: &Imds,
+    ec2_client: &Ec2Client,
+    imds_client: &ImdsClient,
     volume: &EbsVolumeSource,
 ) -> Result<()> {
     info!("Handling volume {:?}", volume);
@@ -420,13 +311,11 @@ fn handle_volume_ebs(
     }
 
     if let Some(ref attachment) = volume.attachment {
-        let az_path = Path::new("placement/availability-zone");
-        let availability_zone = imds_client.get_metadata(az_path)?;
-        let id_path = Path::new("instance-id");
-        let instance_id = imds_client.get_metadata(id_path)?;
+        let availability_zone: String = imds_client
+            .get_metadata("placement/availability-zone")?
+            .into();
+        let instance_id: String = imds_client.get_metadata("instance-id")?.into();
         ec2_client
-            .as_ref()
-            .unwrap()
             .ensure_ebs_volume_attached(
                 attachment,
                 &volume.device,
@@ -568,12 +457,13 @@ fn handle_volume_secretsmanager(
     }
 }
 
-fn handle_volume_s3(s3_client: &S3Client, base_dir: &Path, volume: &S3VolumeSource) -> Result<()> {
+fn handle_volume_s3(s3: &S3Client, base_dir: &Path, volume: &S3VolumeSource) -> Result<()> {
     let s3_url = format!("s3://{}/{}", volume.bucket, volume.key_prefix);
-    match s3_client.get_object_list(&volume.bucket, &volume.key_prefix) {
+    match s3.get_object_list(&volume.bucket, &volume.key_prefix) {
         Ok(mut objects) => {
             debug!("S3 objects: {:?}", objects);
             for object in objects.iter_mut() {
+                object.materialize()?;
                 let dest = Path::new(base_dir).join(&volume.mount.destination);
                 debug!("S3 object dest: {:?}", &dest);
                 object
@@ -636,28 +526,18 @@ where
     }
 }
 
-fn resolve_env_from_imds(source: &ImdsEnvSource, imds: &Imds) -> Result<NameValues> {
-    let value = imds.get_metadata(Path::new(&source.path))?;
+fn resolve_env_from_imds(source: &ImdsEnvSource, imds_client: &ImdsClient) -> Result<NameValues> {
+    let value = imds_client.get_metadata(&source.path)?;
     let nv = NameValue {
         name: source.name.clone(),
-        value,
+        value: value.into(),
     };
     Ok(vec![nv])
 }
 
-fn resolve_env_from_s3(
-    source: &S3EnvSource,
-    credentials: Credentials,
-    region: &str,
-) -> Result<NameValues> {
-    let get_bytes = || {
-        let client = S3Client::new(credentials.clone(), region);
-        client.get_object_bytes(&source.bucket, &source.key)
-    };
-    let get_map = || {
-        let client = S3Client::new(credentials.clone(), region);
-        client.get_object_map(&source.bucket, &source.key)
-    };
+fn resolve_env_from_s3(source: &S3EnvSource, client: &S3Client) -> Result<NameValues> {
+    let get_bytes = || client.get_object_bytes(&source.bucket, &source.key);
+    let get_map = || client.get_object_map(&source.bucket, &source.key);
     resolve_env_from(
         source.name.as_ref().unwrap_or(&"".into()),
         source.base64_encode.unwrap_or_default(),
@@ -668,10 +548,8 @@ fn resolve_env_from_s3(
 
 fn resolve_env_from_secretsmanager(
     source: &SecretsManagerEnvSource,
-    credentials: Credentials,
-    region: &str,
+    client: &AsmClient,
 ) -> Result<NameValues> {
-    let client = &AsmClient::new(credentials, region);
     let get_bytes = || client.get_secret_value(&source.secret_id);
     let get_map = || client.get_secret_map(&source.secret_id);
     resolve_env_from(
@@ -682,14 +560,9 @@ fn resolve_env_from_secretsmanager(
     )
 }
 
-fn resolve_env_from_ssm(
-    source: &SsmEnvSource,
-    credentials: Credentials,
-    region: &str,
-) -> Result<NameValues> {
-    let client = &SsmClient::new(credentials, region);
-    let get_bytes = || client.get_parameter_value(&source.path);
-    let get_map = || client.get_parameter_map(&source.path);
+fn resolve_env_from_ssm(source: &SsmEnvSource, ssm_client: &SsmClient) -> Result<NameValues> {
+    let get_bytes = || ssm_client.get_parameter_value(&source.path);
+    let get_map = || ssm_client.get_parameter_map(&source.path);
     resolve_env_from(
         source.name.as_ref().unwrap_or(&"".into()),
         source.base64_encode.unwrap_or_default(),
@@ -699,9 +572,7 @@ fn resolve_env_from_ssm(
 }
 
 fn resolve_all_envs(
-    imds: &Imds,
-    credentials_opt: Option<Credentials>,
-    region: &str,
+    aws_ctx: &AwsCtx,
     env: &NameValues,
     env_from: &EnvFromSources,
 ) -> Result<NameValues> {
@@ -709,31 +580,32 @@ fn resolve_all_envs(
 
     for source in env_from.iter() {
         if let Some(imds_source) = &source.imds {
-            match resolve_env_from_imds(imds_source, imds) {
+            let imds_client = aws_ctx.imds()?;
+            match resolve_env_from_imds(imds_source, imds_client) {
                 Ok(imds_env) => resolved_env.extend(imds_env),
                 Err(_) if imds_source.optional.unwrap_or_default() => (),
                 Err(e) => return Err(e),
             }
         }
         if let Some(s3_source) = &source.s3 {
-            let credentials = credentials_opt.clone().unwrap();
-            match resolve_env_from_s3(s3_source, credentials, region) {
+            let s3_client = aws_ctx.s3()?;
+            match resolve_env_from_s3(s3_source, s3_client) {
                 Ok(s3_env) => resolved_env.extend(s3_env),
                 Err(_) if s3_source.optional.unwrap_or_default() => (),
                 Err(e) => return Err(e),
             }
         }
         if let Some(asm_source) = &source.secrets_manager {
-            let credentials = credentials_opt.clone().unwrap();
-            match resolve_env_from_secretsmanager(asm_source, credentials, region) {
+            let asm_client = aws_ctx.asm()?;
+            match resolve_env_from_secretsmanager(asm_source, asm_client) {
                 Ok(asm_env) => resolved_env.extend(asm_env),
                 Err(_) if asm_source.optional.unwrap_or_default() => (),
                 Err(e) => return Err(e),
             }
         }
         if let Some(ssm_source) = &source.ssm {
-            let credentials = credentials_opt.clone().unwrap();
-            match resolve_env_from_ssm(ssm_source, credentials, region) {
+            let ssm_client = aws_ctx.ssm()?;
+            match resolve_env_from_ssm(ssm_source, ssm_client) {
                 Ok(ssm_env) => resolved_env.extend(ssm_env),
                 Err(_) if ssm_source.optional.unwrap_or_default() => (),
                 Err(e) => return Err(e),
@@ -838,7 +710,12 @@ fn exec(command: Vec<String>, env: Vec<NameValue>) -> Result<(), anyhow::Error> 
     Ok(())
 }
 
-fn supervise(vmspec: VmSpec, command: Vec<String>, env: NameValues) -> Result<()> {
+fn supervise(
+    vmspec: VmSpec,
+    command: Vec<String>,
+    env: NameValues,
+    aws_ctx: &AwsCtx,
+) -> Result<()> {
     // Collect the EBS mount points for later, before the supervisor drops the VmSpec.
     let mount_points: Vec<String> = vmspec
         .volumes
@@ -856,7 +733,7 @@ fn supervise(vmspec: VmSpec, command: Vec<String>, env: NameValues) -> Result<()
         })
         .collect();
 
-    let mut supervisor = Supervisor::new(vmspec, command, env)?;
+    let mut supervisor = Supervisor::new(vmspec, command, env, aws_ctx)?;
     supervisor.start()?;
     supervisor.wait();
 
