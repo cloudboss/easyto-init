@@ -44,7 +44,12 @@ use crate::{constants, container};
 pub fn initialize() -> Result<()> {
     let base_dir = "/";
 
-    let aws_ctx = AwsCtx::new()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow!("unable to create tokio runtime: {}", e))?;
+
+    let aws_ctx = AwsCtx::new(rt.handle().clone())?;
     let imds_client = aws_ctx.imds()?;
 
     init_logger(Level::Info).map_err(|e| anyhow!("unable to initialize logger: {}", e))?;
@@ -125,6 +130,7 @@ pub fn initialize() -> Result<()> {
     vmspec.run_init_scripts(base_dir, &resolved_env)?;
 
     if vmspec.replace_init {
+        drop(rt);
         drop(aws_ctx);
         replace_init(vmspec, command, resolved_env)?;
     } else {

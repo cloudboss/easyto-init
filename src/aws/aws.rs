@@ -1,13 +1,13 @@
 use anyhow::{Result, anyhow};
 use aws_config::{BehaviorVersion, SdkConfig};
 use once_cell::sync::OnceCell;
-use tokio::runtime::Runtime;
+use tokio::runtime::Handle;
 
 use crate::aws::{asm::AsmClient, ec2::Ec2Client, imds::ImdsClient, s3::S3Client, ssm::SsmClient};
 
 #[derive(Debug)]
 pub struct AwsCtx {
-    rt: Runtime,
+    rt: Handle,
     config: OnceCell<SdkConfig>,
     asm: OnceCell<AsmClient>,
     ec2: OnceCell<Ec2Client>,
@@ -17,11 +17,7 @@ pub struct AwsCtx {
 }
 
 impl AwsCtx {
-    pub fn new() -> Result<Self> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| anyhow!("unable to create tokio runtime: {}", e))?;
+    pub fn new(rt: Handle) -> Result<Self> {
         Ok(Self {
             rt,
             config: OnceCell::new(),
@@ -37,34 +33,34 @@ impl AwsCtx {
         let config = self.config()?;
         let client = aws_sdk_secretsmanager::Client::new(config);
         self.asm
-            .get_or_try_init(|| Ok(AsmClient::new(self.rt.handle().clone(), client)))
+            .get_or_try_init(|| Ok(AsmClient::new(self.rt.clone(), client)))
     }
 
     pub fn ec2(&self) -> Result<&Ec2Client> {
         let config = self.config()?;
         let client = aws_sdk_ec2::Client::new(config);
         self.ec2
-            .get_or_try_init(|| Ok(Ec2Client::new(self.rt.handle().clone(), client)))
+            .get_or_try_init(|| Ok(Ec2Client::new(self.rt.clone(), client)))
     }
 
     pub fn imds(&self) -> Result<&ImdsClient> {
         let client = aws_config::imds::Client::builder().build();
         self.imds
-            .get_or_try_init(|| Ok(ImdsClient::new(self.rt.handle().clone(), client)))
+            .get_or_try_init(|| Ok(ImdsClient::new(self.rt.clone(), client)))
     }
 
     pub fn s3(&self) -> Result<&S3Client> {
         let config = self.config()?;
         let client = aws_sdk_s3::Client::new(config);
         self.s3
-            .get_or_try_init(|| Ok(S3Client::new(self.rt.handle().clone(), client)))
+            .get_or_try_init(|| Ok(S3Client::new(self.rt.clone(), client)))
     }
 
     pub fn ssm(&self) -> Result<&SsmClient> {
         let config = self.config()?;
         let client = aws_sdk_ssm::Client::new(config);
         self.ssm
-            .get_or_try_init(|| Ok(SsmClient::new(self.rt.handle().clone(), client)))
+            .get_or_try_init(|| Ok(SsmClient::new(self.rt.clone(), client)))
     }
 
     fn config(&self) -> Result<&SdkConfig> {
