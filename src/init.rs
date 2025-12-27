@@ -29,6 +29,7 @@ use crate::aws::imds::ImdsClient;
 use crate::aws::s3::S3Client;
 use crate::aws::ssm::SsmClient;
 use crate::fs::{Link, Mount, mkdir_p};
+use crate::logger::{init_logger, set_log_level};
 use crate::service::Supervisor;
 use crate::system::{device_has_fs, link_nvme_devices, resize_root_volume};
 use crate::uevent::start_uevent_listener;
@@ -45,6 +46,9 @@ pub fn initialize() -> Result<()> {
 
     let aws_ctx = AwsCtx::new()?;
     let imds_client = aws_ctx.imds()?;
+
+    init_logger(Level::Info).map_err(|e| anyhow!("unable to initialize logger: {}", e))?;
+
     let user_data_opt = imds_client.get_user_data().and_then(|user_data_str_opt| {
         if let Some(user_data_str) = user_data_str_opt {
             let user_data = UserData::from_string(&user_data_str)?;
@@ -57,9 +61,8 @@ pub fn initialize() -> Result<()> {
     let debug = user_data_opt
         .as_ref()
         .is_some_and(|user_data| user_data.debug.unwrap_or_default());
-    simple_logger::init_with_level(if debug { Level::Trace } else { Level::Info })
-        .map_err(|e| anyhow!("unable to initialize logger: {}", e))?;
-    debug!("Initialized logger");
+    set_log_level(if debug { Level::Trace } else { Level::Info });
+    debug!("Initialized logger and set level");
 
     base_mounts()?;
     base_links()?;

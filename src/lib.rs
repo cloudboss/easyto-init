@@ -3,6 +3,7 @@ pub mod constants;
 pub mod container;
 pub mod fs;
 pub mod init;
+pub mod logger;
 pub mod login;
 pub mod rdev;
 pub mod service;

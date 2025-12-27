@@ -18,7 +18,6 @@ serde_json = { default-features = false, version = "1.0.122", features = ["std"]
 serde-xml-rs = "0.6.0"
 serde_yaml2 = "0.1.3"
 signal-hook = "0.3.17"
-simple_logger = { default-features = false, version = "5.0.0", features = ["timestamps"] }
 k8s-expand = { version = "0.1.0" }
 aws-config = "1.8.12"
 aws-sdk-ec2 = "1.198.0"
