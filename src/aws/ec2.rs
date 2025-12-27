@@ -56,6 +56,12 @@ impl Ec2ClientAsync {
         availability_zone: &str,
         instance_id: &str,
     ) -> Result<()> {
+        if self
+            .ebs_volume_attached(attachment, device, instance_id)
+            .await?
+        {
+            return Ok(());
+        }
         let volume_id = self
             .wait_for_ebs_volume(attachment, availability_zone)
             .await?;
@@ -68,6 +74,57 @@ impl Ec2ClientAsync {
             .await
             .map_err(|e| anyhow!("unable to attach EBS volume: {}", e.into_service_error()))?;
         Ok(())
+    }
+
+    async fn ebs_volume_attached(
+        &self,
+        attachment: &EbsVolumeAttachment,
+        device: &str,
+        instance_id: &str,
+    ) -> Result<bool> {
+        let mut desc_vol = self
+            .client
+            .describe_volumes()
+            .filters(
+                Filter::builder()
+                    .name("attachment.instance-id")
+                    .values(instance_id)
+                    .build(),
+            )
+            .filters(
+                Filter::builder()
+                    .name("attachment.device")
+                    .values(device)
+                    .build(),
+            );
+        for tag in &attachment.tags {
+            let filters = if let Some(ref value) = tag.value {
+                Filter::builder()
+                    .name(format!("tag:{}", tag.key))
+                    .values(value)
+                    .build()
+            } else {
+                Filter::builder()
+                    .name("tag-key")
+                    .values(tag.key.clone())
+                    .build()
+            };
+            desc_vol = desc_vol.filters(filters);
+        }
+        match desc_vol.clone().send().await {
+            Ok(vol_out) => {
+                if let Some(ref vols) = vol_out.volumes {
+                    return Ok(!vols.is_empty());
+                }
+            }
+            Err(e) => {
+                return Err(anyhow!(
+                    "error describing EBS volumes: {}",
+                    e.into_service_error()
+                ));
+            }
+        }
+        Ok(false)
     }
 
     async fn wait_for_ebs_volume(
