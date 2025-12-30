@@ -30,6 +30,7 @@ use crate::aws::s3::S3Client;
 use crate::aws::ssm::SsmClient;
 use crate::fs::{Link, Mount, mkdir_p};
 use crate::logger::{init_logger, set_log_level};
+use crate::network::initialize_network;
 use crate::service::Supervisor;
 use crate::system::{device_has_fs, link_nvme_devices, resize_root_volume};
 use crate::uevent::start_uevent_listener;
@@ -53,6 +54,8 @@ pub fn initialize() -> Result<()> {
     let imds_client = aws_ctx.imds()?;
 
     init_logger(Level::Info).map_err(|e| anyhow!("unable to initialize logger: {}", e))?;
+
+    initialize_network(rt.handle().clone(), imds_client.client_async())?;
 
     let user_data_opt = imds_client.get_user_data().and_then(|user_data_str_opt| {
         if let Some(user_data_str) = user_data_str_opt {

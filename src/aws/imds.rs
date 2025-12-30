@@ -3,6 +3,8 @@ use aws_config::imds::client::{
     SensitiveString,
     error::{ErrorResponse, ImdsError},
 };
+use crossbeam::utils::Backoff;
+use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 
 #[derive(Clone, Debug)]
@@ -18,6 +20,10 @@ impl ImdsClient {
             rt,
             client: client_async,
         }
+    }
+
+    pub fn client_async(&self) -> &ImdsClientAsync {
+        &self.client
     }
 
     pub fn get_user_data(&self) -> Result<Option<String>> {
@@ -69,6 +75,23 @@ impl ImdsClientAsync {
             .get(&full_path)
             .await
             .map_err(|e| anyhow!("failed to get {} from IMDS: {}", &full_path, e))
+    }
+
+    pub async fn wait_for(&self, timeout: Duration) -> Result<()> {
+        let start = Instant::now();
+        let backoff = Backoff::new();
+        let path = "/latest/meta-data/instance-id";
+        loop {
+            match self.client.get(path).await {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    if start.elapsed() >= timeout {
+                        return Err(anyhow!("failed to wait for IMDS: {}", e));
+                    }
+                    backoff.snooze();
+                }
+            }
+        }
     }
 
     fn is_not_found(&self, error: &ErrorResponse) -> bool {

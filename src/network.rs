@@ -1,0 +1,774 @@
+use anyhow::{Context, Result, anyhow};
+use chrono::Utc;
+use crossbeam::utils::Backoff;
+use futures::{Stream, StreamExt};
+use log::{info, warn};
+use netlink_packet_route::address::{AddressAttribute as AddrAttr, AddressMessage};
+use netlink_packet_route::link::{InfoKind, LinkInfo};
+use netlink_packet_route::link::{LinkAttribute, LinkMessage};
+use rtnetlink::{
+    Error as NlError, Handle as NlHandle, LinkUnspec, RouteMessageBuilder, new_connection,
+};
+use rustix::fs::Mode;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::Path;
+use std::time::SystemTime;
+use std::time::{Duration, Instant};
+use tokio::runtime::Handle as RtHandle;
+
+use crate::aws::imds::ImdsClientAsync;
+use crate::constants::DIR_ET_ETC;
+use crate::dhcp::run_dhcp_on_interface;
+use crate::fs::{atomic_write, mkdir_p};
+
+#[derive(Debug, Clone)]
+pub(crate) struct InterfaceInfo {
+    name: String,
+    mac: Option<[u8; 6]>,
+    is_virtual: bool,
+    ifindex: u32,
+}
+
+trait InterfaceInfoSliceExt {
+    fn find_by_mac(&self, target_mac: &str) -> Option<InterfaceInfo>;
+}
+
+impl InterfaceInfoSliceExt for [InterfaceInfo] {
+    fn find_by_mac(&self, target_mac: &str) -> Option<InterfaceInfo> {
+        for interface in self {
+            if let Some(mac) = interface.mac {
+                if mac_to_string(mac) == target_mac {
+                    return Some(interface.clone());
+                }
+            }
+        }
+        None
+    }
+}
+
+pub(crate) struct NetlinkConnection {
+    handle: NlHandle,
+}
+
+impl NetlinkConnection {
+    pub(crate) fn new() -> Result<Self> {
+        let rt = RtHandle::try_current().map_err(|_| anyhow!("tokio is not running"))?;
+        let (connection, handle, _) =
+            new_connection().map_err(|e| anyhow!("unable to create netlink socket: {}", e))?;
+        rt.spawn(connection);
+        Ok(Self { handle })
+    }
+
+    pub(crate) async fn get_interfaces(&self) -> Result<Vec<InterfaceInfo>> {
+        let mut interfaces = Vec::new();
+        let mut links = self.handle.link().get().execute();
+        while let Some(link_res) = links.next().await {
+            let link = link_res?;
+            let interface = extract_interface(link)?;
+            interfaces.push(interface);
+        }
+        Ok(interfaces)
+    }
+
+    pub(crate) async fn link_set(&self, message: LinkMessage) -> Result<()> {
+        let err = format!("failed to set link attributes: {:?}", &message);
+        self.handle.link().set(message).execute().await.context(err)
+    }
+
+    pub(crate) async fn link_up(&self, ifindex: u32) -> Result<()> {
+        self.link_set(LinkUnspec::new_with_index(ifindex).up().build())
+            .await
+            .context("failed to set link up")
+    }
+
+    pub(crate) fn address_stream(
+        &self,
+        ifindex: Option<u32>,
+    ) -> impl Stream<Item = Result<AddressMessage, NlError>> {
+        let mut req = self.handle.address().get();
+        if let Some(i) = ifindex {
+            req = req.set_link_index_filter(i);
+        }
+        req.execute()
+    }
+
+    pub(crate) fn link_stream(&self) -> impl Stream<Item = Result<LinkMessage, NlError>> {
+        self.handle.link().get().execute()
+    }
+
+    pub(crate) async fn address_add(
+        &self,
+        ifindex: u32,
+        address: IpAddr,
+        prefix_len: u8,
+    ) -> Result<()> {
+        self.handle
+            .address()
+            .add(ifindex, address, prefix_len)
+            .execute()
+            .await
+            .context("unable to add address")
+    }
+
+    pub(crate) async fn address_del(&self, address: AddressMessage) -> Result<()> {
+        self.handle
+            .address()
+            .del(address)
+            .execute()
+            .await
+            .context("unable to add address")
+    }
+
+    pub(crate) async fn route_add(
+        &self,
+        ifindex: u32,
+        address: IpAddr,
+        gateway: IpAddr,
+        prefix_len: u8,
+    ) -> Result<()> {
+        let msg = match (address, gateway) {
+            (IpAddr::V4(a), IpAddr::V4(g)) => Some(
+                RouteMessageBuilder::<Ipv4Addr>::default()
+                    .destination_prefix(a, prefix_len)
+                    .output_interface(ifindex)
+                    .gateway(g)
+                    .build(),
+            ),
+            (IpAddr::V6(a), IpAddr::V6(g)) => Some(
+                RouteMessageBuilder::<Ipv6Addr>::default()
+                    .destination_prefix(a, prefix_len)
+                    .output_interface(ifindex)
+                    .gateway(g)
+                    .build(),
+            ),
+            _ => None,
+        }
+        .ok_or_else(|| anyhow!("invalid address or gateway"))?;
+        self.handle
+            .route()
+            .add(msg)
+            .execute()
+            .await
+            .context("failed to add route")
+    }
+
+    pub(crate) async fn route_del(
+        &self,
+        ifindex: u32,
+        address: IpAddr,
+        prefix_len: u8,
+    ) -> Result<()> {
+        let msg = match address {
+            IpAddr::V4(a) => Some(
+                RouteMessageBuilder::<Ipv4Addr>::default()
+                    .destination_prefix(a, prefix_len)
+                    .output_interface(ifindex)
+                    .build(),
+            ),
+            IpAddr::V6(a) => Some(
+                RouteMessageBuilder::<Ipv6Addr>::default()
+                    .destination_prefix(a, prefix_len)
+                    .output_interface(ifindex)
+                    .build(),
+            ),
+        }
+        .ok_or_else(|| anyhow!("invalid address or gateway"))?;
+        self.handle
+            .route()
+            .del(msg)
+            .execute()
+            .await
+            .context("failed to add route")
+    }
+
+    pub(crate) async fn link_rename(&self, ifindex: u32, new_name: &str) -> Result<()> {
+        self.link_set(
+            rtnetlink::LinkUnspec::new_with_index(ifindex)
+                .name(new_name.into())
+                .build(),
+        )
+        .await
+    }
+}
+
+pub(crate) fn initialize_network(rt: RtHandle, imds_client: &ImdsClientAsync) -> Result<()> {
+    rt.block_on(initialize_network_async(imds_client))
+}
+
+async fn initialize_network_async(imds_client: &ImdsClientAsync) -> Result<()> {
+    let nl = NetlinkConnection::new().context("failed to create netlink connection")?;
+
+    let persisted_state = load_persisted_state().unwrap_or_default();
+    let interfaces = restore_interfaces(&nl, &persisted_state).await?;
+
+    ensure_loopback(&nl, &interfaces).await?;
+
+    let (primary, bootstrap_ifindex) =
+        select_primary_interface(&nl, imds_client, &interfaces, &persisted_state).await?;
+    let final_primary = apply_primary_naming(&nl, &interfaces, &primary, &persisted_state).await?;
+
+    configure_primary_dhcp(&nl, &final_primary, bootstrap_ifindex).await?;
+
+    Ok(())
+}
+
+async fn select_primary_interface(
+    nl: &NetlinkConnection,
+    imds_client: &ImdsClientAsync,
+    interfaces: &[InterfaceInfo],
+    persisted_state: &PersistedNetworkState,
+) -> Result<(InterfaceInfo, Option<u32>)> {
+    // Check for persisted primary first.
+    if let Some(persisted_primary_mac) = persisted_state.get_primary_mac() {
+        if let Some(primary) = interfaces
+            .iter()
+            .find(|iface| iface.mac.map(mac_to_string).as_deref() == Some(&persisted_primary_mac))
+        {
+            info!("Using persisted primary interface {}", primary.name);
+            return Ok((primary.clone(), None));
+        }
+    }
+
+    // No persisted primary, bootstrap the first one found and then verify against IMDS.
+    let bootstrap_ifindex = establish_bootstrap_connectivity(nl, interfaces).await?;
+    let primary_mac = discover_primary_mac_via_imds(imds_client, Duration::from_secs(10)).await?;
+    let primary = interfaces
+        .find_by_mac(&primary_mac)
+        .ok_or_else(|| anyhow!("failed to find interface info for MAC {}", primary_mac))?;
+    info!("Using discovered primary interface {}", primary.name);
+
+    Ok((primary, Some(bootstrap_ifindex)))
+}
+
+async fn apply_primary_naming(
+    nl: &NetlinkConnection,
+    interfaces: &[InterfaceInfo],
+    chosen_primary: &InterfaceInfo,
+    persisted_state: &PersistedNetworkState,
+) -> Result<InterfaceInfo> {
+    if let Some(desired) = desired_name_for_primary(&chosen_primary.name) {
+        let indices = persisted_state.get_family_max_indices();
+        if desired != chosen_primary.name {
+            rename_interface_collision(nl, interfaces, chosen_primary.ifindex, &desired, &indices)
+                .await?;
+        }
+    }
+    // Re-enumerate after potential rename to get correct ifindex by name.
+    let final_interfaces = nl.get_interfaces().await?;
+    let desired_name = desired_name_for_primary(&chosen_primary.name)
+        .unwrap_or_else(|| chosen_primary.name.clone());
+    let primary = final_interfaces
+        .iter()
+        .find(|n| n.name == desired_name)
+        .unwrap_or(chosen_primary)
+        .clone();
+    persist_interfaces(&final_interfaces, &primary.name)?;
+    Ok(primary)
+}
+
+async fn configure_primary_dhcp(
+    nl: &NetlinkConnection,
+    primary: &InterfaceInfo,
+    bootstrap_ifindex: Option<u32>,
+) -> Result<()> {
+    nl.link_up(primary.ifindex).await?;
+
+    // Clean up bootstrap if it's different from primary.
+    if let Some(bootstrap_idx) = bootstrap_ifindex {
+        if bootstrap_idx != primary.ifindex {
+            flush_interface(nl, bootstrap_idx).await;
+            if let Some(mac) = primary.mac {
+                run_dhcp_on_interface(nl, &primary.name, primary.ifindex, mac).await?;
+            }
+        }
+    } else {
+        // No bootstrap (persisted primary) - always run DHCP.
+        if let Some(mac) = primary.mac {
+            run_dhcp_on_interface(nl, &primary.name, primary.ifindex, mac).await?;
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_interface(link: LinkMessage) -> Result<InterfaceInfo> {
+    let mut name: String = "".into();
+    let mut mac = None;
+    let mut is_virtual = false;
+    let ifindex = link.header.index;
+
+    for nla in &link.attributes {
+        match nla {
+            LinkAttribute::IfName(n) => name = n.clone(),
+            LinkAttribute::Address(addr) if addr.len() == 6 => {
+                let mut mac_arr = [0u8; 6];
+                mac_arr.copy_from_slice(&addr[..6]);
+                mac = Some(mac_arr);
+            }
+            LinkAttribute::LinkInfo(infos) => {
+                if let Some(kind) = infos.iter().find_map(|link_info| {
+                    if let LinkInfo::Kind(k) = link_info {
+                        Some(k)
+                    } else {
+                        None
+                    }
+                }) {
+                    is_virtual = is_virtual_kind(kind);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(InterfaceInfo {
+        name,
+        mac,
+        is_virtual,
+        ifindex,
+    })
+}
+
+fn is_virtual_kind(kind: &InfoKind) -> bool {
+    matches!(
+        kind,
+        InfoKind::Veth
+            | InfoKind::Vlan
+            | InfoKind::Bridge
+            | InfoKind::IpVlan
+            | InfoKind::IpVtap
+            | InfoKind::MacVlan
+            | InfoKind::MacVtap
+            | InfoKind::GreTap
+            | InfoKind::GreTap6
+            | InfoKind::IpIp
+            | InfoKind::Ip6Tnl
+            | InfoKind::SitTun
+            | InfoKind::GreTun
+            | InfoKind::GreTun6
+            | InfoKind::Vti
+            | InfoKind::Vrf
+            | InfoKind::Gtp
+            | InfoKind::Wireguard
+            | InfoKind::Xfrm
+            | InfoKind::MacSec
+            | InfoKind::Hsr
+            | InfoKind::Geneve
+            | InfoKind::Netkit
+            | InfoKind::Other(_)
+    )
+}
+
+async fn restore_interfaces(
+    nl: &NetlinkConnection,
+    persisted_state: &PersistedNetworkState,
+) -> Result<Vec<InterfaceInfo>> {
+    let persisted = persisted_state.get_names();
+    let interfaces = nl.get_interfaces().await?;
+    if persisted.is_empty() {
+        return Ok(interfaces);
+    }
+    let family_max_indices = persisted_state.get_family_max_indices();
+    let mut current = interfaces.clone();
+    for interface in interfaces {
+        if let Some(mac) = interface.mac {
+            let mac_str = mac_to_string(mac);
+            if let Some(desired) = persisted.get(&mac_str) {
+                if *desired != interface.name {
+                    rename_interface_collision(
+                        &nl,
+                        &current,
+                        interface.ifindex,
+                        desired,
+                        &family_max_indices,
+                    )
+                    .await?;
+                    current = nl.get_interfaces().await?;
+                }
+            }
+        }
+    }
+    Ok(current)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IfFamily {
+    Simple { prefix: String, index: u32 },
+    Protected,
+}
+
+fn parse_family(name: &str) -> IfFamily {
+    // Alphabetic prefix with trailing digits is Simple, anything else is Protected.
+    let chars: Vec<char> = name.chars().collect();
+    let mut i = chars.len();
+    while i > 0 && chars[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+    if i == chars.len() {
+        return IfFamily::Protected;
+    }
+    let (prefix, suffix) = name.split_at(i);
+    if !prefix.chars().all(|c| c.is_ascii_alphabetic()) {
+        return IfFamily::Protected;
+    }
+    match suffix.parse::<u32>() {
+        Ok(idx) => IfFamily::Simple {
+            prefix: prefix.to_string(),
+            index: idx,
+        },
+        Err(_) => IfFamily::Protected,
+    }
+}
+
+fn desired_name_for_primary(current: &str) -> Option<String> {
+    match parse_family(current) {
+        IfFamily::Simple { prefix, .. } => Some(format!("{}0", prefix)),
+        IfFamily::Protected => None,
+    }
+}
+
+fn name_in_use<'a>(interfaces: &'a [InterfaceInfo], name: &str) -> Option<&'a InterfaceInfo> {
+    interfaces.iter().find(|n| n.name == name)
+}
+
+fn next_family_index(
+    interfaces: &[InterfaceInfo],
+    prefix: &str,
+    indices: &HashMap<String, u32>,
+) -> u32 {
+    let mut max_idx = 0u32;
+    for interface in interfaces {
+        if let Some(rest) = interface.name.strip_prefix(prefix) {
+            if let Ok(n) = rest.parse::<u32>() {
+                if n > max_idx {
+                    max_idx = n;
+                }
+            }
+        }
+    }
+    if let Some(p) = indices.get(prefix) {
+        if *p > max_idx {
+            max_idx = *p;
+        }
+    }
+    max_idx.saturating_add(1)
+}
+
+async fn rename_interface_collision(
+    nl: &NetlinkConnection,
+    interfaces: &[InterfaceInfo],
+    primary_index: u32,
+    desired: &str,
+    indices: &HashMap<String, u32>,
+) -> Result<()> {
+    if let Some(existing) = name_in_use(interfaces, desired) {
+        if existing.ifindex == primary_index {
+            return Ok(());
+        }
+        // Collision: move the existing to prefix<n> then rename primary to desired.
+        let (prefix, n) = match parse_family(desired) {
+            IfFamily::Simple { prefix, .. } => {
+                let n = next_family_index(interfaces, &prefix, indices);
+                (prefix, n)
+            }
+            IfFamily::Protected => {
+                return Err(anyhow!(
+                    "BUG: attempted to rename interface {}, this should never happen",
+                    desired
+                ));
+            }
+        };
+        let new_existing = format!("{}{}", prefix, n);
+        nl.link_rename(existing.ifindex, &new_existing).await?;
+        nl.link_rename(primary_index, desired).await?;
+        Ok(())
+    } else {
+        nl.link_rename(primary_index, desired).await
+    }
+}
+
+async fn ensure_loopback(nl: &NetlinkConnection, interfaces: &[InterfaceInfo]) -> Result<()> {
+    if let Some(lo) = interfaces.iter().find(|n| n.name == "lo") {
+        let mut have_v4 = false;
+        let mut have_v6 = false;
+        let lo_ipv4 = Ipv4Addr::new(127, 0, 0, 1);
+        let lo_ipv6 = Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1);
+
+        nl.link_up(lo.ifindex).await?;
+        let mut addresses = nl.address_stream(Some(lo.ifindex));
+        while let Some(msg_res) = addresses.next().await {
+            let msg = msg_res?;
+            for nla in &msg.attributes {
+                if let AddrAttr::Address(ip) = nla {
+                    match ip {
+                        IpAddr::V4(a) => {
+                            if *a == lo_ipv4 {
+                                have_v4 = true;
+                            }
+                        }
+                        IpAddr::V6(a) => {
+                            if *a == lo_ipv6 {
+                                have_v6 = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !have_v4 {
+            info!("Adding loopback IPv4 127.0.0.1/8");
+            nl.address_add(lo.ifindex, IpAddr::V4(lo_ipv4), 8).await?;
+        }
+        if !have_v6 {
+            info!("Adding loopback IPv6 ::1/128");
+            nl.address_add(lo.ifindex, IpAddr::V6(lo_ipv6), 128).await?;
+        }
+    }
+    Ok(())
+}
+
+// Best effort removal of default route and addresses on interface.
+async fn flush_interface(nl: &NetlinkConnection, ifindex: u32) {
+    let _ = nl
+        .route_del(ifindex, IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
+        .await;
+    let mut addresses = nl.address_stream(Some(ifindex));
+    while let Some(addr_result) = addresses.next().await {
+        if let Ok(a) = addr_result {
+            if a.header.index == ifindex {
+                let _ = nl.address_del(a).await;
+            }
+        }
+    }
+}
+
+async fn wait_for_carrier(nl: &NetlinkConnection, ifindex: u32, timeout: Duration) -> Result<()> {
+    let start = Instant::now();
+    let backoff = Backoff::new();
+    loop {
+        let mut links = nl.link_stream();
+        while let Some(link_res) = links.next().await {
+            let link = link_res?;
+            if link.header.index != ifindex {
+                continue;
+            }
+            for nla in &link.attributes {
+                if let netlink_packet_route::link::LinkAttribute::Carrier(c) = nla {
+                    if *c == 1 {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        if start.elapsed() >= timeout {
+            return Err(anyhow!(
+                "no carrier detected on interface within {} seconds",
+                timeout.as_secs()
+            ));
+        }
+        backoff.snooze();
+    }
+}
+
+async fn establish_bootstrap_connectivity(
+    nl: &NetlinkConnection,
+    interfaces: &[InterfaceInfo],
+) -> Result<u32> {
+    let ignored_prefixes = [
+        "lo", "veth", "docker", "br", "virbr", "vlan", "tun", "tap", "macvtap", "bond", "team",
+        "wg", "ppp", "dummy",
+    ];
+
+    info!(
+        "Found {} total interfaces for bootstrap evaluation",
+        interfaces.len()
+    );
+
+    let mut candidates: Vec<&InterfaceInfo> = interfaces
+        .iter()
+        .filter(|interface| {
+            let is_virtual = interface.is_virtual;
+            let is_ignored = ignored_prefixes
+                .iter()
+                .any(|p| interface.name.starts_with(p));
+            info!(
+                "Interface {}: virtual={}, ignored={}",
+                interface.name, is_virtual, is_ignored
+            );
+            !(is_virtual || is_ignored)
+        })
+        .collect();
+
+    info!(
+        "Found {} candidate interfaces for bootstrap",
+        candidates.len()
+    );
+
+    // Sort by index, hoping the first index is already the primary.
+    candidates.sort_by_key(|i| i.ifindex);
+
+    for interface in candidates {
+        info!("Attempting bootstrap connectivity on {}", interface.name);
+
+        if let Err(e) = nl.link_up(interface.ifindex).await {
+            warn!("Failed to bring up {}: {}", interface.name, e);
+            continue;
+        }
+        if let Err(e) = wait_for_carrier(nl, interface.ifindex, Duration::from_secs(5)).await {
+            warn!("No carrier on {}: {}", interface.name, e);
+            continue;
+        }
+        if let Some(mac) = interface.mac {
+            if run_dhcp_on_interface(nl, &interface.name, interface.ifindex, mac)
+                .await
+                .is_ok()
+            {
+                info!("Bootstrap connectivity established on {}", interface.name);
+                return Ok(interface.ifindex);
+            }
+        }
+        warn!("DHCP failed on {}", interface.name);
+    }
+    Err(anyhow!("failed to establish DHCP connectivity"))
+}
+
+async fn discover_primary_mac_via_imds(
+    imds_client: &ImdsClientAsync,
+    timeout: Duration,
+) -> Result<String> {
+    imds_client.wait_for(timeout).await?;
+
+    let macs_list: String = imds_client
+        .get_metadata("network/interfaces/macs/")
+        .await?
+        .into();
+    let macs = macs_list
+        .lines()
+        .map(|s| s.trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty());
+    for mac in macs {
+        let devnum: String = imds_client
+            .get_metadata(&format!("network/interfaces/macs/{}/device-number", mac))
+            .await?
+            .into();
+        if devnum.trim() == "0" {
+            info!("Discovered primary MAC from IMDS: {}", mac);
+            return Ok(mac);
+        }
+    }
+    Err(anyhow!("no interface found in IMDS with device number 0"))
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct InterfaceEntry {
+    iface: String,
+    mac: Option<String>,
+    family: String,
+    index: Option<u32>,
+    primary: bool,
+    present: bool,
+    last_seen: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct PersistedNetworkState {
+    interfaces: Vec<InterfaceEntry>,
+}
+
+impl PersistedNetworkState {
+    fn get_family_max_indices(&self) -> HashMap<String, u32> {
+        let mut map = HashMap::new();
+        for interface in &self.interfaces {
+            if interface.family != "protected" && !interface.family.is_empty() {
+                if let Some(idx) = interface.index {
+                    let entry = map.entry(interface.family.clone()).or_insert(0);
+                    if idx > *entry {
+                        *entry = idx;
+                    }
+                }
+            }
+        }
+        map
+    }
+
+    fn get_primary_mac(&self) -> Option<String> {
+        self.interfaces
+            .iter()
+            .find(|iface| iface.primary)
+            .and_then(|iface| iface.mac.as_ref())
+            .filter(|mac| !mac.is_empty())
+            .cloned()
+    }
+
+    fn get_names(&self) -> HashMap<String, String> {
+        self.interfaces
+            .iter()
+            .filter(|iface| iface.family != "protected" && !iface.family.is_empty())
+            .filter_map(|iface| match (&iface.mac, &iface.iface) {
+                (Some(mac), name) if !mac.is_empty() && !name.is_empty() => {
+                    Some((mac.clone(), name.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn mac_to_string(mac: [u8; 6]) -> String {
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    )
+}
+
+fn family_info(name: &str) -> (String, Option<u32>) {
+    match parse_family(name) {
+        IfFamily::Simple { prefix, index } => (prefix, Some(index)),
+        IfFamily::Protected => ("protected".to_string(), None),
+    }
+}
+
+fn persist_interfaces(interfaces: &[InterfaceInfo], primary_name: &str) -> Result<()> {
+    let dt: chrono::DateTime<Utc> = SystemTime::now().into();
+    let now = dt.to_rfc3339();
+    let entries: Vec<InterfaceEntry> = interfaces
+        .iter()
+        .map(|n| {
+            let (family, idx) = family_info(&n.name);
+            InterfaceEntry {
+                iface: n.name.clone(),
+                mac: n.mac.map(mac_to_string),
+                family,
+                index: idx,
+                primary: n.name == primary_name,
+                present: true,
+                last_seen: now.clone(),
+            }
+        })
+        .collect();
+
+    let payload = json!({ "interfaces": entries });
+    let dir = format!("{}/net", DIR_ET_ETC);
+    mkdir_p(Path::new(&dir), Mode::from(0o755))?;
+    let path = format!("{}/interfaces.json", dir);
+
+    atomic_write(&path, |mut f| {
+        let s = serde_json::to_string_pretty(&payload)
+            .map_err(|e| anyhow!("unable to convert payload to string: {}", e))?;
+        f.write_all(s.as_bytes())
+            .map_err(|e| anyhow!("unable to write {}: {}", path, e))
+    })
+}
+
+fn load_persisted_state() -> Result<PersistedNetworkState> {
+    let path = format!("{}/net/interfaces.json", DIR_ET_ETC);
+    let data = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return Ok(PersistedNetworkState::default()),
+    };
+    serde_json::from_str(&data).map_err(|e| anyhow!("unable to parse {}: {}", path, e))
+}

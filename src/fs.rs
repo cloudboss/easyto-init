@@ -1,14 +1,14 @@
 use std::{
     ffi::CString,
-    fs::create_dir,
-    path::{Path, PathBuf, MAIN_SEPARATOR_STR},
+    fs::{File, create_dir, rename},
+    path::{MAIN_SEPARATOR_STR, Path, PathBuf},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{Context, Result, anyhow};
 use log::debug;
 use rustix::{
-    fs::{chmod, chown, Gid, Mode, Uid},
-    mount::{mount, MountFlags},
+    fs::{Gid, Mode, Uid, chmod, chown},
+    mount::{MountFlags, mount},
 };
 
 #[derive(Debug)]
@@ -92,6 +92,48 @@ impl JoinRelative for Path {
             Path::join(self, p)
         }
     }
+}
+
+pub fn atomic_write<P: AsRef<Path>>(
+    path: P,
+    write: impl FnOnce(&File) -> Result<()>,
+) -> Result<()> {
+    let p = path.as_ref();
+    let p_str = p.to_string_lossy();
+
+    let dir_name = if p.is_absolute() {
+        p.parent().unwrap_or(Path::new("/"))
+    } else {
+        p.parent()
+            .map(|d| {
+                if d.to_string_lossy().is_empty() {
+                    Path::new(".")
+                } else {
+                    d
+                }
+            })
+            .ok_or_else(|| anyhow!("invalid path {}", p_str))?
+    };
+    let file_name = p
+        .file_name()
+        .ok_or_else(|| anyhow!("invalid path {}", p_str))?;
+    let file_name_tmp = dir_name.join(format!(".{}.tmp", file_name.to_string_lossy()));
+
+    {
+        let f = File::create(&file_name_tmp)?;
+        write(&f).context(format!("unable to write {}", p_str))?;
+        f.sync_all().context(format!("unable to sync {}", p_str))?;
+    }
+
+    rename(&file_name_tmp, p).context(format!(
+        "unable to rename {} to {}",
+        file_name_tmp.to_string_lossy(),
+        p_str
+    ))?;
+    let dir_name_str = dir_name.to_string_lossy();
+    let dir = File::open(dir_name).context(format!("unable to open directory {}", dir_name_str))?;
+    dir.sync_all()
+        .context(format!("unable to sync directory {}", dir_name_str))
 }
 
 #[cfg(test)]

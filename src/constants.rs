@@ -19,6 +19,7 @@ pub const DIR_SYS_KERNEL_DEBUG: &str = "/sys/kernel/debug";
 
 pub const FILE_ETC_GROUP: &str = "/etc/group";
 pub const FILE_ETC_PASSWD: &str = "/etc/passwd";
+pub const FILE_ETC_RESOLV_CONF: &str = "/etc/resolv.conf";
 pub const FILE_METADATA: &str = "metadata.json";
 
 pub const GROUP_NAME_WHEEL: &str = "wheel";
