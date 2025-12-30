@@ -23,7 +23,7 @@ use rustix::runtime::execve;
 use rustix::thread::{set_thread_gid, set_thread_uid};
 
 use crate::aws::asm::AsmClient;
-use crate::aws::aws::AwsCtx;
+use crate::aws::context::AwsCtx;
 use crate::aws::ec2::Ec2Client;
 use crate::aws::imds::ImdsClient;
 use crate::aws::s3::S3Client;

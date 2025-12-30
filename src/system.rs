@@ -20,11 +20,10 @@ const SYS_BLOCK_PATH: &str = "/sys/block";
 pub fn find_executable_in_path(executable: &str, path_var: &str) -> Option<PathBuf> {
     for dir in path_var.split(":") {
         let try_path = PathBuf::from_iter([constants::DIR_ROOT, dir, executable]);
-        if let Ok(st) = stat(&try_path) {
-            if st.st_mode & 0o111 != 0 {
+        if let Ok(st) = stat(&try_path)
+            && st.st_mode & 0o111 != 0 {
                 return Some(try_path);
             }
-        }
     }
     None
 }
@@ -111,8 +110,8 @@ pub fn link_nvme_device(device: &DeviceInfo) -> Result<()> {
             .unwrap_or(ec2_device_name.into());
         let link_path = Path::new("/dev").join(link_device_name);
         debug!("linking {} to {:?}", &device.name, &link_path);
-        if let Err(e) = symlink(&device.name, &link_path) {
-            if e.kind() != ErrorKind::AlreadyExists {
+        if let Err(e) = symlink(&device.name, &link_path)
+            && e.kind() != ErrorKind::AlreadyExists {
                 return Err(anyhow!(
                     "unable to link {} to {:?}: {}",
                     &device.name,
@@ -120,7 +119,6 @@ pub fn link_nvme_device(device: &DeviceInfo) -> Result<()> {
                     e
                 ));
             }
-        }
     }
     Ok(())
 }

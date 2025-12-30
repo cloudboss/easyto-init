@@ -41,11 +41,10 @@ trait InterfaceInfoSliceExt {
 impl InterfaceInfoSliceExt for [InterfaceInfo] {
     fn find_by_mac(&self, target_mac: &str) -> Option<InterfaceInfo> {
         for interface in self {
-            if let Some(mac) = interface.mac {
-                if mac_to_string(mac) == target_mac {
+            if let Some(mac) = interface.mac
+                && mac_to_string(mac) == target_mac {
                     return Some(interface.clone());
                 }
-            }
         }
         None
     }
@@ -224,15 +223,14 @@ async fn select_primary_interface(
     persisted_state: &PersistedNetworkState,
 ) -> Result<(InterfaceInfo, Option<u32>)> {
     // Check for persisted primary first.
-    if let Some(persisted_primary_mac) = persisted_state.get_primary_mac() {
-        if let Some(primary) = interfaces
+    if let Some(persisted_primary_mac) = persisted_state.get_primary_mac()
+        && let Some(primary) = interfaces
             .iter()
             .find(|iface| iface.mac.map(mac_to_string).as_deref() == Some(&persisted_primary_mac))
         {
             info!("Using persisted primary interface {}", primary.name);
             return Ok((primary.clone(), None));
         }
-    }
 
     // No persisted primary, bootstrap the first one found and then verify against IMDS.
     let bootstrap_ifindex = establish_bootstrap_connectivity(nl, interfaces).await?;
@@ -377,10 +375,10 @@ async fn restore_interfaces(
     for interface in interfaces {
         if let Some(mac) = interface.mac {
             let mac_str = mac_to_string(mac);
-            if let Some(desired) = persisted.get(&mac_str) {
-                if *desired != interface.name {
+            if let Some(desired) = persisted.get(&mac_str)
+                && *desired != interface.name {
                     rename_interface_collision(
-                        &nl,
+                        nl,
                         &current,
                         interface.ifindex,
                         desired,
@@ -389,7 +387,6 @@ async fn restore_interfaces(
                     .await?;
                     current = nl.get_interfaces().await?;
                 }
-            }
         }
     }
     Ok(current)
@@ -442,19 +439,16 @@ fn next_family_index(
 ) -> u32 {
     let mut max_idx = 0u32;
     for interface in interfaces {
-        if let Some(rest) = interface.name.strip_prefix(prefix) {
-            if let Ok(n) = rest.parse::<u32>() {
-                if n > max_idx {
+        if let Some(rest) = interface.name.strip_prefix(prefix)
+            && let Ok(n) = rest.parse::<u32>()
+                && n > max_idx {
                     max_idx = n;
                 }
-            }
-        }
     }
-    if let Some(p) = indices.get(prefix) {
-        if *p > max_idx {
+    if let Some(p) = indices.get(prefix)
+        && *p > max_idx {
             max_idx = *p;
         }
-    }
     max_idx.saturating_add(1)
 }
 
@@ -538,11 +532,10 @@ async fn flush_interface(nl: &NetlinkConnection, ifindex: u32) {
         .await;
     let mut addresses = nl.address_stream(Some(ifindex));
     while let Some(addr_result) = addresses.next().await {
-        if let Ok(a) = addr_result {
-            if a.header.index == ifindex {
+        if let Ok(a) = addr_result
+            && a.header.index == ifindex {
                 let _ = nl.address_del(a).await;
             }
-        }
     }
 }
 
@@ -557,11 +550,10 @@ async fn wait_for_carrier(nl: &NetlinkConnection, ifindex: u32, timeout: Duratio
                 continue;
             }
             for nla in &link.attributes {
-                if let netlink_packet_route::link::LinkAttribute::Carrier(c) = nla {
-                    if *c == 1 {
+                if let netlink_packet_route::link::LinkAttribute::Carrier(c) = nla
+                    && *c == 1 {
                         return Ok(());
                     }
-                }
             }
         }
         if start.elapsed() >= timeout {
@@ -622,15 +614,14 @@ async fn establish_bootstrap_connectivity(
             warn!("No carrier on {}: {}", interface.name, e);
             continue;
         }
-        if let Some(mac) = interface.mac {
-            if run_dhcp_on_interface(nl, &interface.name, interface.ifindex, mac)
+        if let Some(mac) = interface.mac
+            && run_dhcp_on_interface(nl, &interface.name, interface.ifindex, mac)
                 .await
                 .is_ok()
             {
                 info!("Bootstrap connectivity established on {}", interface.name);
                 return Ok(interface.ifindex);
             }
-        }
         warn!("DHCP failed on {}", interface.name);
     }
     Err(anyhow!("failed to establish DHCP connectivity"))
@@ -683,14 +674,13 @@ impl PersistedNetworkState {
     fn get_family_max_indices(&self) -> HashMap<String, u32> {
         let mut map = HashMap::new();
         for interface in &self.interfaces {
-            if interface.family != "protected" && !interface.family.is_empty() {
-                if let Some(idx) = interface.index {
+            if interface.family != "protected" && !interface.family.is_empty()
+                && let Some(idx) = interface.index {
                     let entry = map.entry(interface.family.clone()).or_insert(0);
                     if idx > *entry {
                         *entry = idx;
                     }
                 }
-            }
         }
         map
     }

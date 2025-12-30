@@ -173,8 +173,8 @@ impl VmSpec {
 
     fn update_defaults(&mut self) {
         for volume in &mut self.volumes {
-            if let Some(ebs) = &mut volume.ebs {
-                if let Some(mount) = &mut ebs.mount {
+            if let Some(ebs) = &mut volume.ebs
+                && let Some(mount) = &mut ebs.mount {
                     if mount.group_id.is_none() {
                         mount.group_id = self.security.run_as_group_id;
                     }
@@ -185,7 +185,6 @@ impl VmSpec {
                         mount.mode = Some("0755".into());
                     }
                 }
-            }
             if let Some(s3) = &mut volume.s3 {
                 if s3.mount.group_id.is_none() {
                     s3.mount.group_id = self.security.run_as_group_id;
@@ -259,11 +258,10 @@ impl VmSpec {
         if other.debug.is_some() {
             self.debug = other.debug.unwrap();
         }
-        if let Some(disable_services) = other.disable_services {
-            if !disable_services.is_empty() {
+        if let Some(disable_services) = other.disable_services
+            && !disable_services.is_empty() {
                 self.disable_services = disable_services;
             }
-        }
         if let Some(env) = other.env {
             self.env = (&self.env).merge(&env);
         }

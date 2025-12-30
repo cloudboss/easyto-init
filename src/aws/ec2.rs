@@ -164,14 +164,12 @@ impl Ec2ClientAsync {
             match result {
                 Err(e) => debug!("error describing EBS volumes: {}", e.into_service_error()),
                 Ok(vol_out) => {
-                    if let Some(ref vols) = vol_out.volumes {
-                        if let Some(volume) = vols.first() {
-                            if let Some(volume_id) = &volume.volume_id {
+                    if let Some(ref vols) = vol_out.volumes
+                        && let Some(volume) = vols.first()
+                            && let Some(volume_id) = &volume.volume_id {
                                 debug!("found matching EBS volume: {:?}", volume);
                                 return Ok(volume_id.clone());
                             }
-                        }
-                    }
                     debug!("no EBS volume found matching filters");
                 }
             }

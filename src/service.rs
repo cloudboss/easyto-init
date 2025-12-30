@@ -24,7 +24,7 @@ use rustix::{
 use signal_hook::iterator::Signals;
 
 use crate::{
-    aws::aws::AwsCtx,
+    aws::context::AwsCtx,
     constants,
     fs::mkdir_p,
     login::{self, Find},
@@ -113,8 +113,8 @@ trait Service: Send + Sync {
         self.base().command()
     }
 
-    fn init_fn(&self) -> Option<&Box<dyn Fn() -> Result<()>>> {
-        self.base().init.as_ref()
+    fn init_fn(&self) -> Option<&dyn Fn() -> Result<()>> {
+        self.base().init.as_deref()
     }
 
     fn init_rx(&self) -> Receiver<()> {
@@ -648,8 +648,8 @@ impl Supervisor {
             Err(e) if e.raw_os_error() == Some(10) => None, // ECHILD
             Err(e) => Some(e),
         };
-        if err.is_some() {
-            info!("Main process exited with error: {:?}", err.unwrap());
+        if let Some(e) = &err {
+            info!("Main process wait error: {}", e);
         } else {
             info!("Main process exited");
         }
