@@ -699,8 +699,6 @@ fn exec(command: Vec<String>, env: Vec<NameValue>) -> Result<(), anyhow::Error> 
         .map(|arg| CString::new(arg).unwrap())
         .collect();
     let mut argv_ptrs: Vec<*const c_char> = argv_cstrings.iter().map(|arg| arg.as_ptr()).collect();
-    argv_ptrs.push(std::ptr::null());
-    let argv = argv_ptrs.as_ptr() as *const *const u8;
 
     let env_cstrings: Vec<CString> = (&env)
         .to_env_strings()
@@ -708,13 +706,29 @@ fn exec(command: Vec<String>, env: Vec<NameValue>) -> Result<(), anyhow::Error> 
         .map(|ev| CString::new(ev).unwrap())
         .collect();
     let mut env_ptrs: Vec<*const c_char> = env_cstrings.iter().map(|ev| ev.as_ptr()).collect();
+
+    // This should be checked during VMSpec validation for fail fast behavior.
+    let large_cstrings_count = argv_cstrings
+        .iter()
+        .filter(|cstring| cstring.count_bytes() as isize > isize::MAX - 1)
+        .count();
+    if large_cstrings_count > 0 {
+        return Err(anyhow!("one or more command arguments are too long"));
+    }
+
+    // SAFETY: strings are null terminated because they were created with Ctring::new()
+    // and have been verified to be within the allowed size above.
+    let path = unsafe { CStr::from_ptr(argv_cstrings[0].as_ptr()) };
+
+    // Ensure argv and envp are pointing to null terminated arrays.
+    argv_ptrs.push(std::ptr::null());
     env_ptrs.push(std::ptr::null());
+    let argv = argv_ptrs.as_ptr() as *const *const u8;
     let envp = env_ptrs.as_ptr() as *const *const u8;
 
-    let errno = unsafe {
-        let path = CStr::from_ptr(argv_cstrings[0].as_ptr());
-        execve(path, argv, envp)
-    };
+    // SAFETY: strings are null terminated because they were created with Ctring::new()
+    // and pointers to argv and envp are ensured to point to null terminated arrays above.
+    let errno = unsafe { execve(path, argv, envp) };
 
     if errno.raw_os_error() != 0 {
         return Err(anyhow!("unable to run command: {}", errno));
