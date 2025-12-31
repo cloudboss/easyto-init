@@ -173,40 +173,43 @@ impl VmSpec {
 
     fn update_defaults(&mut self) {
         for volume in &mut self.volumes {
-            if let Some(ebs) = &mut volume.ebs
-                && let Some(mount) = &mut ebs.mount {
-                    if mount.group_id.is_none() {
-                        mount.group_id = self.security.run_as_group_id;
+            match volume {
+                Volume::Ebs(ebs) => {
+                    if let Some(mount) = &mut ebs.mount {
+                        if mount.group_id.is_none() {
+                            mount.group_id = self.security.run_as_group_id;
+                        }
+                        if mount.user_id.is_none() {
+                            mount.user_id = self.security.run_as_user_id;
+                        }
+                        if mount.mode.is_none() {
+                            mount.mode = Some("0755".into());
+                        }
                     }
-                    if mount.user_id.is_none() {
-                        mount.user_id = self.security.run_as_user_id;
+                }
+                Volume::S3(s3) => {
+                    if s3.mount.group_id.is_none() {
+                        s3.mount.group_id = self.security.run_as_group_id;
                     }
-                    if mount.mode.is_none() {
-                        mount.mode = Some("0755".into());
+                    if s3.mount.user_id.is_none() {
+                        s3.mount.user_id = self.security.run_as_user_id;
                     }
                 }
-            if let Some(s3) = &mut volume.s3 {
-                if s3.mount.group_id.is_none() {
-                    s3.mount.group_id = self.security.run_as_group_id;
+                Volume::SecretsManager(secrets_manager) => {
+                    if secrets_manager.mount.group_id.is_none() {
+                        secrets_manager.mount.group_id = self.security.run_as_group_id;
+                    }
+                    if secrets_manager.mount.user_id.is_none() {
+                        secrets_manager.mount.user_id = self.security.run_as_user_id;
+                    }
                 }
-                if s3.mount.user_id.is_none() {
-                    s3.mount.user_id = self.security.run_as_user_id;
-                }
-            }
-            if let Some(secrets_manager) = &mut volume.secrets_manager {
-                if secrets_manager.mount.group_id.is_none() {
-                    secrets_manager.mount.group_id = self.security.run_as_group_id;
-                }
-                if secrets_manager.mount.user_id.is_none() {
-                    secrets_manager.mount.user_id = self.security.run_as_user_id;
-                }
-            }
-            if let Some(ssm) = &mut volume.ssm {
-                if ssm.mount.group_id.is_none() {
-                    ssm.mount.group_id = self.security.run_as_group_id;
-                }
-                if ssm.mount.user_id.is_none() {
-                    ssm.mount.user_id = self.security.run_as_user_id;
+                Volume::Ssm(ssm) => {
+                    if ssm.mount.group_id.is_none() {
+                        ssm.mount.group_id = self.security.run_as_group_id;
+                    }
+                    if ssm.mount.user_id.is_none() {
+                        ssm.mount.user_id = self.security.run_as_user_id;
+                    }
                 }
             }
         }
@@ -322,13 +325,13 @@ pub struct NameValue {
 
 pub type NameValues = Vec<NameValue>;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct EnvFromSource {
-    pub imds: Option<ImdsEnvSource>,
-    pub s3: Option<S3EnvSource>,
-    #[serde(rename = "secrets-manager")]
-    pub secrets_manager: Option<SecretsManagerEnvSource>,
-    pub ssm: Option<SsmEnvSource>,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EnvFromSource {
+    Imds(ImdsEnvSource),
+    S3(S3EnvSource),
+    SecretsManager(SecretsManagerEnvSource),
+    Ssm(SsmEnvSource),
 }
 
 pub type EnvFromSources = Vec<EnvFromSource>;
@@ -403,13 +406,13 @@ impl Security {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct Volume {
-    pub ebs: Option<EbsVolumeSource>,
-    pub s3: Option<S3VolumeSource>,
-    #[serde(rename = "secrets-manager")]
-    pub secrets_manager: Option<SecretsManagerVolumeSource>,
-    pub ssm: Option<SsmVolumeSource>,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Volume {
+    Ebs(EbsVolumeSource),
+    S3(S3VolumeSource),
+    SecretsManager(SecretsManagerVolumeSource),
+    Ssm(SsmVolumeSource),
 }
 
 pub type Volumes = Vec<Volume>;

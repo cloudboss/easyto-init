@@ -35,9 +35,9 @@ use crate::service::Supervisor;
 use crate::system::{device_has_fs, link_nvme_devices, resize_root_volume};
 use crate::uevent::start_uevent_listener;
 use crate::vmspec::{
-    EbsVolumeSource, EnvFromSources, ImdsEnvSource, NameValue, NameValues, NameValuesExt,
-    S3EnvSource, S3VolumeSource, SecretsManagerEnvSource, SecretsManagerVolumeSource, SsmEnvSource,
-    SsmVolumeSource, UserData, VmSpec,
+    EbsVolumeSource, EnvFromSource, EnvFromSources, ImdsEnvSource, NameValue, NameValues,
+    NameValuesExt, S3EnvSource, S3VolumeSource, SecretsManagerEnvSource,
+    SecretsManagerVolumeSource, SsmEnvSource, SsmVolumeSource, UserData, VmSpec, Volume,
 };
 use crate::writable::Writable;
 use crate::{constants, container};
@@ -101,21 +101,23 @@ pub fn initialize() -> Result<()> {
 
     for volume in &vmspec.volumes {
         debug!("Processing volume {:?}", volume);
-        if let Some(source) = &volume.ebs {
-            let ec2_client = aws_ctx.ec2()?;
-            handle_volume_ebs(ec2_client, imds_client, source)?;
-        }
-        if let Some(source) = &volume.s3 {
-            let s3_client = aws_ctx.s3()?;
-            handle_volume_s3(s3_client, Path::new(base_dir), source)?;
-        }
-        if let Some(source) = &volume.secrets_manager {
-            let asm_client = aws_ctx.asm()?;
-            handle_volume_secretsmanager(asm_client, Path::new(base_dir), source)?;
-        }
-        if let Some(source) = &volume.ssm {
-            let ssm_client = aws_ctx.ssm()?;
-            handle_volume_ssm(ssm_client, Path::new(base_dir), source)?;
+        match volume {
+            Volume::Ebs(ebs) => {
+                let ec2_client = aws_ctx.ec2()?;
+                handle_volume_ebs(ec2_client, imds_client, ebs)?;
+            }
+            Volume::S3(s3) => {
+                let s3_client = aws_ctx.s3()?;
+                handle_volume_s3(s3_client, Path::new(base_dir), s3)?;
+            }
+            Volume::SecretsManager(secrets_manager) => {
+                let asm_client = aws_ctx.asm()?;
+                handle_volume_secretsmanager(asm_client, Path::new(base_dir), secrets_manager)?;
+            }
+            Volume::Ssm(ssm) => {
+                let ssm_client = aws_ctx.ssm()?;
+                handle_volume_ssm(ssm_client, Path::new(base_dir), ssm)?;
+            }
         }
     }
 
@@ -591,36 +593,38 @@ fn resolve_all_envs(
     let mut resolved_env = Vec::with_capacity(env_from.len());
 
     for source in env_from.iter() {
-        if let Some(imds_source) = &source.imds {
-            let imds_client = aws_ctx.imds()?;
-            match resolve_env_from_imds(imds_source, imds_client) {
-                Ok(imds_env) => resolved_env.extend(imds_env),
-                Err(_) if imds_source.optional.unwrap_or_default() => (),
-                Err(e) => return Err(e),
+        match source {
+            EnvFromSource::Imds(imds) => {
+                let imds_client = aws_ctx.imds()?;
+                match resolve_env_from_imds(imds, imds_client) {
+                    Ok(imds_env) => resolved_env.extend(imds_env),
+                    Err(_) if imds.optional.unwrap_or_default() => (),
+                    Err(e) => return Err(e),
+                }
             }
-        }
-        if let Some(s3_source) = &source.s3 {
-            let s3_client = aws_ctx.s3()?;
-            match resolve_env_from_s3(s3_source, s3_client) {
-                Ok(s3_env) => resolved_env.extend(s3_env),
-                Err(_) if s3_source.optional.unwrap_or_default() => (),
-                Err(e) => return Err(e),
+            EnvFromSource::S3(s3) => {
+                let s3_client = aws_ctx.s3()?;
+                match resolve_env_from_s3(s3, s3_client) {
+                    Ok(s3_env) => resolved_env.extend(s3_env),
+                    Err(_) if s3.optional.unwrap_or_default() => (),
+                    Err(e) => return Err(e),
+                }
             }
-        }
-        if let Some(asm_source) = &source.secrets_manager {
-            let asm_client = aws_ctx.asm()?;
-            match resolve_env_from_secretsmanager(asm_source, asm_client) {
-                Ok(asm_env) => resolved_env.extend(asm_env),
-                Err(_) if asm_source.optional.unwrap_or_default() => (),
-                Err(e) => return Err(e),
+            EnvFromSource::SecretsManager(secrets_manager) => {
+                let asm_client = aws_ctx.asm()?;
+                match resolve_env_from_secretsmanager(secrets_manager, asm_client) {
+                    Ok(asm_env) => resolved_env.extend(asm_env),
+                    Err(_) if secrets_manager.optional.unwrap_or_default() => (),
+                    Err(e) => return Err(e),
+                }
             }
-        }
-        if let Some(ssm_source) = &source.ssm {
-            let ssm_client = aws_ctx.ssm()?;
-            match resolve_env_from_ssm(ssm_source, ssm_client) {
-                Ok(ssm_env) => resolved_env.extend(ssm_env),
-                Err(_) if ssm_source.optional.unwrap_or_default() => (),
-                Err(e) => return Err(e),
+            EnvFromSource::Ssm(ssm) => {
+                let ssm_client = aws_ctx.ssm()?;
+                match resolve_env_from_ssm(ssm, ssm_client) {
+                    Ok(ssm_env) => resolved_env.extend(ssm_env),
+                    Err(_) if ssm.optional.unwrap_or_default() => (),
+                    Err(e) => return Err(e),
+                }
             }
         }
     }
@@ -746,16 +750,12 @@ fn supervise(
     let mount_points: Vec<String> = vmspec
         .volumes
         .iter()
-        .filter(|v| v.ebs.is_some() && v.ebs.as_ref().unwrap().mount.is_some())
-        .map(|v| {
-            v.ebs
-                .as_ref()
-                .unwrap()
-                .mount
-                .as_ref()
-                .unwrap()
-                .destination
-                .clone()
+        .filter_map(|v| {
+            if let Volume::Ebs(ebs) = v {
+                ebs.mount.as_ref().map(|mount| mount.destination.clone())
+            } else {
+                None
+            }
         })
         .collect();
 
