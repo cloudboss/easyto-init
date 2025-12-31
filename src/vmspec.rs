@@ -9,7 +9,7 @@ use anyhow::{Error, Result, anyhow};
 use k8s_expand::{expand, mapping_func_for};
 use log::{debug, info};
 use rustix::fs::{Mode, chmod};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::constants;
 use crate::container::ConfigFile;
@@ -42,7 +42,7 @@ impl TryFrom<String> for UserGroupNames {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct UserData {
     pub args: Option<Vec<String>>,
@@ -72,7 +72,7 @@ impl UserData {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct VmSpec {
     pub args: Vec<String>,
@@ -310,7 +310,7 @@ impl VmSpec {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct NameValue {
     pub name: String,
     pub value: String,
@@ -318,7 +318,7 @@ pub struct NameValue {
 
 pub type NameValues = Vec<NameValue>;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EnvFromSource {
     Imds(ImdsEnvSource),
@@ -329,14 +329,14 @@ pub enum EnvFromSource {
 
 pub type EnvFromSources = Vec<EnvFromSource>;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct ImdsEnvSource {
     pub name: String,
     pub optional: Option<bool>,
     pub path: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct S3EnvSource {
     pub base64_encode: Option<bool>,
@@ -346,7 +346,7 @@ pub struct S3EnvSource {
     pub optional: Option<bool>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct SecretsManagerEnvSource {
     pub base64_encode: Option<bool>,
@@ -355,7 +355,7 @@ pub struct SecretsManagerEnvSource {
     pub secret_id: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct SsmEnvSource {
     pub base64_encode: Option<bool>,
@@ -364,7 +364,7 @@ pub struct SsmEnvSource {
     pub optional: Option<bool>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Security {
     pub readonly_root_fs: Option<bool>,
@@ -396,7 +396,7 @@ impl Security {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Volume {
     Ebs(EbsVolumeSource),
@@ -407,26 +407,26 @@ pub enum Volume {
 
 pub type Volumes = Vec<Volume>;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct EbsVolumeSource {
     pub attachment: Option<EbsVolumeAttachment>,
     pub device: String,
     pub mount: Option<Mount>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct EbsVolumeAttachment {
     pub tags: Vec<AwsTag>,
     pub timeout: Option<u64>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct AwsTag {
     pub key: String,
     pub value: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct S3VolumeSource {
     pub bucket: String,
@@ -435,7 +435,7 @@ pub struct S3VolumeSource {
     pub mount: Mount,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct SecretsManagerVolumeSource {
     pub secret_id: String,
@@ -443,14 +443,14 @@ pub struct SecretsManagerVolumeSource {
     pub optional: Option<bool>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct SsmVolumeSource {
     pub path: String,
     pub mount: Mount,
     pub optional: Option<bool>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Mount {
     pub destination: String,
