@@ -43,21 +43,17 @@ impl TryFrom<String> for UserGroupNames {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct UserData {
     pub args: Option<Vec<String>>,
     pub command: Option<Vec<String>>,
     pub debug: Option<bool>,
-    #[serde(rename = "disable-services")]
     pub disable_services: Option<Vec<String>>,
     pub env: Option<NameValues>,
-    #[serde(rename = "env-from")]
     pub env_from: Option<EnvFromSources>,
-    #[serde(rename = "init-scripts")]
     pub init_scripts: Option<Vec<String>>,
-    #[serde(rename = "replace-init")]
     pub replace_init: Option<bool>,
     pub security: Option<Security>,
-    #[serde(rename = "shutdown-grace-period")]
     pub shutdown_grace_period: Option<u64>,
     pub sysctls: Option<NameValues>,
     pub volumes: Option<Volumes>,
@@ -77,21 +73,17 @@ impl UserData {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct VmSpec {
     pub args: Vec<String>,
     pub command: Vec<String>,
     pub debug: bool,
-    #[serde(rename = "disable-services")]
     pub disable_services: Vec<String>,
     pub env: NameValues,
-    #[serde(rename = "env-from")]
     pub env_from: EnvFromSources,
-    #[serde(rename = "init-scripts")]
     pub init_scripts: Vec<String>,
-    #[serde(rename = "replace-init")]
     pub replace_init: bool,
     pub security: Security,
-    #[serde(rename = "shutdown-grace-period")]
     pub shutdown_grace_period: u64,
     pub sysctls: NameValues,
     pub volumes: Volumes,
@@ -344,8 +336,8 @@ pub struct ImdsEnvSource {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct S3EnvSource {
-    #[serde(rename = "base64-encode")]
     pub base64_encode: Option<bool>,
     pub bucket: String,
     pub key: String,
@@ -354,18 +346,17 @@ pub struct S3EnvSource {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct SecretsManagerEnvSource {
-    #[serde(rename = "base64-encode")]
     pub base64_encode: Option<bool>,
     pub name: Option<String>,
     pub optional: Option<bool>,
-    #[serde(rename = "secret-id")]
     pub secret_id: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct SsmEnvSource {
-    #[serde(rename = "base64-encode")]
     pub base64_encode: Option<bool>,
     pub name: Option<String>,
     pub path: String,
@@ -373,12 +364,10 @@ pub struct SsmEnvSource {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct Security {
-    #[serde(rename = "readonly-root-fs")]
     pub readonly_root_fs: Option<bool>,
-    #[serde(rename = "run-as-group-id")]
     pub run_as_group_id: Option<u32>,
-    #[serde(rename = "run-as-user-id")]
     pub run_as_user_id: Option<u32>,
 }
 
@@ -437,17 +426,17 @@ pub struct AwsTag {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct S3VolumeSource {
     pub bucket: String,
-    #[serde(rename = "key-prefix")]
     pub key_prefix: String,
     pub optional: Option<bool>,
     pub mount: Mount,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct SecretsManagerVolumeSource {
-    #[serde(rename = "secret-id")]
     pub secret_id: String,
     pub mount: Mount,
     pub optional: Option<bool>,
@@ -461,15 +450,13 @@ pub struct SsmVolumeSource {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct Mount {
     pub destination: String,
-    #[serde(rename = "fs-type")]
     pub fs_type: Option<String>,
-    #[serde(rename = "group-id")]
     pub group_id: Option<u32>,
     pub mode: Option<String>,
     pub options: Option<Vec<String>>,
-    #[serde(rename = "user-id")]
     pub user_id: Option<u32>,
 }
 
