@@ -25,11 +25,11 @@ struct UserGroupNames {
 impl TryFrom<String> for UserGroupNames {
     type Error = Error;
 
-    fn try_from(user_data_str: String) -> Result<Self> {
-        if user_data_str.is_empty() {
+    fn try_from(user_group_str: String) -> Result<Self> {
+        if user_group_str.is_empty() {
             return Err(anyhow!("user group string cannot be empty"));
         }
-        let mut fields = user_data_str.split(':');
+        let mut fields = user_group_str.split(':');
         let user = fields.next();
         let group = fields.next();
         if fields.next().is_some() {
