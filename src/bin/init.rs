@@ -1,7 +1,7 @@
 use std::{thread, time::Duration};
 
 use easyto_init::init;
-use rustix::system::{reboot, RebootCommand};
+use rustix::system::{RebootCommand, reboot};
 
 fn main() {
     if let Err(e) = init::initialize() {

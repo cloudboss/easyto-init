@@ -254,9 +254,10 @@ impl VmSpec {
             self.debug = other.debug.unwrap();
         }
         if let Some(disable_services) = other.disable_services
-            && !disable_services.is_empty() {
-                self.disable_services = disable_services;
-            }
+            && !disable_services.is_empty()
+        {
+            self.disable_services = disable_services;
+        }
         if let Some(env) = other.env {
             self.env = (&self.env).merge(&env);
         }

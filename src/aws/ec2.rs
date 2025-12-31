@@ -166,10 +166,11 @@ impl Ec2ClientAsync {
                 Ok(vol_out) => {
                     if let Some(ref vols) = vol_out.volumes
                         && let Some(volume) = vols.first()
-                            && let Some(volume_id) = &volume.volume_id {
-                                debug!("found matching EBS volume: {:?}", volume);
-                                return Ok(volume_id.clone());
-                            }
+                        && let Some(volume_id) = &volume.volume_id
+                    {
+                        debug!("found matching EBS volume: {:?}", volume);
+                        return Ok(volume_id.clone());
+                    }
                     debug!("no EBS volume found matching filters");
                 }
             }

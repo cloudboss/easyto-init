@@ -2,7 +2,7 @@ use std::fmt;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
-use rustix::fs::{chown, mkdir, Gid, Mode, Uid};
+use rustix::fs::{Gid, Mode, Uid, chown, mkdir};
 use rustix::io::Errno;
 use rustix::process::umask;
 

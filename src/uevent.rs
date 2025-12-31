@@ -1,12 +1,12 @@
 use std::thread;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use log::{debug, error};
 use rustix::fd::AsFd;
-use rustix::net::netlink::{SocketAddrNetlink, KOBJECT_UEVENT};
-use rustix::net::{bind, recv, socket, AddressFamily, RecvFlags, SocketType};
+use rustix::net::netlink::{KOBJECT_UEVENT, SocketAddrNetlink};
+use rustix::net::{AddressFamily, RecvFlags, SocketType, bind, recv, socket};
 
-use crate::system::{link_nvme_device, DeviceInfo};
+use crate::system::{DeviceInfo, link_nvme_device};
 
 const DELIM: &str = "=";
 const DEVNAME: &str = "DEVNAME";

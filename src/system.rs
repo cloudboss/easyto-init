@@ -1,16 +1,16 @@
-use std::fs::{write, File};
+use std::fs::{File, write};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use blkpg::resize_partition as kernel_reread_partition;
-use gpt::disk::LogicalBlockSize;
 use gpt::GptConfig;
+use gpt::disk::LogicalBlockSize;
 use log::{debug, info};
 use nvme_amz::Nvme;
 use rustix::cstr;
-use rustix::fs::{stat, symlink, Dir, FileType};
+use rustix::fs::{Dir, FileType, stat, symlink};
 
 use crate::constants;
 use crate::rdev::find_block_device;
@@ -21,9 +21,10 @@ pub fn find_executable_in_path(executable: &str, path_var: &str) -> Option<PathB
     for dir in path_var.split(":") {
         let try_path = PathBuf::from_iter([constants::DIR_ROOT, dir, executable]);
         if let Ok(st) = stat(&try_path)
-            && st.st_mode & 0o111 != 0 {
-                return Some(try_path);
-            }
+            && st.st_mode & 0o111 != 0
+        {
+            return Some(try_path);
+        }
     }
     None
 }
@@ -111,14 +112,15 @@ pub fn link_nvme_device(device: &DeviceInfo) -> Result<()> {
         let link_path = Path::new("/dev").join(link_device_name);
         debug!("linking {} to {:?}", &device.name, &link_path);
         if let Err(e) = symlink(&device.name, &link_path)
-            && e.kind() != ErrorKind::AlreadyExists {
-                return Err(anyhow!(
-                    "unable to link {} to {:?}: {}",
-                    &device.name,
-                    &link_path,
-                    e
-                ));
-            }
+            && e.kind() != ErrorKind::AlreadyExists
+        {
+            return Err(anyhow!(
+                "unable to link {} to {:?}: {}",
+                &device.name,
+                &link_path,
+                e
+            ));
+        }
     }
     Ok(())
 }

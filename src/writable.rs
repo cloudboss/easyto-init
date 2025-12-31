@@ -4,10 +4,10 @@ use std::{
     path::Path,
 };
 
-use anyhow::{anyhow, Result};
-use rustix::fs::{chown, Gid, Mode, OpenOptionsExt, Uid};
+use anyhow::{Result, anyhow};
+use rustix::fs::{Gid, Mode, OpenOptionsExt, Uid, chown};
 
-use crate::fs::{mkdir_p_own, JoinRelative};
+use crate::fs::{JoinRelative, mkdir_p_own};
 
 pub trait Writable
 where

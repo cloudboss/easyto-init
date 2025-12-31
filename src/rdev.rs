@@ -1,9 +1,9 @@
 use std::{
-    fs::{metadata, symlink_metadata, File},
+    fs::{File, metadata, symlink_metadata},
     path::{Path, PathBuf},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use rustix::fs::{Dir, FileTypeExt, MetadataExt};
 
 // Rust version of find_root_device.c in busybox.

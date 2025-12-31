@@ -288,9 +288,10 @@ async fn apply_dhcp_config(nl: &NetlinkConnection, ifindex: u32, ack_msg: &Messa
         .get(OptionCode::Router)
         .and_then(|dhcp_option| {
             if let DhcpOption::Router(routers) = dhcp_option
-                && let Some(gw) = routers.first() {
-                    return Some(*gw);
-                }
+                && let Some(gw) = routers.first()
+            {
+                return Some(*gw);
+            }
             None
         })
         .ok_or_else(|| anyhow!("no gateway returned from DHCP server"))?;
