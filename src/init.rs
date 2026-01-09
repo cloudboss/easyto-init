@@ -24,7 +24,6 @@ use rustix::thread::{set_thread_gid, set_thread_uid};
 
 use crate::aws::asm::AsmClient;
 use crate::aws::context::AwsCtx;
-use crate::aws::ec2::Ec2Client;
 use crate::aws::imds::ImdsClient;
 use crate::aws::s3::S3Client;
 use crate::aws::ssm::SsmClient;
@@ -103,8 +102,7 @@ pub fn initialize() -> Result<()> {
         debug!("Processing volume {:?}", volume);
         match volume {
             Volume::Ebs(ebs) => {
-                let ec2_client = aws_ctx.ec2()?;
-                handle_volume_ebs(ec2_client, imds_client, ebs)?;
+                handle_volume_ebs(&aws_ctx, imds_client, ebs)?;
             }
             Volume::S3(s3) => {
                 let s3_client = aws_ctx.s3()?;
@@ -301,7 +299,7 @@ fn wait_for_device(device: &str, timeout: Duration) -> Result<()> {
 }
 
 fn handle_volume_ebs(
-    ec2_client: &Ec2Client,
+    aws_ctx: &AwsCtx,
     imds_client: &ImdsClient,
     volume: &EbsVolumeSource,
 ) -> Result<()> {
@@ -329,6 +327,7 @@ fn handle_volume_ebs(
             .get_metadata("placement/availability-zone")?
             .into();
         let instance_id: String = imds_client.get_metadata("instance-id")?.into();
+        let ec2_client = aws_ctx.ec2()?;
         ec2_client
             .ensure_ebs_volume_attached(
                 attachment,
