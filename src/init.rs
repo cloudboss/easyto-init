@@ -44,6 +44,9 @@ use crate::{constants, container};
 pub fn initialize() -> Result<()> {
     let base_dir = "/";
 
+    init_logger(Level::Info).map_err(|e| anyhow!("unable to initialize logger: {}", e))?;
+    info!("Starting init process");
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -51,8 +54,6 @@ pub fn initialize() -> Result<()> {
 
     let aws_ctx = AwsCtx::new(rt.handle().clone())?;
     let imds_client = aws_ctx.imds()?;
-
-    init_logger(Level::Info).map_err(|e| anyhow!("unable to initialize logger: {}", e))?;
 
     initialize_network(rt.handle().clone(), imds_client.client_async())?;
 
