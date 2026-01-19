@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::ffi::{CStr, CString, c_char};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
@@ -43,6 +44,12 @@ use crate::{constants, container};
 
 pub fn initialize() -> Result<()> {
     let base_dir = "/";
+
+    // SAFETY: there must be no other threads writing or reading env vars
+    // concurrently, so this is called before any other threads are started.
+    unsafe {
+        env::set_var("SSL_CERT_FILE", constants::FILE_AMAZON_PEM);
+    }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -17,6 +17,7 @@ pub const DIR_SYS: &str = "/sys";
 pub const DIR_SYS_FS_CGROUP: &str = "/sys/fs/cgroup";
 pub const DIR_SYS_KERNEL_DEBUG: &str = "/sys/kernel/debug";
 
+pub const FILE_AMAZON_PEM: &str = "/.easyto/etc/amazon.pem";
 pub const FILE_ETC_GROUP: &str = "/etc/group";
 pub const FILE_ETC_PASSWD: &str = "/etc/passwd";
 pub const FILE_ETC_RESOLV_CONF: &str = "/etc/resolv.conf";
