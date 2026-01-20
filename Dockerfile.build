@@ -6,7 +6,7 @@ FROM ${FROM}
 ARG UID
 ARG GID
 
-RUN apk add musl-dev && \
+RUN apk add musl-dev qemu-system-x86_64 docker-cli && \
     rustup component add clippy
 
 RUN getent group ${GID} 2>&1 >/dev/null || addgroup -g ${GID} build && \
