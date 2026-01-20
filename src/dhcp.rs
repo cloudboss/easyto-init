@@ -4,7 +4,6 @@ use std::slice;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use crossbeam::utils::Backoff;
 use dhcproto::v4::{self, DhcpOption, Message, MessageType, OptionCode};
 use dhcproto::{Decodable, Decoder, Encodable};
 use log::{info, warn};
@@ -12,6 +11,7 @@ use rand::TryRngCore;
 use rand::rngs::OsRng;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
+use crate::backoff::RetryBackoff;
 use crate::constants::FILE_ETC_RESOLV_CONF;
 use crate::fs::atomic_write;
 use crate::network::NetlinkConnection;
@@ -67,29 +67,44 @@ pub(crate) async fn run_dhcp_on_interface(
     ifindex: u32,
     mac: [u8; 6],
 ) -> Result<()> {
-    const MAX_TRIES: usize = 3;
-    let backoff = Backoff::new();
+    let timeout = Duration::from_secs(30);
+    let cap = Duration::from_secs(5);
+    let start = Instant::now();
+    let mut backoff = RetryBackoff::new(cap);
     let mut buf: [std::mem::MaybeUninit<u8>; 1500] = [std::mem::MaybeUninit::uninit(); 1500];
-    let sock = create_dhcp_socket(interface)?;
+    let mut last_error: Option<_>;
 
-    for attempt in 0..MAX_TRIES {
+    loop {
+        let sock = match create_dhcp_socket(interface) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    "DHCP attempt on {}: failed to create socket: {}",
+                    interface, e
+                );
+                last_error = Some(e);
+                if start.elapsed() >= timeout {
+                    break;
+                }
+                backoff.wait();
+                continue;
+            }
+        };
+
         match attempt_dhcp_exchange(&sock, &mut buf, interface, ifindex, mac, nl).await {
             Ok(()) => return Ok(()),
             Err(e) => {
-                warn!(
-                    "DHCP attempt {} failed on {}: {}",
-                    attempt + 1,
-                    interface,
-                    e
-                );
-                if attempt < MAX_TRIES - 1 {
-                    backoff.snooze();
+                warn!("DHCP attempt failed on {}: {}", interface, e);
+                last_error = Some(e);
+                if start.elapsed() >= timeout {
+                    break;
                 }
+                backoff.wait();
             }
         }
     }
 
-    Err(anyhow!("all DHCP attempts failed"))
+    Err(last_error.unwrap_or_else(|| anyhow!("DHCP timed out after {:?}", timeout)))
 }
 
 fn create_dhcp_socket(interface: &str) -> Result<Socket> {
@@ -231,10 +246,10 @@ fn wait_for_dhcp_message(
     xid: u32,
     msg_type: MessageType,
 ) -> Result<Message> {
-    const READ_TIMEOUT_SECS: u64 = 3;
     let start = Instant::now();
-    let timeout = Duration::from_secs(READ_TIMEOUT_SECS);
-    let backoff = Backoff::new();
+    let timeout = Duration::from_secs(10);
+    let cap = Duration::from_secs(1);
+    let mut backoff = RetryBackoff::new(cap);
 
     loop {
         match sock.recv_from(buf) {
@@ -257,8 +272,7 @@ fn wait_for_dhcp_message(
                 if start.elapsed() >= timeout {
                     return Err(anyhow!("timeout waiting for DHCP message {:?}", msg_type));
                 }
-                backoff.snooze();
-                continue;
+                backoff.wait();
             }
             Err(e) => return Err(e.into()),
         }

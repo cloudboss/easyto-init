@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
-use crossbeam::utils::Backoff;
 use futures::{Stream, StreamExt};
 use log::{info, warn};
 use netlink_packet_route::address::{AddressAttribute as AddrAttr, AddressMessage};
@@ -22,6 +21,7 @@ use std::time::{Duration, Instant};
 use tokio::runtime::Handle as RtHandle;
 
 use crate::aws::imds::ImdsClientAsync;
+use crate::backoff::RetryBackoff;
 use crate::constants::DIR_ET_ETC;
 use crate::dhcp::run_dhcp_on_interface;
 use crate::fs::{atomic_write, mkdir_p};
@@ -201,6 +201,31 @@ pub(crate) fn initialize_network(rt: RtHandle, imds_client: &ImdsClientAsync) ->
 }
 
 async fn initialize_network_async(imds_client: &ImdsClientAsync) -> Result<()> {
+    let timeout = Duration::from_secs(60);
+    let cap = Duration::from_secs(2);
+    let start = Instant::now();
+    let mut backoff = RetryBackoff::new(cap);
+    let mut last_error: Option<_>;
+
+    loop {
+        match initialize_network_inner(imds_client).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                warn!("Network initialization attempt failed: {}", e);
+                last_error = Some(e);
+                if start.elapsed() >= timeout {
+                    break;
+                }
+                backoff.wait();
+            }
+        }
+    }
+
+    Err(last_error
+        .unwrap_or_else(|| anyhow!("network initialization timed out after {:?}", timeout)))
+}
+
+async fn initialize_network_inner(imds_client: &ImdsClientAsync) -> Result<()> {
     let nl = NetlinkConnection::new().context("failed to create netlink connection")?;
 
     let persisted_state = load_persisted_state().unwrap_or_default();
@@ -546,7 +571,8 @@ async fn flush_interface(nl: &NetlinkConnection, ifindex: u32) {
 
 async fn wait_for_carrier(nl: &NetlinkConnection, ifindex: u32, timeout: Duration) -> Result<()> {
     let start = Instant::now();
-    let backoff = Backoff::new();
+    let cap = Duration::from_millis(500);
+    let mut backoff = RetryBackoff::new(cap);
     loop {
         let mut links = nl.link_stream();
         while let Some(link_res) = links.next().await {
@@ -562,13 +588,14 @@ async fn wait_for_carrier(nl: &NetlinkConnection, ifindex: u32, timeout: Duratio
                 }
             }
         }
-        if start.elapsed() >= timeout {
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
             return Err(anyhow!(
                 "no carrier detected on interface within {} seconds",
                 timeout.as_secs()
             ));
         }
-        backoff.snooze();
+        backoff.wait();
     }
 }
 
@@ -616,7 +643,7 @@ async fn establish_bootstrap_connectivity(
             warn!("Failed to bring up {}: {}", interface.name, e);
             continue;
         }
-        if let Err(e) = wait_for_carrier(nl, interface.ifindex, Duration::from_secs(5)).await {
+        if let Err(e) = wait_for_carrier(nl, interface.ifindex, Duration::from_secs(30)).await {
             warn!("No carrier on {}: {}", interface.name, e);
             continue;
         }
