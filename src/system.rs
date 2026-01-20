@@ -157,7 +157,15 @@ pub fn link_nvme_device(device: &DeviceInfo) -> Result<()> {
 }
 
 pub fn resize_root_volume() -> Result<()> {
-    let (root_partition_device_name, root_disk_device_name) = find_root_devices()?;
+    let (root_partition_device_name, root_disk_device_name) = match find_root_devices() {
+        Ok(devices) => devices,
+        Err(e) => {
+            // No block device found. This can happen when booting from initramfs
+            // (e.g., in integration tests) where the root is RAM-based.
+            debug!("Skipping root volume resize: {}", e);
+            return Ok(());
+        }
+    };
     let root_disk_device_path = Path::new("/dev").join(&root_disk_device_name);
     debug!("root disk device path: {}", root_disk_device_path.display());
 

@@ -33,9 +33,16 @@ impl<'a> Mount<'a> {
         mkdir_p(path, self.mode)?;
         let options_cstring = self.options.map(|s| CString::new(s).unwrap());
         let options_cstr = options_cstring.as_deref();
-        mount(self.source, path, self.fs_type, self.flags, options_cstr)
-            .map_err(|e| anyhow!("unable to mount {} on {:?}: {}", self.source, path, e))?;
-        Ok(())
+        match mount(self.source, path, self.fs_type, self.flags, options_cstr) {
+            Ok(()) => Ok(()),
+            Err(rustix::io::Errno::BUSY) => {
+                // Already mounted, this is OK. This can happen in integration tests
+                // where init-wrapper mounts filesystems before handing off to init.
+                debug!("Mount point {:?} already mounted, skipping", path);
+                Ok(())
+            }
+            Err(e) => Err(anyhow!("unable to mount {} on {:?}: {}", self.source, path, e)),
+        }
     }
 }
 
