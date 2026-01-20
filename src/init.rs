@@ -95,6 +95,7 @@ pub fn initialize() -> Result<()> {
     }
     debug!("VM spec: {:?}", vmspec);
 
+    vmspec.load_modules()?;
     vmspec.set_sysctls(base_dir)?;
 
     resize_root_volume().map_err(|e| anyhow!("unable to resize root volume: {}", e))?;

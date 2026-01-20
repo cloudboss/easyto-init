@@ -14,7 +14,7 @@ use serde::Deserialize;
 use crate::constants;
 use crate::container::ConfigFile;
 use crate::login::user_group_id;
-use crate::system::{find_executable_in_path, sysctl};
+use crate::system::{find_executable_in_path, load_module, sysctl};
 
 #[derive(Debug, PartialEq)]
 struct UserGroupNames {
@@ -56,6 +56,7 @@ pub struct UserData {
     pub security: Option<Security>,
     pub shutdown_grace_period: Option<u64>,
     pub sysctls: Option<NameValues>,
+    pub modules: Option<Vec<String>>,
     pub volumes: Option<Volumes>,
     pub working_dir: Option<String>,
 }
@@ -86,6 +87,7 @@ pub struct VmSpec {
     pub security: Security,
     pub shutdown_grace_period: u64,
     pub sysctls: NameValues,
+    pub modules: Vec<String>,
     pub volumes: Volumes,
     pub working_dir: String,
 }
@@ -104,6 +106,7 @@ impl Default for VmSpec {
             security: Security::default(),
             shutdown_grace_period: 10,
             sysctls: Vec::new(),
+            modules: Vec::new(),
             volumes: Vec::new(),
             working_dir: "/".into(),
         }
@@ -279,6 +282,9 @@ impl VmSpec {
         if let Some(sysctls) = other.sysctls {
             self.sysctls = (&self.sysctls).merge(&sysctls);
         }
+        if let Some(modules) = other.modules {
+            self.modules = modules;
+        }
         if let Some(volumes) = other.volumes {
             self.volumes = volumes;
         }
@@ -305,6 +311,14 @@ impl VmSpec {
         for nv in &self.sysctls {
             debug!("Setting sysctl {}={}", &nv.name, &nv.value);
             sysctl(&base_dir, &nv.name, &nv.value)?;
+        }
+        Ok(())
+    }
+
+    pub fn load_modules(&self) -> Result<()> {
+        for module in &self.modules {
+            debug!("Loading module {}", module);
+            load_module(module)?;
         }
         Ok(())
     }

@@ -2,9 +2,11 @@ use std::fs::{File, write};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use blkpg::resize_partition as kernel_reread_partition;
+use crossbeam::utils::Backoff;
 use gpt::GptConfig;
 use gpt::disk::LogicalBlockSize;
 use log::{debug, info};
@@ -30,11 +32,40 @@ pub fn find_executable_in_path(executable: &str, path_var: &str) -> Option<PathB
 }
 
 // Write a sysctl value to the relevant file under /proc/sys.
+// Retries with backoff if the file doesn't exist yet (e.g., waiting for a
+// kernel module to finish creating the /proc entry).
 pub fn sysctl<P: AsRef<Path>>(base_dir: P, key: &str, value: &str) -> Result<()> {
     let proc_path = proc_path_from_dotted(key);
     let full_path = base_dir.as_ref().join(proc_path);
-    write(&full_path, value)
-        .map_err(|e| anyhow!("unable to write {} to {:?}: {}", value, full_path, e))?;
+    let timeout = Duration::from_secs(5);
+    let start = std::time::Instant::now();
+    let backoff = Backoff::new();
+
+    loop {
+        let elapsed = start.elapsed();
+        match write(&full_path, value) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == ErrorKind::NotFound && elapsed < timeout => {
+                debug!("sysctl {} not found yet, retrying (elapsed: {:?})", key, elapsed);
+                backoff.snooze();
+            }
+            Err(e) => {
+                return Err(anyhow!("unable to write {} to {:?}: {}", value, full_path, e));
+            }
+        }
+    }
+}
+
+pub fn load_module(name: &str) -> Result<()> {
+    let modprobe_path = Path::new(constants::DIR_ET_SBIN).join("modprobe");
+    let output = Command::new(&modprobe_path)
+        .arg(name)
+        .output()
+        .map_err(|e| anyhow!("unable to run modprobe for {}: {}", name, e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("failed to load module {}: {}", name, stderr));
+    }
     Ok(())
 }
 
