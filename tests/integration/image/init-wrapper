@@ -1,0 +1,112 @@
+#!/bin/sh
+# init-wrapper: Sets up test environment before running the real init.
+# This is specified via kernel rdinit= parameter.
+
+# Mount essential filesystems
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+
+# Log to serial console (must be after devtmpfs mount)
+log() {
+    echo "init-wrapper: $*" > /dev/ttyS0 2>&1
+}
+
+log "filesystems mounted"
+
+# Set up loopback for IMDS
+ip link set lo up
+ip addr add 127.0.0.1/8 dev lo
+ip addr add 169.254.169.254/32 dev lo
+
+log "loopback configured with 127.0.0.1 and 169.254.169.254"
+
+# Wait for eth0 to appear (don't configure - let init do DHCP)
+log "waiting for eth0"
+while ! ip link show eth0 > /dev/null 2>&1; do
+    sleep 0.1
+done
+
+log "eth0 is present"
+
+# Create mock IMDS directory structure
+IMDS_ROOT=/tmp/imds
+mkdir -p "${IMDS_ROOT}/latest/meta-data/network/interfaces/macs/52:54:00:12:34:56"
+mkdir -p "${IMDS_ROOT}/latest/meta-data/placement"
+mkdir -p "${IMDS_ROOT}/latest/api/token"
+
+# Get the actual MAC address of eth0
+ETH0_MAC=$(cat /sys/class/net/eth0/address)
+log "eth0 MAC: ${ETH0_MAC}"
+mkdir -p "${IMDS_ROOT}/latest/meta-data/network/interfaces/macs/${ETH0_MAC}"
+
+# Populate mock IMDS responses
+echo "i-test12345" > "${IMDS_ROOT}/latest/meta-data/instance-id"
+echo "test-host" > "${IMDS_ROOT}/latest/meta-data/local-hostname"
+echo "us-east-1a" > "${IMDS_ROOT}/latest/meta-data/placement/availability-zone"
+echo "${ETH0_MAC}/" > "${IMDS_ROOT}/latest/meta-data/network/interfaces/macs/index.html"
+echo "0" > "${IMDS_ROOT}/latest/meta-data/network/interfaces/macs/${ETH0_MAC}/device-number"
+echo "10.0.2.15" > "${IMDS_ROOT}/latest/meta-data/network/interfaces/macs/${ETH0_MAC}/local-ipv4s"
+echo "subnet-test123" > "${IMDS_ROOT}/latest/meta-data/network/interfaces/macs/${ETH0_MAC}/subnet-id"
+
+# User data - minimal valid YAML (note: kebab-case for field names)
+cat > "${IMDS_ROOT}/latest/user-data" << 'USERDATA'
+command: ["/test-entrypoint"]
+disable-services: ["chrony", "ssh"]
+USERDATA
+
+# IMDS token endpoint (returns a fake token)
+echo "fake-imds-token-12345" > "${IMDS_ROOT}/latest/api/token/index.html"
+
+log "IMDS mock data created"
+
+# Verify loopback setup
+log "Verifying loopback addresses..."
+ip addr show lo > /dev/ttyS0 2>&1
+
+# Start Python mock IMDS server (supports IMDSv2 tokens)
+log "Starting mock IMDS server..."
+python3 /imds_server.py "${IMDS_ROOT}" 80 169.254.169.254 2>/dev/ttyS0 &
+IMDS_PID=$!
+
+# Wait for server to be ready (Python startup can be slow on TCG emulation)
+log "Waiting for IMDS server to be ready..."
+for i in $(seq 1 100); do
+    if wget -q -O /dev/null --spider http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null; then
+        log "IMDS server ready after ${i} attempts"
+        break
+    fi
+    sleep 0.5
+done
+
+# Test IMDS is working
+log "Testing IMDS (pid ${IMDS_PID})..."
+wget -q -O - http://169.254.169.254/latest/meta-data/instance-id > /dev/ttyS0 2>&1 || log "IMDS test failed"
+log "Checking IMDS server..."
+ps | grep python > /dev/ttyS0 2>&1
+
+log "handing off to /.easyto/sbin/init with stderr -> /dev/ttyS0"
+
+# Create persisted network state so init skips network discovery
+mkdir -p /.easyto/etc/net
+cat > /.easyto/etc/net/interfaces.json << EOF
+{
+  "interfaces": [
+    {
+      "iface": "eth0",
+      "mac": "${ETH0_MAC}",
+      "family": "eth",
+      "index": 0,
+      "primary": true,
+      "present": true,
+      "last_seen": "2024-01-01T00:00:00Z"
+    }
+  ]
+}
+EOF
+
+log "Created persisted network state for eth0"
+
+# Exec init with stderr redirected to serial console
+# Note: /dev, /sys, /proc are already mounted - init handles this gracefully
+exec /.easyto/sbin/init 2>/dev/ttyS0

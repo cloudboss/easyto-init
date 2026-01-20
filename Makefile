@@ -36,6 +36,10 @@ EASYTO_ASSETS_BUILD = easyto-assets-build-$(EASYTO_ASSETS_VERSION)
 EASYTO_ASSETS_BUILD_ARCHIVE = $(EASYTO_ASSETS_BUILD).tar.gz
 EASYTO_ASSETS_BUILD_URL = $(EASYTO_ASSETS_RELEASES)/$(EASYTO_ASSETS_VERSION)/$(EASYTO_ASSETS_BUILD_ARCHIVE)
 
+EASYTO_ASSETS_RUNTIME = easyto-assets-runtime-$(EASYTO_ASSETS_VERSION)
+EASYTO_ASSETS_RUNTIME_ARCHIVE = $(EASYTO_ASSETS_RUNTIME).tar.gz
+EASYTO_ASSETS_RUNTIME_URL = $(EASYTO_ASSETS_RELEASES)/$(EASYTO_ASSETS_VERSION)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE)
+
 RUST_TARGET = x86_64-unknown-linux-musl
 
 .DEFAULT_GOAL = release
@@ -55,6 +59,16 @@ $(DIR_OUT)/Makefile.inc: FORCE $(DIR_OUT)/$(EASYTO_ASSETS_BUILD_ARCHIVE)
 
 $(DIR_OUT)/$(EASYTO_ASSETS_BUILD_ARCHIVE): | $(HAS_COMMAND_CURL) $(DIR_OUT)
 	@curl -L -o $(DIR_OUT)/$(EASYTO_ASSETS_BUILD_ARCHIVE) $(EASYTO_ASSETS_BUILD_URL)
+
+$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE): | $(HAS_COMMAND_CURL) $(DIR_OUT)
+	@curl -L -o $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE) $(EASYTO_ASSETS_RUNTIME_URL)
+
+$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/: $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE)
+	@tar -zxf $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE) -C $(DIR_OUT)
+
+$(DIR_OUT)/vmlinuz: $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/
+	@tar -xf $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/kernel.tar -C $(DIR_OUT) --strip-components=2 ./boot/ && \
+		mv $$(ls $(DIR_OUT)/vmlinuz-*) $(DIR_OUT)/vmlinuz
 
 $(DIR_STG_INIT)/$(DIR_ET)/sbin/init: \
 		$(DIR_OUT)/target/$(RUST_TARGET)/release/init | $(DIR_STG_INIT)/$(DIR_ET)/sbin/
@@ -95,9 +109,37 @@ test: $(HAS_IMAGE_LOCAL) | $(DIR_OUT)/cargo-home/registry/
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -ec "cargo clippy -- -Dwarnings; cargo test"
 
+DOCKER_GID = $(shell getent group docker | cut -d: -f3)
+
+test-integration: \
+		$(HAS_IMAGE_LOCAL) \
+		$(DIR_OUT)/target/$(RUST_TARGET)/release/init \
+		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/
+	@docker run --rm -t \
+		-v $(DIR_ROOT):/code \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		--group-add $(DOCKER_GID) \
+		-e VERBOSE=$(VERBOSE) \
+		-w /code \
+		$(CTR_IMAGE_LOCAL) /bin/sh -c "./tests/integration/run.sh"
+
+test-integration-kvm: \
+		$(HAS_IMAGE_LOCAL) \
+		$(DIR_OUT)/target/$(RUST_TARGET)/release/init \
+		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
+		$(DIR_OUT)/vmlinuz
+	@docker run --rm -t \
+		-v $(DIR_ROOT):/code \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		--group-add $(DOCKER_GID) \
+		--device=/dev/kvm \
+		-e VERBOSE=$(VERBOSE) \
+		-w /code \
+		$(CTR_IMAGE_LOCAL) /bin/sh -c "./tests/integration/run.sh"
+
 release: $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz
 
 clean:
 	@rm -rf $(DIR_OUT)
 
-.PHONY: test release clean
+.PHONY: test test-integration test-integration-kvm release clean

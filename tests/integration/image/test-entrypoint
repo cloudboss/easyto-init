@@ -1,0 +1,29 @@
+#!/bin/sh
+# Default test entrypoint - verifies basic boot succeeded.
+# Redirect all output to serial console for visibility
+
+exec >/dev/ttyS0 2>&1
+set -e
+
+echo "=== Integration Test ==="
+
+# Check that we have a network interface with an IP
+if ip addr show eth0 2>/dev/null | grep -q "inet "; then
+    echo "OK: eth0 has an IP address"
+else
+    echo "FAIL: eth0 has no IP address"
+    ip addr
+    exit 1
+fi
+
+# Check that we can resolve DNS (QEMU provides this)
+if [ -f /etc/resolv.conf ] && grep -q nameserver /etc/resolv.conf; then
+    echo "OK: /etc/resolv.conf has nameservers"
+else
+    echo "FAIL: no nameservers in /etc/resolv.conf"
+    cat /etc/resolv.conf 2>/dev/null || echo "(file missing)"
+    exit 1
+fi
+
+echo "PASS"
+poweroff -f
