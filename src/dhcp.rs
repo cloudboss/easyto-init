@@ -332,3 +332,62 @@ async fn apply_dhcp_config(nl: &NetlinkConnection, ifindex: u32, ack_msg: &Messa
 
     Ok(())
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_subnet_mask_to_prefix_24() {
+        assert_eq!(subnet_mask_to_prefix(Ipv4Addr::new(255, 255, 255, 0)), 24);
+    }
+
+    #[test]
+    fn test_subnet_mask_to_prefix_16() {
+        assert_eq!(subnet_mask_to_prefix(Ipv4Addr::new(255, 255, 0, 0)), 16);
+    }
+
+    #[test]
+    fn test_subnet_mask_to_prefix_8() {
+        assert_eq!(subnet_mask_to_prefix(Ipv4Addr::new(255, 0, 0, 0)), 8);
+    }
+
+    #[test]
+    fn test_subnet_mask_to_prefix_32() {
+        assert_eq!(subnet_mask_to_prefix(Ipv4Addr::new(255, 255, 255, 255)), 32);
+    }
+
+    #[test]
+    fn test_subnet_mask_to_prefix_0() {
+        assert_eq!(subnet_mask_to_prefix(Ipv4Addr::new(0, 0, 0, 0)), 0);
+    }
+
+    #[test]
+    fn test_subnet_mask_to_prefix_25() {
+        assert_eq!(subnet_mask_to_prefix(Ipv4Addr::new(255, 255, 255, 128)), 25);
+    }
+
+    #[test]
+    fn test_is_error_retryable_would_block() {
+        let err = io::Error::new(io::ErrorKind::WouldBlock, "would block");
+        assert!(is_error_retryable(&err));
+    }
+
+    #[test]
+    fn test_is_error_retryable_timed_out() {
+        let err = io::Error::new(io::ErrorKind::TimedOut, "timed out");
+        assert!(is_error_retryable(&err));
+    }
+
+    #[test]
+    fn test_is_error_retryable_other() {
+        let err = io::Error::new(io::ErrorKind::ConnectionRefused, "refused");
+        assert!(!is_error_retryable(&err));
+    }
+
+    #[test]
+    fn test_is_error_retryable_not_found() {
+        let err = io::Error::new(io::ErrorKind::NotFound, "not found");
+        assert!(!is_error_retryable(&err));
+    }
+}

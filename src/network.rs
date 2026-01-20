@@ -797,3 +797,72 @@ fn load_persisted_state() -> Result<PersistedNetworkState> {
     };
     serde_json::from_str(&data).map_err(|e| anyhow!("unable to parse {}: {}", path, e))
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_mac_to_string() {
+        assert_eq!(mac_to_string([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]), "00:11:22:33:44:55");
+        assert_eq!(mac_to_string([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]), "ff:ff:ff:ff:ff:ff");
+        assert_eq!(mac_to_string([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), "00:00:00:00:00:00");
+        assert_eq!(mac_to_string([0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f]), "0a:0b:0c:0d:0e:0f");
+    }
+
+    #[test]
+    fn test_parse_family_simple() {
+        assert_eq!(
+            parse_family("eth0"),
+            IfFamily::Simple { prefix: "eth".to_string(), index: 0 }
+        );
+        assert_eq!(
+            parse_family("eth123"),
+            IfFamily::Simple { prefix: "eth".to_string(), index: 123 }
+        );
+        assert_eq!(
+            parse_family("ens5"),
+            IfFamily::Simple { prefix: "ens".to_string(), index: 5 }
+        );
+    }
+
+    #[test]
+    fn test_parse_family_protected() {
+        assert_eq!(parse_family("lo"), IfFamily::Protected);
+        assert_eq!(parse_family("eth"), IfFamily::Protected);
+        assert_eq!(parse_family("docker0bridge"), IfFamily::Protected);
+    }
+
+    #[test]
+    fn test_desired_name_for_primary_simple() {
+        assert_eq!(desired_name_for_primary("eth0"), Some("eth0".to_string()));
+        assert_eq!(desired_name_for_primary("eth5"), Some("eth0".to_string()));
+        assert_eq!(desired_name_for_primary("ens192"), Some("ens0".to_string()));
+    }
+
+    #[test]
+    fn test_desired_name_for_primary_protected() {
+        assert_eq!(desired_name_for_primary("lo"), None);
+        assert_eq!(desired_name_for_primary("docker0bridge"), None);
+    }
+
+    #[test]
+    fn test_family_info_simple() {
+        assert_eq!(family_info("eth0"), ("eth".to_string(), Some(0)));
+        assert_eq!(family_info("ens5"), ("ens".to_string(), Some(5)));
+    }
+
+    #[test]
+    fn test_family_info_protected() {
+        assert_eq!(family_info("lo"), ("protected".to_string(), None));
+    }
+
+    #[test]
+    fn test_is_virtual_kind() {
+        assert!(is_virtual_kind(&InfoKind::Veth));
+        assert!(is_virtual_kind(&InfoKind::Bridge));
+        assert!(is_virtual_kind(&InfoKind::Vlan));
+        assert!(is_virtual_kind(&InfoKind::Wireguard));
+        assert!(!is_virtual_kind(&InfoKind::Dummy));
+    }
+}
