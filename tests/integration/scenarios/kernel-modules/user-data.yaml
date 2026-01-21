@@ -1,0 +1,33 @@
+disable-services:
+  - chrony
+  - ssh
+modules:
+  - nf_conntrack
+sysctls:
+  - name: net.netfilter.nf_conntrack_max
+    value: "65536"
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== kernel-modules test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    # Check that nf_conntrack module is loaded
+    if grep -q "^nf_conntrack " /proc/modules; then
+        echo "OK: nf_conntrack module is loaded"
+    else
+        echo "Loaded modules:"
+        cat /proc/modules
+        fail "nf_conntrack module not found in /proc/modules"
+    fi
+
+    # Check that the sysctl (which depends on the module) was set
+    EXPECTED="65536"
+    ACTUAL=$(cat /proc/sys/net/netfilter/nf_conntrack_max)
+    [ "${ACTUAL}" = "${EXPECTED}" ] || fail "nf_conntrack_max is '${ACTUAL}', expected '${EXPECTED}'"
+
+    echo "PASS"
