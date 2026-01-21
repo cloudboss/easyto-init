@@ -1,0 +1,11 @@
+disable-services:
+  - chrony
+  - ssh
+init-scripts:
+  - |
+    #!/nonexistent/interpreter
+    echo "this should not run"
+command:
+  - /bin/sh
+  - -c
+  - echo "FAIL - init script should have failed"
