@@ -105,6 +105,7 @@ Tests output PASS/FAIL to serial console. The runner checks for these markers.
 - Avoid placeholder comments when removing code
 - Comments should explain "why", not "what"
 - Keep commentary technical and concise
+- Do not use the `libc` crate; use `rustix` instead for system calls
 
 ### Shell Scripts
 
