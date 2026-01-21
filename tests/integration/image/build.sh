@@ -35,6 +35,11 @@ for tarball in "${EASYTO_ASSETS_RUNTIME}"/*.tar; do
     tar -xf "${tarball}" -C "${ROOTFS_DIR}"
 done
 
+# Add service users required by chrony
+log "Adding service users..."
+echo "cb-chrony:x:400:400:chrony:/var/lib/chrony:/sbin/nologin" >> "${ROOTFS_DIR}/etc/passwd"
+echo "cb-chrony:x:400:" >> "${ROOTFS_DIR}/etc/group"
+
 # Install the init binary
 log "Installing init binary..."
 install -m 0755 "${INIT_BINARY}" "${ROOTFS_DIR}/.easyto/sbin/init"
