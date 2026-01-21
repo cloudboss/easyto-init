@@ -9,6 +9,7 @@ use rtnetlink::{
     Error as NlError, Handle as NlHandle, LinkUnspec, RouteMessageBuilder, new_connection,
 };
 use rustix::fs::Mode;
+use rustix::system::sethostname;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -238,6 +239,23 @@ async fn initialize_network_inner(imds_client: &ImdsClientAsync) -> Result<()> {
     let final_primary = apply_primary_naming(&nl, &interfaces, &primary, &persisted_state).await?;
 
     configure_primary_dhcp(&nl, &final_primary, bootstrap_ifindex).await?;
+
+    set_hostname(imds_client).await?;
+
+    Ok(())
+}
+
+async fn set_hostname(imds_client: &ImdsClientAsync) -> Result<()> {
+    let hostname = imds_client
+        .get_metadata("local-hostname")
+        .await
+        .context("failed to get hostname from IMDS")?;
+
+    let hostname_str: String = hostname.into();
+    info!("Setting hostname to {}", &hostname_str);
+
+    sethostname(hostname_str.as_bytes())
+        .map_err(|e| anyhow!("failed to set hostname: {}", e))?;
 
     Ok(())
 }
