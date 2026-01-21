@@ -120,6 +120,7 @@ test-integration: \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		-e VERBOSE=$(VERBOSE) \
+		-e SCENARIO=$(SCENARIO) \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "./tests/integration/run.sh"
 
@@ -134,6 +135,7 @@ test-integration-kvm: \
 		--group-add $(DOCKER_GID) \
 		--device=/dev/kvm \
 		-e VERBOSE=$(VERBOSE) \
+		-e SCENARIO=$(SCENARIO) \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "./tests/integration/run.sh"
 

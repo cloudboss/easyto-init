@@ -19,6 +19,7 @@ INITRAMFS="${INTEGRATION_OUT}/initramfs.cpio.gz"
 # Timeout for each test (seconds)
 TIMEOUT=90
 VERBOSE="${VERBOSE:-}"
+SCENARIO="${SCENARIO:-}"
 
 log()
 {
@@ -134,12 +135,20 @@ main()
 
     failed=0
 
-    for scenario_dir in "${SCRIPT_DIR}/scenarios"/*/; do
-        scenario_name=$(basename "${scenario_dir}")
-        if ! run_scenario "${scenario_name}"; then
-            failed=$((failed + 1))
+    if [ -n "${SCENARIO}" ]; then
+        # Run single scenario
+        if ! run_scenario "${SCENARIO}"; then
+            failed=1
         fi
-    done
+    else
+        # Run all scenarios
+        for scenario_dir in "${SCRIPT_DIR}/scenarios"/*/; do
+            scenario_name=$(basename "${scenario_dir}")
+            if ! run_scenario "${scenario_name}"; then
+                failed=$((failed + 1))
+            fi
+        done
+    fi
 
     if [ ${failed} -gt 0 ]; then
         log "${failed} scenario(s) failed"
