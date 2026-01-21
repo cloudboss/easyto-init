@@ -16,15 +16,11 @@ log()
 
 log "Creating test rootfs..."
 
-# Create basic directory structure
-mkdir -p "${ROOTFS_DIR}"/{bin,sbin,etc,proc,sys,dev,tmp,root}
-mkdir -p "${ROOTFS_DIR}/.easyto"/{sbin,etc,run,services}
-
 # Use docker to get a minimal alpine rootfs with Python for mock IMDS
 log "Extracting alpine rootfs..."
 container_id=$(docker create alpine:3.20 sh -c "apk add --no-cache python3 && rm -rf /var/cache/apk/*")
 docker start -a "${container_id}" > /dev/null
-docker export "${container_id}" | tar -xf - -C "${ROOTFS_DIR}"
+docker export "${container_id}" | fakeroot tar -xf - -C "${ROOTFS_DIR}"
 docker rm "${container_id}" > /dev/null
 
 # Extract all asset tarballs from easyto-assets-runtime onto rootfs
@@ -32,7 +28,7 @@ log "Installing easyto-assets-runtime..."
 for tarball in "${EASYTO_ASSETS_RUNTIME}"/*.tar; do
     [ -f "${tarball}" ] || continue
     log "  Extracting $(basename "${tarball}")..."
-    tar -xf "${tarball}" -C "${ROOTFS_DIR}"
+    fakeroot tar -xf "${tarball}" -C "${ROOTFS_DIR}"
 done
 
 # Add service users required by chrony
@@ -84,8 +80,8 @@ cat > "${ROOTFS_DIR}/.easyto/metadata.json" << 'EOF'
 }
 EOF
 
-# Create initramfs
+# Create initramfs with fakeroot to preserve root ownership
 log "Creating initramfs..."
-(cd "${ROOTFS_DIR}" && find . -print0 | cpio --null -o -H newc 2>/dev/null | gzip -9) > "${OUTPUT}"
+(cd "${ROOTFS_DIR}" && fakeroot sh -c 'chown -R 0:0 . && find . -print0 | cpio --null -o -H newc' 2>/dev/null | gzip -9) > "${OUTPUT}"
 
 log "Created ${OUTPUT}"
