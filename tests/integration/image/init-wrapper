@@ -8,7 +8,8 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 
 # Log to serial console (must be after devtmpfs mount)
-log() {
+log()
+{
     echo "init-wrapper: $*" > /dev/ttyS0 2>&1
 }
 
@@ -49,11 +50,22 @@ echo "0" > "${IMDS_ROOT}/latest/meta-data/network/interfaces/macs/${ETH0_MAC}/de
 echo "10.0.2.15" > "${IMDS_ROOT}/latest/meta-data/network/interfaces/macs/${ETH0_MAC}/local-ipv4s"
 echo "subnet-test123" > "${IMDS_ROOT}/latest/meta-data/network/interfaces/macs/${ETH0_MAC}/subnet-id"
 
-# User data - minimal valid YAML (note: kebab-case for field names)
-cat > "${IMDS_ROOT}/latest/user-data" << 'USERDATA'
-command: ["/test-entrypoint"]
-disable-services: ["chrony", "ssh"]
-USERDATA
+# User data - read scenario name from kernel cmdline and use embedded file
+SCENARIO=""
+for param in $(cat /proc/cmdline); do
+    case "${param}" in
+        scenario=*)
+            SCENARIO="${param#scenario=}"
+            ;;
+    esac
+done
+
+if [ -f "/scenarios/${SCENARIO}/user-data.yaml" ]; then
+    log "Using user-data from scenario: ${SCENARIO}"
+    cp "/scenarios/${SCENARIO}/user-data.yaml" "${IMDS_ROOT}/latest/user-data"
+else
+    log "No user-data for scenario: ${SCENARIO} (IMDS will return 404)"
+fi
 
 # IMDS token endpoint (returns a fake token)
 echo "fake-imds-token-12345" > "${IMDS_ROOT}/latest/api/token/index.html"
