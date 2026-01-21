@@ -6,7 +6,7 @@ use rustix::system::{RebootCommand, reboot};
 fn main() {
     if let Err(e) = init::initialize() {
         // Use eprintln! here in case logger does not initialize.
-        eprintln!("Failed to initialize: {}", e);
+        eprintln!("System error: {}", e);
     }
     // Sleep to let console output catch up.
     thread::sleep(Duration::from_secs(1));

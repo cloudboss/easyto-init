@@ -53,6 +53,19 @@ install -m 0755 "${SCRIPT_DIR}/../mocks/imds_server.py" "${ROOTFS_DIR}/imds_serv
 # Install test entrypoint (will be overridden per-scenario via user-data)
 install -m 0755 "${SCRIPT_DIR}/test-entrypoint" "${ROOTFS_DIR}/test-entrypoint"
 
+# Install scenario user-data files
+log "Installing scenario user-data files..."
+mkdir -p "${ROOTFS_DIR}/scenarios"
+for scenario_dir in "${SCRIPT_DIR}/../scenarios"/*/; do
+    [ -d "${scenario_dir}" ] || continue
+    scenario_name=$(basename "${scenario_dir}")
+    mkdir -p "${ROOTFS_DIR}/scenarios/${scenario_name}"
+    if [ -f "${scenario_dir}/user-data.yaml" ]; then
+        cp "${scenario_dir}/user-data.yaml" "${ROOTFS_DIR}/scenarios/${scenario_name}/"
+        log "  Installed ${scenario_name}/user-data.yaml"
+    fi
+done
+
 # Create metadata.json (container config)
 cat > "${ROOTFS_DIR}/.easyto/metadata.json" << 'EOF'
 {

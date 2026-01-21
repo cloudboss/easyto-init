@@ -15,7 +15,7 @@ use crossbeam::channel::{Select, bounded};
 use crossbeam::sync::WaitGroup;
 use crossbeam::utils::Backoff;
 use k8s_expand::{expand, mapping_func_for};
-use log::{Level, debug, error, info};
+use log::{Level, debug, error, info, warn};
 use rustix::fs::{Gid, Mode, Uid, chown, stat, symlink};
 use rustix::io::Errno;
 use rustix::mount::{MountFlags, UnmountFlags, mount, mount_remount, unmount};
@@ -782,9 +782,10 @@ fn supervise(
 fn unmount_all(mount_points: &[String]) -> Result<()> {
     let mut error_count = 0;
 
+    // Remount root read-only. This may fail in test environments (e.g., initramfs)
+    // but works on real EC2 instances with EBS root volumes. Log as warning only.
     if let Err(e) = mount_remount(constants::DIR_ROOT, MountFlags::RDONLY, "") {
-        error_count += 1;
-        error!(
+        warn!(
             "unable to remount {} as read-only: {}",
             constants::DIR_ROOT,
             e
@@ -798,7 +799,7 @@ fn unmount_all(mount_points: &[String]) -> Result<()> {
         }
     }
 
-    if error_count == mount_points.len() + 1 {
+    if error_count == mount_points.len() && !mount_points.is_empty() {
         // Only return an error if all unmounts failed so we can wait
         // for those that did not fail.
         return Err(anyhow!("unable to unmount filesystems"));

@@ -55,15 +55,11 @@ run_scenario()
 
     log "Running scenario: ${scenario_name}"
 
-    user_data="${scenario_dir}/user-data.yaml"
-    if [ -f "${user_data}" ]; then
-        user_data_arg="-fw_cfg name=opt/user-data,file=${user_data}"
-    else
-        user_data_arg=""
-    fi
-
     # Capture serial output
     output_file="${INTEGRATION_OUT}/${scenario_name}.log"
+
+    # Pass scenario name via kernel command line
+    kernel_cmdline="rdinit=/init-wrapper console=ttyS0 panic=-1 scenario=${scenario_name}"
 
     # Run QEMU with timeout
     set +e
@@ -74,12 +70,11 @@ run_scenario()
             -m 512 \
             -kernel "${KERNEL}" \
             -initrd "${INITRAMFS}" \
-            -append "rdinit=/init-wrapper console=ttyS0 panic=-1" \
+            -append "${kernel_cmdline}" \
             -nographic \
             -device e1000,netdev=net0 \
             -netdev user,id=net0 \
             -no-reboot \
-            ${user_data_arg} \
             2>&1 | tee "${output_file}"
         # Get exit code from timeout via a temp file since PIPESTATUS isn't portable
         exit_code=0
@@ -94,12 +89,11 @@ run_scenario()
             -m 512 \
             -kernel "${KERNEL}" \
             -initrd "${INITRAMFS}" \
-            -append "rdinit=/init-wrapper console=ttyS0 panic=-1" \
+            -append "${kernel_cmdline}" \
             -nographic \
             -device e1000,netdev=net0 \
             -netdev user,id=net0 \
             -no-reboot \
-            ${user_data_arg} \
             > "${output_file}" 2>&1
         exit_code=$?
     fi
