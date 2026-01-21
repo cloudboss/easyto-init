@@ -7,6 +7,9 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 
+# Make serial console accessible to non-root users (for user-group test)
+chmod 666 /dev/ttyS0
+
 # Log to serial console (must be after devtmpfs mount)
 log()
 {
