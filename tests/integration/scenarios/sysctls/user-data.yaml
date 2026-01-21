@@ -1,0 +1,37 @@
+disable-services:
+  - chrony
+  - ssh
+sysctls:
+  - name: net.ipv4.ip_forward
+    value: "1"
+  - name: net.ipv4.tcp_syncookies
+    value: "0"
+  - name: vm.swappiness
+    value: "10"
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== sysctls test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    check_sysctl() {
+        name="${1}"
+        expected="${2}"
+        path="/proc/sys/$(echo "${name}" | tr '.' '/')"
+        actual=$(cat "${path}")
+        if [ "${actual}" = "${expected}" ]; then
+            echo "OK: ${name} = ${expected}"
+        else
+            fail "${name} is '${actual}', expected '${expected}'"
+        fi
+    }
+
+    check_sysctl net.ipv4.ip_forward 1
+    check_sysctl net.ipv4.tcp_syncookies 0
+    check_sysctl vm.swappiness 10
+
+    echo "PASS"
