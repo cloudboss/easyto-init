@@ -110,7 +110,22 @@ run_scenario()
     # Strip carriage returns from serial console output for pattern matching
     tr -d '\r' < "${output_file}" > "${output_file}.clean"
 
-    if grep -q "^PASS$" "${output_file}.clean"; then
+    # Check for expected-output file (for error-handling tests)
+    if [ -f "${scenario_dir}/expected-output" ]; then
+        if grep -qf "${scenario_dir}/expected-output" "${output_file}.clean"; then
+            log "PASS: ${scenario_name}"
+            rm -f "${output_file}.clean"
+            return 0
+        else
+            log "FAIL: ${scenario_name} (expected output not found)"
+            log "Expected pattern:"
+            cat "${scenario_dir}/expected-output"
+            log "Actual output:"
+            cat "${output_file}"
+            rm -f "${output_file}.clean"
+            return 1
+        fi
+    elif grep -q "^PASS$" "${output_file}.clean"; then
         log "PASS: ${scenario_name}"
         rm -f "${output_file}.clean"
         return 0
