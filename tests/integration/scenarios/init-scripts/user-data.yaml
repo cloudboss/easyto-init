@@ -1,0 +1,43 @@
+disable-services:
+  - chrony
+  - ssh
+init-scripts:
+  - |
+    #!/bin/sh
+    echo "first" > /tmp/script1.txt
+  - |
+    #!/bin/sh
+    echo "second" > /tmp/script2.txt
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== init-scripts test ==="
+
+    # Verify first init script ran
+    if [ ! -f /tmp/script1.txt ]; then
+        echo "FAIL: /tmp/script1.txt not found"
+        exit 1
+    fi
+    content1=$(cat /tmp/script1.txt)
+    if [ "$content1" != "first" ]; then
+        echo "FAIL: /tmp/script1.txt has wrong content: $content1"
+        exit 1
+    fi
+    echo "Init script 1 ran: OK"
+
+    # Verify second init script ran
+    if [ ! -f /tmp/script2.txt ]; then
+        echo "FAIL: /tmp/script2.txt not found"
+        exit 1
+    fi
+    content2=$(cat /tmp/script2.txt)
+    if [ "$content2" != "second" ]; then
+        echo "FAIL: /tmp/script2.txt has wrong content: $content2"
+        exit 1
+    fi
+    echo "Init script 2 ran: OK"
+
+    echo "PASS"

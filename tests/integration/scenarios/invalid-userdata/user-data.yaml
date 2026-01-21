@@ -1,0 +1,4 @@
+this is not valid yaml
+  - indentation is wrong
+    command: [
+      unclosed bracket
