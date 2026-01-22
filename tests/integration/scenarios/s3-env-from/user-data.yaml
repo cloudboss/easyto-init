@@ -1,0 +1,43 @@
+disable-services:
+  - chrony
+  - ssh
+env-from:
+  # Single value with explicit name
+  - s3:
+      bucket: config-bucket
+      key: api-key.txt
+      name: API_KEY
+  # JSON map expanded to multiple env vars
+  - s3:
+      bucket: config-bucket
+      key: db-config.json
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== s3-env-from test ==="
+
+    # Check single value env var
+    if [ "$API_KEY" != "my-api-key-12345" ]; then
+        echo "FAIL: API_KEY has wrong value: $API_KEY"
+        exit 1
+    fi
+    echo "API_KEY verified"
+
+    # Check JSON map env vars
+    if [ "$DB_HOST" != "localhost" ]; then
+        echo "FAIL: DB_HOST has wrong value: $DB_HOST"
+        exit 1
+    fi
+    if [ "$DB_PORT" != "5432" ]; then
+        echo "FAIL: DB_PORT has wrong value: $DB_PORT"
+        exit 1
+    fi
+    if [ "$DB_NAME" != "myapp" ]; then
+        echo "FAIL: DB_NAME has wrong value: $DB_NAME"
+        exit 1
+    fi
+    echo "DB_* env vars verified"
+
+    echo "PASS"

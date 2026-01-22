@@ -1,0 +1,15 @@
+disable-services:
+  - chrony
+  - ssh
+# Without 'name', the content must be valid JSON key/value pairs
+# This should fail because the content is plain text
+env-from:
+  - s3:
+      bucket: invalid-bucket
+      key: plain-text.txt
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "FAIL: Should not have reached here - expected JSON parse error"

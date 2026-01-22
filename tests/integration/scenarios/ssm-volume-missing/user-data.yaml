@@ -1,0 +1,14 @@
+disable-services:
+  - chrony
+  - ssh
+volumes:
+  - ssm:
+      path: /app/missing/
+      mount:
+        destination: /config
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "FAIL: Should not have reached here"

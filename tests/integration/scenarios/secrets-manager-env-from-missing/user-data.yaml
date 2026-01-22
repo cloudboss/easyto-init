@@ -1,0 +1,12 @@
+disable-services:
+  - chrony
+  - ssh
+env-from:
+  - secrets-manager:
+      secret-id: non-existent/secret
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "FAIL: Should not have reached here"
