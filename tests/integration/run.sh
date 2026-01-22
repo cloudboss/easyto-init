@@ -16,6 +16,10 @@ INIT_BINARY="${OUTPUT_DIR}/target/x86_64-unknown-linux-musl/release/init"
 # Test image
 INITRAMFS="${INTEGRATION_OUT}/initramfs.cpio.gz"
 
+# Mock IMDS server
+IMDS_PORT=8080
+IMDS_PID=""
+
 # Timeout for each test (seconds)
 TIMEOUT=90
 VERBOSE="${VERBOSE:-}"
@@ -38,6 +42,7 @@ check_prerequisites()
     [ -f "${KERNEL}" ] || die "kernel not found at ${KERNEL}"
     [ -d "${EASYTO_ASSETS_RUNTIME}" ] || die "easyto-assets-runtime not found at ${EASYTO_ASSETS_RUNTIME}"
     command -v qemu-system-x86_64 >/dev/null || die "qemu-system-x86_64 not found"
+    command -v python3 >/dev/null || die "python3 not found"
 }
 
 build_test_image()
@@ -45,6 +50,37 @@ build_test_image()
     log "Building test image..."
     mkdir -p "${INTEGRATION_OUT}"
     "${SCRIPT_DIR}/image/build.sh" "${INIT_BINARY}" "${EASYTO_ASSETS_RUNTIME}" "${INITRAMFS}"
+}
+
+start_mock_imds()
+{
+    scenario_name="$1"
+    log "Starting mock IMDS server for scenario: ${scenario_name}"
+    python3 "${SCRIPT_DIR}/mocks/imds_server.py" \
+        "${IMDS_PORT}" \
+        "${SCRIPT_DIR}/scenarios" \
+        "${scenario_name}" \
+        > "${INTEGRATION_OUT}/imds-${scenario_name}.log" 2>&1 &
+    IMDS_PID=$!
+
+    # Wait for server to be ready
+    for i in $(seq 1 50); do
+        if curl -s -o /dev/null "http://127.0.0.1:${IMDS_PORT}/latest/meta-data/instance-id" 2>/dev/null; then
+            log "Mock IMDS server ready (pid ${IMDS_PID})"
+            return 0
+        fi
+        sleep 0.1
+    done
+    die "Mock IMDS server failed to start"
+}
+
+stop_mock_imds()
+{
+    if [ -n "${IMDS_PID}" ]; then
+        kill "${IMDS_PID}" 2>/dev/null || true
+        wait "${IMDS_PID}" 2>/dev/null || true
+        IMDS_PID=""
+    fi
 }
 
 run_scenario()
@@ -56,11 +92,18 @@ run_scenario()
 
     log "Running scenario: ${scenario_name}"
 
+    # Start mock IMDS server for this scenario
+    start_mock_imds "${scenario_name}"
+
     # Capture serial output
     output_file="${INTEGRATION_OUT}/${scenario_name}.log"
 
-    # Pass scenario name via kernel command line
-    kernel_cmdline="rdinit=/init-wrapper console=ttyS0 panic=-1 scenario=${scenario_name}"
+    # Kernel command line with environment variables for init
+    # - EASYTO_TEST_MODE: enables test-specific behavior (chmod /dev/ttyS0)
+    # - AWS_EC2_METADATA_SERVICE_ENDPOINT: points to host-side mock IMDS
+    kernel_cmdline="rdinit=/.easyto/sbin/init console=ttyS0 panic=-1"
+    kernel_cmdline="${kernel_cmdline} EASYTO_TEST_MODE=1"
+    kernel_cmdline="${kernel_cmdline} AWS_EC2_METADATA_SERVICE_ENDPOINT=http://10.0.2.2:${IMDS_PORT}"
 
     # Run QEMU with timeout
     set +e
@@ -99,6 +142,9 @@ run_scenario()
         exit_code=$?
     fi
     set -e
+
+    # Stop mock IMDS server
+    stop_mock_imds
 
     # Check results
     if [ ${exit_code} -eq 124 ]; then
@@ -143,8 +189,15 @@ run_scenario()
     fi
 }
 
+cleanup()
+{
+    stop_mock_imds
+}
+
 main()
 {
+    trap cleanup EXIT
+
     check_prerequisites
     build_test_image
 
