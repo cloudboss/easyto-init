@@ -54,6 +54,10 @@ pub fn initialize() -> Result<()> {
     init_logger(Level::Info).map_err(|e| anyhow!("unable to initialize logger: {}", e))?;
     info!("Starting init process");
 
+    // Mount base filesystems early so /dev/ttyS0 exists for test mode.
+    base_mounts()?;
+    try_test_mode()?;
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -79,7 +83,6 @@ pub fn initialize() -> Result<()> {
     set_log_level(if debug { Level::Trace } else { Level::Info });
     debug!("Initialized logger and set level");
 
-    base_mounts()?;
     base_links()?;
 
     // Start listener to link newly attached NVMe devices.
@@ -176,6 +179,38 @@ fn base_links() -> Result<()> {
         symlink(l.target, l.path)
             .map_err(|e| anyhow!("unable to link {} to {}: {}", l.target, l.path, e))?;
     }
+    Ok(())
+}
+
+/// Set up test mode when EASYTO_TEST_MODE is set via kernel cmdline.
+/// Makes serial console accessible to non-root users and redirects stderr
+/// to serial console so init logs are visible during integration tests.
+fn try_test_mode() -> Result<()> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    if env::var("EASYTO_TEST_MODE").is_err() {
+        return Ok(());
+    }
+    info!("Test mode enabled");
+
+    // Make serial console accessible to non-root users
+    rustix::fs::chmod("/dev/ttyS0", Mode::from_raw_mode(0o666))
+        .map_err(|e| anyhow!("unable to chmod /dev/ttyS0: {}", e))?;
+
+    // Redirect stderr to serial console
+    let tty = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/ttyS0")
+        .map_err(|e| anyhow!("unable to open /dev/ttyS0: {}", e))?;
+
+    // SAFETY: fd 2 (stderr) is always valid in a Unix process. We take ownership
+    // temporarily to use dup2, which replaces its underlying fd with tty's fd.
+    // The OwnedFd is then forgotten to avoid closing stderr.
+    let mut stderr_fd = unsafe { OwnedFd::from_raw_fd(2) };
+    rustix::io::dup2(&tty, &mut stderr_fd)
+        .map_err(|e| anyhow!("unable to dup2 stderr to /dev/ttyS0: {}", e))?;
+    std::mem::forget(stderr_fd);
+
     Ok(())
 }
 

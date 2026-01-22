@@ -318,18 +318,20 @@ async fn configure_primary_dhcp(
     primary: &InterfaceInfo,
     bootstrap_ifindex: Option<u32>,
 ) -> Result<()> {
-    nl.link_up(primary.ifindex).await?;
-
     // Clean up bootstrap if it's different from primary.
     if let Some(bootstrap_idx) = bootstrap_ifindex {
         if bootstrap_idx != primary.ifindex {
+            // Bootstrap was on a different interface - flush it and configure primary.
             flush_interface(nl, bootstrap_idx).await;
+            nl.link_up(primary.ifindex).await?;
             if let Some(mac) = primary.mac {
                 run_dhcp_on_interface(nl, &primary.name, primary.ifindex, mac).await?;
             }
         }
+        // If bootstrap_idx == primary.ifindex, the interface is already configured.
     } else {
-        // No bootstrap (persisted primary) - always run DHCP.
+        // No bootstrap (persisted primary) - run DHCP.
+        nl.link_up(primary.ifindex).await?;
         if let Some(mac) = primary.mac {
             run_dhcp_on_interface(nl, &primary.name, primary.ifindex, mac).await?;
         }

@@ -1,61 +1,132 @@
 #!/usr/bin/env python3
 """
-Mock IMDS server for integration tests.
-Supports both IMDSv1 (GET) and IMDSv2 (PUT for token, GET with token header).
+Host-side mock IMDS server for integration tests.
+Runs on host, accessible from VM via QEMU's gateway (10.0.2.2).
 """
 
 import http.server
-import os
+import json
 import sys
 from pathlib import Path
 
-IMDS_ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/imds")
-PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 80
-HOST = sys.argv[3] if len(sys.argv) > 3 else "169.254.169.254"
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+SCENARIOS_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("scenarios")
+SCENARIO = sys.argv[3] if len(sys.argv) > 3 else "basic-boot"
 TOKEN = "mock-imds-token-12345"
+
+# Static metadata responses
+METADATA = {
+    "instance-id": "i-test12345",
+    "local-hostname": "test-host",
+    "ami-id": "ami-test12345",
+    "instance-type": "t3.micro",
+    "placement/availability-zone": "us-east-1a",
+    "placement/region": "us-east-1",
+}
 
 
 class IMDSHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Log to stderr
-        print(f"IMDS: {format % args}", file=sys.stderr)
+    def log_message(self, fmt, *args):
+        print(f"IMDS: {fmt % args}", file=sys.stderr, flush=True)
 
     def do_PUT(self):
         """Handle IMDSv2 token request."""
         if self.path == "/latest/api/token":
             token_bytes = TOKEN.encode()
-            print(f"IMDS: Returning token ({len(token_bytes)} bytes): {TOKEN}", file=sys.stderr)
+            print(f"IMDS: Returning token ({len(token_bytes)} bytes): {TOKEN}", file=sys.stderr, flush=True)
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(token_bytes)))
             self.send_header("X-aws-ec2-metadata-token-ttl-seconds", "21600")
             self.end_headers()
             self.wfile.write(token_bytes)
-            self.wfile.flush()
         else:
             self.send_error(404)
 
     def do_GET(self):
         """Handle metadata requests."""
-        # Map URL path to file
-        file_path = IMDS_ROOT / self.path.lstrip("/")
+        path = self.path.lstrip("/")
 
-        # Check for index.html if path is a directory
-        if file_path.is_dir():
-            file_path = file_path / "index.html"
+        # User data
+        if path == "latest/user-data":
+            user_data_file = SCENARIOS_DIR / SCENARIO / "user-data.yaml"
+            if user_data_file.is_file():
+                content = user_data_file.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            else:
+                self.send_error(404)
+            return
 
-        if file_path.is_file():
-            content = file_path.read_text()
+        # Strip latest/meta-data/ prefix
+        if path.startswith("latest/meta-data/"):
+            meta_path = path[len("latest/meta-data/"):]
+        else:
+            self.send_error(404)
+            return
+
+        # Network interface queries - respond to any MAC
+        if meta_path.startswith("network/interfaces/macs/"):
+            self._handle_network_metadata(meta_path)
+            return
+
+        # Static metadata
+        if meta_path in METADATA:
+            content = METADATA[meta_path].encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
-            self.wfile.write(content.encode())
+            self.wfile.write(content)
         else:
             self.send_error(404)
 
+    def _handle_network_metadata(self, meta_path):
+        """Handle network interface metadata queries."""
+        parts = meta_path.split("/")
+        # network/interfaces/macs/<mac>/...
+
+        # List MACs: network/interfaces/macs/
+        if meta_path == "network/interfaces/macs/" or meta_path == "network/interfaces/macs":
+            # Return the QEMU default MAC
+            content = b"52:54:00:12:34:56/"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
+
+        if len(parts) >= 5:
+            mac = parts[3]
+            attr = "/".join(parts[4:])
+
+            responses = {
+                "device-number": "0",
+                "local-ipv4s": "10.0.2.15",
+                "subnet-id": "subnet-test123",
+                "vpc-id": "vpc-test123",
+            }
+
+            if attr in responses:
+                content = responses[attr].encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
+        self.send_error(404)
+
 
 if __name__ == "__main__":
-    server = http.server.HTTPServer((HOST, PORT), IMDSHandler)
-    print(f"Mock IMDS server listening on {HOST}:{PORT}", file=sys.stderr)
+    print(f"Mock IMDS server starting on 0.0.0.0:{PORT}", file=sys.stderr, flush=True)
+    print(f"Scenarios dir: {SCENARIOS_DIR}", file=sys.stderr, flush=True)
+    print(f"Current scenario: {SCENARIO}", file=sys.stderr, flush=True)
+
+    server = http.server.HTTPServer(("0.0.0.0", PORT), IMDSHandler)
     server.serve_forever()
