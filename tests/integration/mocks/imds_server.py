@@ -35,6 +35,18 @@ METADATA = {
     "placement/region": "us-east-1",
 }
 
+# Mock IAM role and credentials
+IAM_ROLE = "test-instance-role"
+IAM_CREDENTIALS = {
+    "Code": "Success",
+    "LastUpdated": "2024-01-01T00:00:00Z",
+    "Type": "AWS-HMAC",
+    "AccessKeyId": "ASIAIOSFODNN7EXAMPLE",
+    "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    "Token": "FwoGZXIvYXdzEBYaDM3fake0token1234567890==",
+    "Expiration": "2099-12-31T23:59:59Z",
+}
+
 
 class IMDSHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
@@ -82,6 +94,11 @@ class IMDSHandler(http.server.BaseHTTPRequestHandler):
         # Network interface queries - respond to any MAC
         if meta_path.startswith("network/interfaces/macs/"):
             self._handle_network_metadata(meta_path)
+            return
+
+        # IAM credentials
+        if meta_path.startswith("iam/"):
+            self._handle_iam_metadata(meta_path)
             return
 
         # Static metadata
@@ -139,6 +156,30 @@ class IMDSHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(content)
                 return
+
+        self.send_error(404)
+
+    def _handle_iam_metadata(self, meta_path):
+        """Handle IAM credential metadata queries."""
+        # iam/security-credentials/ - list roles
+        if meta_path in ("iam/security-credentials/", "iam/security-credentials"):
+            content = IAM_ROLE.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
+
+        # iam/security-credentials/<role-name> - get credentials
+        if meta_path == f"iam/security-credentials/{IAM_ROLE}":
+            content = json.dumps(IAM_CREDENTIALS).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
 
         self.send_error(404)
 
