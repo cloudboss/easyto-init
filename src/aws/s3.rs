@@ -60,17 +60,15 @@ impl S3ClientAsync {
 
     pub async fn get_object_map(&self, bucket: &str, key: &str) -> Result<HashMap<String, String>> {
         let object = self.get_object(bucket, key).await?;
-        let body = object.body.into_inner();
-        let slice = body.bytes().unwrap_or(&[]);
-        let map: HashMap<String, String> = serde_json::from_slice(slice)?;
+        let bytes = object.body.collect().await?.into_bytes();
+        let map: HashMap<String, String> = serde_json::from_slice(&bytes)?;
         Ok(map)
     }
 
     pub async fn get_object_bytes(&self, bucket: &str, key: &str) -> Result<Vec<u8>> {
         let object = self.get_object(bucket, key).await?;
-        let body = &object.body.into_inner();
-        let slice = body.bytes().unwrap_or(&[]);
-        Ok(slice.to_vec())
+        let bytes = object.body.collect().await?.into_bytes();
+        Ok(bytes.to_vec())
     }
 
     async fn get_object(&self, bucket: &str, key: &str) -> Result<GetObjectOutput> {

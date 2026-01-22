@@ -1,0 +1,2 @@
+# Use LocalStack for SSM
+USE_LOCALSTACK=1

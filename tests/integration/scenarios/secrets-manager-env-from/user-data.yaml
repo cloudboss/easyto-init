@@ -1,0 +1,41 @@
+disable-services:
+  - chrony
+  - ssh
+env-from:
+  # Single value with explicit name
+  - secrets-manager:
+      secret-id: app/jwt-secret
+      name: JWT_SECRET
+  # JSON map expanded to multiple env vars
+  - secrets-manager:
+      secret-id: app/oauth-credentials
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== secrets-manager-env-from test ==="
+
+    # Check single value env var
+    if [ "$JWT_SECRET" != "super-secret-jwt-key-xyz789" ]; then
+        echo "FAIL: JWT_SECRET has wrong value: $JWT_SECRET"
+        exit 1
+    fi
+    echo "JWT_SECRET verified"
+
+    # Check JSON map env vars
+    if [ "$OAUTH_CLIENT_ID" != "client123" ]; then
+        echo "FAIL: OAUTH_CLIENT_ID has wrong value: $OAUTH_CLIENT_ID"
+        exit 1
+    fi
+    if [ "$OAUTH_CLIENT_SECRET" != "secret456" ]; then
+        echo "FAIL: OAUTH_CLIENT_SECRET has wrong value: $OAUTH_CLIENT_SECRET"
+        exit 1
+    fi
+    if [ "$OAUTH_REDIRECT_URI" != "https://app.example.com/callback" ]; then
+        echo "FAIL: OAUTH_REDIRECT_URI has wrong value: $OAUTH_REDIRECT_URI"
+        exit 1
+    fi
+    echo "OAUTH_* env vars verified"
+
+    echo "PASS"

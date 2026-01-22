@@ -1,0 +1,59 @@
+disable-services:
+  - chrony
+  - ssh
+# Static env vars that reference values from env-from sources
+env:
+  - name: DATABASE_URL
+    value: "postgresql://$(DB_USER):$(DB_PASS)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)"
+  - name: APP_NAME
+    value: "myapp"
+  - name: APP_DB_CONNECTION
+    value: "$(APP_NAME)-$(DB_HOST)"
+env-from:
+  # S3: provides DB_HOST, DB_PORT, DB_NAME
+  - s3:
+      bucket: env-bucket
+      key: db-config.json
+  # SSM: provides DB_USER
+  - ssm:
+      path: /app/db/username
+      name: DB_USER
+  # Secrets Manager: provides DB_PASS
+  - secrets-manager:
+      secret-id: app/db/password
+      name: DB_PASS
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== aws-env-expansion test ==="
+
+    # Check that individual env vars are set
+    echo "DB_HOST=$DB_HOST"
+    echo "DB_PORT=$DB_PORT"
+    echo "DB_NAME=$DB_NAME"
+    echo "DB_USER=$DB_USER"
+    echo "DB_PASS=$DB_PASS"
+
+    # Check expanded DATABASE_URL
+    expected="postgresql://app_user:super-secret-password@db.example.com:5432/production"
+    if [ "$DATABASE_URL" != "$expected" ]; then
+        echo "FAIL: DATABASE_URL expansion failed"
+        echo "  Expected: $expected"
+        echo "  Got: $DATABASE_URL"
+        exit 1
+    fi
+    echo "DATABASE_URL expansion verified"
+
+    # Check expansion with static var reference
+    expected="myapp-db.example.com"
+    if [ "$APP_DB_CONNECTION" != "$expected" ]; then
+        echo "FAIL: APP_DB_CONNECTION expansion failed"
+        echo "  Expected: $expected"
+        echo "  Got: $APP_DB_CONNECTION"
+        exit 1
+    fi
+    echo "APP_DB_CONNECTION expansion verified"
+
+    echo "PASS"

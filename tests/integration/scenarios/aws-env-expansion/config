@@ -1,0 +1,2 @@
+# Use LocalStack for AWS services
+USE_LOCALSTACK=1
