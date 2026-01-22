@@ -52,14 +52,47 @@ build_test_image()
     "${SCRIPT_DIR}/image/build.sh" "${INIT_BINARY}" "${EASYTO_ASSETS_RUNTIME}" "${INITRAMFS}"
 }
 
+get_scenario_config()
+{
+    scenario_name="$1"
+    config_key="$2"
+    default_value="$3"
+    config_file="${SCRIPT_DIR}/scenarios/${scenario_name}/config"
+
+    if [ -f "${config_file}" ]; then
+        value=$(grep "^${config_key}=" "${config_file}" 2>/dev/null | cut -d= -f2)
+        if [ -n "${value}" ]; then
+            echo "${value}"
+            return
+        fi
+    fi
+    echo "${default_value}"
+}
+
+generate_qemu_nic_args()
+{
+    nic_count="$1"
+    # Generate QEMU NIC arguments for multiple NICs
+    # MACs are sequential from 52:54:00:12:34:56
+    i=0
+    while [ $i -lt "$nic_count" ]; do
+        mac_suffix=$(printf "%02x" $((86 + i)))
+        echo "-device e1000,netdev=net${i},mac=52:54:00:12:34:${mac_suffix}"
+        echo "-netdev user,id=net${i}"
+        i=$((i + 1))
+    done
+}
+
 start_mock_imds()
 {
     scenario_name="$1"
-    log "Starting mock IMDS server for scenario: ${scenario_name}"
+    nic_count="$2"
+    log "Starting mock IMDS server for scenario: ${scenario_name} (${nic_count} NICs)"
     python3 "${SCRIPT_DIR}/mocks/imds_server.py" \
         "${IMDS_PORT}" \
         "${SCRIPT_DIR}/scenarios" \
         "${scenario_name}" \
+        "${nic_count}" \
         > "${INTEGRATION_OUT}/imds-${scenario_name}.log" 2>&1 &
     IMDS_PID=$!
 
@@ -92,8 +125,11 @@ run_scenario()
 
     log "Running scenario: ${scenario_name}"
 
+    # Read scenario config
+    nic_count=$(get_scenario_config "${scenario_name}" "NIC_COUNT" "1")
+
     # Start mock IMDS server for this scenario
-    start_mock_imds "${scenario_name}"
+    start_mock_imds "${scenario_name}" "${nic_count}"
 
     # Capture serial output
     output_file="${INTEGRATION_OUT}/${scenario_name}.log"
@@ -104,6 +140,9 @@ run_scenario()
     kernel_cmdline="rdinit=/.easyto/sbin/init console=ttyS0 panic=-1"
     kernel_cmdline="${kernel_cmdline} EASYTO_TEST_MODE=1"
     kernel_cmdline="${kernel_cmdline} AWS_EC2_METADATA_SERVICE_ENDPOINT=http://10.0.2.2:${IMDS_PORT}"
+
+    # Generate NIC arguments
+    nic_args=$(generate_qemu_nic_args "${nic_count}")
 
     # Run QEMU with timeout
     set +e
@@ -116,8 +155,7 @@ run_scenario()
             -initrd "${INITRAMFS}" \
             -append "${kernel_cmdline}" \
             -nographic \
-            -device e1000,netdev=net0 \
-            -netdev user,id=net0 \
+            ${nic_args} \
             -no-reboot \
             2>&1 | tee "${output_file}"
         # Get exit code from timeout via a temp file since PIPESTATUS isn't portable
@@ -135,8 +173,7 @@ run_scenario()
             -initrd "${INITRAMFS}" \
             -append "${kernel_cmdline}" \
             -nographic \
-            -device e1000,netdev=net0 \
-            -netdev user,id=net0 \
+            ${nic_args} \
             -no-reboot \
             > "${output_file}" 2>&1
         exit_code=$?

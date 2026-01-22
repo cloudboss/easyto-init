@@ -12,7 +12,18 @@ from pathlib import Path
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 SCENARIOS_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("scenarios")
 SCENARIO = sys.argv[3] if len(sys.argv) > 3 else "basic-boot"
+NIC_COUNT = int(sys.argv[4]) if len(sys.argv) > 4 else 1
 TOKEN = "mock-imds-token-12345"
+
+# Generate MACs for each NIC (QEMU style: 52:54:00:12:34:XX)
+def generate_macs(count):
+    """Generate sequential MAC addresses starting from QEMU default."""
+    macs = []
+    for i in range(count):
+        macs.append(f"52:54:00:12:34:{86 + i:02x}")
+    return macs
+
+MACS = generate_macs(NIC_COUNT)
 
 # Static metadata responses
 METADATA = {
@@ -91,8 +102,8 @@ class IMDSHandler(http.server.BaseHTTPRequestHandler):
 
         # List MACs: network/interfaces/macs/
         if meta_path == "network/interfaces/macs/" or meta_path == "network/interfaces/macs":
-            # Return the QEMU default MAC
-            content = b"52:54:00:12:34:56/"
+            # Return all configured MACs
+            content = "\n".join(f"{mac}/" for mac in MACS).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(content)))
@@ -104,10 +115,19 @@ class IMDSHandler(http.server.BaseHTTPRequestHandler):
             mac = parts[3]
             attr = "/".join(parts[4:])
 
+            # Find device number for this MAC
+            try:
+                device_num = MACS.index(mac)
+            except ValueError:
+                # Unknown MAC - return 404
+                self.send_error(404)
+                return
+
+            # Per-interface responses
             responses = {
-                "device-number": "0",
-                "local-ipv4s": "10.0.2.15",
-                "subnet-id": "subnet-test123",
+                "device-number": str(device_num),
+                "local-ipv4s": f"10.0.2.{15 + device_num}",
+                "subnet-id": f"subnet-test{device_num}",
                 "vpc-id": "vpc-test123",
             }
 
@@ -127,6 +147,7 @@ if __name__ == "__main__":
     print(f"Mock IMDS server starting on 0.0.0.0:{PORT}", file=sys.stderr, flush=True)
     print(f"Scenarios dir: {SCENARIOS_DIR}", file=sys.stderr, flush=True)
     print(f"Current scenario: {SCENARIO}", file=sys.stderr, flush=True)
+    print(f"NIC count: {NIC_COUNT}, MACs: {MACS}", file=sys.stderr, flush=True)
 
     server = http.server.HTTPServer(("0.0.0.0", PORT), IMDSHandler)
     server.serve_forever()
