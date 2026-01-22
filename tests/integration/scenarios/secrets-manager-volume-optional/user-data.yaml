@@ -1,0 +1,15 @@
+disable-services:
+  - chrony
+  - ssh
+volumes:
+  - secrets-manager:
+      secret-id: non-existent-secret
+      optional: true
+      mount:
+        destination: /secrets/password
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "PASS"

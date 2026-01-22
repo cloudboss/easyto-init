@@ -6,8 +6,9 @@ FROM ${FROM}
 ARG UID
 ARG GID
 
-RUN apk add musl-dev qemu-system-x86_64 docker-cli fakeroot cpio python3 curl && \
-    rustup component add clippy
+RUN apk add musl-dev qemu-system-x86_64 docker-cli fakeroot cpio python3 py3-pip curl && \
+    rustup component add clippy && \
+    pip3 install --break-system-packages awscli
 
 RUN getent group ${GID} 2>&1 >/dev/null || addgroup -g ${GID} build && \
     group_name=$(getent group ${GID} | awk -F : '{print $1}') && \

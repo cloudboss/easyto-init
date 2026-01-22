@@ -1,0 +1,2 @@
+# Use LocalStack for Secrets Manager
+USE_LOCALSTACK=1

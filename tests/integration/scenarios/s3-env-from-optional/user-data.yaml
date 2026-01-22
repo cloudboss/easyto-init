@@ -1,0 +1,18 @@
+debug: true
+disable-services:
+  - chrony
+  - ssh
+env-from:
+  # This object doesn't exist, but with optional: true it should not fail
+  - s3:
+      bucket: optional-bucket
+      key: non-existent-object.json
+      optional: true
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== s3-env-from-optional test ==="
+    # If we get here, the optional missing object was correctly ignored
+    echo "PASS"

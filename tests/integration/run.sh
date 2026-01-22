@@ -20,6 +20,10 @@ INITRAMFS="${INTEGRATION_OUT}/initramfs.cpio.gz"
 IMDS_PORT=8080
 IMDS_PID=""
 
+# LocalStack for AWS service mocking (S3, SSM, Secrets Manager)
+LOCALSTACK_PORT=4566
+LOCALSTACK_CONTAINER=""
+
 # Timeout for each test (seconds)
 TIMEOUT=90
 VERBOSE="${VERBOSE:-}"
@@ -118,6 +122,75 @@ stop_mock_imds()
     fi
 }
 
+start_localstack()
+{
+    scenario_name="$1"
+    log "Starting LocalStack for scenario: ${scenario_name}"
+
+    # Check for docker
+    command -v docker >/dev/null || die "docker not found (required for LocalStack)"
+
+    # Get current container ID to share network namespace
+    # This allows LocalStack to be accessible via 127.0.0.1 from this container
+    # and via 10.0.2.2 from QEMU
+    CONTAINER_ID=$(cat /proc/self/cgroup 2>/dev/null | grep -o '[0-9a-f]\{64\}' | head -1 || true)
+    if [ -z "${CONTAINER_ID}" ]; then
+        CONTAINER_ID=$(hostname 2>/dev/null || true)
+    fi
+
+    if [ -n "${CONTAINER_ID}" ] && docker inspect "${CONTAINER_ID}" >/dev/null 2>&1; then
+        log "Sharing network with container ${CONTAINER_ID:0:12}"
+        NETWORK_ARG="--network container:${CONTAINER_ID}"
+    else
+        log "Using host port mapping"
+        NETWORK_ARG="-p ${LOCALSTACK_PORT}:4566"
+    fi
+
+    # Start LocalStack container
+    LOCALSTACK_CONTAINER=$(docker run -d --rm \
+        ${NETWORK_ARG} \
+        -e SERVICES=s3,ssm,secretsmanager,sts,ec2 \
+        -e DEBUG=0 \
+        localstack/localstack:latest 2>&1)
+
+    if [ -z "${LOCALSTACK_CONTAINER}" ] || echo "${LOCALSTACK_CONTAINER}" | grep -q "Error"; then
+        die "Failed to start LocalStack: ${LOCALSTACK_CONTAINER}"
+    fi
+
+    # Wait for LocalStack to be ready
+    log "Waiting for LocalStack to be ready..."
+    for i in $(seq 1 60); do
+        if curl -s "http://127.0.0.1:${LOCALSTACK_PORT}/_localstack/health" 2>/dev/null | grep -q '"s3"'; then
+            log "LocalStack ready (container ${LOCALSTACK_CONTAINER:0:12})"
+
+            # Run scenario-specific setup if present
+            setup_script="${SCRIPT_DIR}/scenarios/${scenario_name}/localstack-setup.sh"
+            if [ -f "${setup_script}" ]; then
+                log "Running LocalStack setup for ${scenario_name}..."
+                AWS_ENDPOINT_URL="http://127.0.0.1:${LOCALSTACK_PORT}" \
+                AWS_ACCESS_KEY_ID=test \
+                AWS_SECRET_ACCESS_KEY=test \
+                AWS_DEFAULT_REGION=us-east-1 \
+                    sh "${setup_script}" \
+                    > "${INTEGRATION_OUT}/localstack-setup-${scenario_name}.log" 2>&1 || \
+                    die "LocalStack setup failed for ${scenario_name}"
+            fi
+            return 0
+        fi
+        sleep 1
+    done
+    die "LocalStack failed to start within 60 seconds"
+}
+
+stop_localstack()
+{
+    if [ -n "${LOCALSTACK_CONTAINER}" ]; then
+        log "Stopping LocalStack (container ${LOCALSTACK_CONTAINER:0:12})"
+        docker stop "${LOCALSTACK_CONTAINER}" >/dev/null 2>&1 || true
+        LOCALSTACK_CONTAINER=""
+    fi
+}
+
 run_scenario()
 {
     scenario_name="$1"
@@ -130,9 +203,15 @@ run_scenario()
     # Read scenario config
     nic_count=$(get_scenario_config "${scenario_name}" "NIC_COUNT" "1")
     spot_termination_delay=$(get_scenario_config "${scenario_name}" "SPOT_TERMINATION_DELAY" "0")
+    use_localstack=$(get_scenario_config "${scenario_name}" "USE_LOCALSTACK" "0")
 
     # Start mock IMDS server for this scenario
     start_mock_imds "${scenario_name}" "${nic_count}" "${spot_termination_delay}"
+
+    # Start LocalStack if needed
+    if [ "${use_localstack}" = "1" ]; then
+        start_localstack "${scenario_name}"
+    fi
 
     # Capture serial output
     output_file="${INTEGRATION_OUT}/${scenario_name}.log"
@@ -140,19 +219,30 @@ run_scenario()
     # Kernel command line with environment variables for init
     # - EASYTO_TEST_MODE: enables test-specific behavior (chmod /dev/ttyS0)
     # - AWS_EC2_METADATA_SERVICE_ENDPOINT: points to host-side mock IMDS
+    # - AWS_ENDPOINT_URL: points to LocalStack when enabled
     kernel_cmdline="rdinit=/.easyto/sbin/init console=ttyS0 panic=-1"
     kernel_cmdline="${kernel_cmdline} EASYTO_TEST_MODE=1"
     kernel_cmdline="${kernel_cmdline} AWS_EC2_METADATA_SERVICE_ENDPOINT=http://10.0.2.2:${IMDS_PORT}"
+
+    # Add LocalStack endpoint configuration if enabled
+    if [ "${use_localstack}" = "1" ]; then
+        kernel_cmdline="${kernel_cmdline} AWS_ENDPOINT_URL=http://10.0.2.2:${LOCALSTACK_PORT}"
+        kernel_cmdline="${kernel_cmdline} AWS_ACCESS_KEY_ID=test"
+        kernel_cmdline="${kernel_cmdline} AWS_SECRET_ACCESS_KEY=test"
+        kernel_cmdline="${kernel_cmdline} AWS_REGION=us-east-1"
+    fi
 
     # Generate NIC arguments
     nic_args=$(generate_qemu_nic_args "${nic_count}")
 
     # Run QEMU with timeout
+    # Use -cpu max to enable SSE4.1/PCLMULQDQ required by AWS SDK's crc-fast dependency
     set +e
     if [ -n "${VERBOSE}" ]; then
         # Show output in real-time while also capturing to file
         timeout "${TIMEOUT}" qemu-system-x86_64 \
             -accel kvm -accel tcg \
+            -cpu max \
             -m 512 \
             -kernel "${KERNEL}" \
             -initrd "${INITRAMFS}" \
@@ -171,6 +261,7 @@ run_scenario()
     else
         timeout "${TIMEOUT}" qemu-system-x86_64 \
             -accel kvm -accel tcg \
+            -cpu max \
             -m 512 \
             -kernel "${KERNEL}" \
             -initrd "${INITRAMFS}" \
@@ -183,8 +274,9 @@ run_scenario()
     fi
     set -e
 
-    # Stop mock IMDS server
+    # Stop mock services
     stop_mock_imds
+    stop_localstack
 
     # Check results
     if [ ${exit_code} -eq 124 ]; then
@@ -232,6 +324,7 @@ run_scenario()
 cleanup()
 {
     stop_mock_imds
+    stop_localstack
 }
 
 main()
