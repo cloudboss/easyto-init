@@ -1,0 +1,41 @@
+disable-services:
+  - chrony
+  - ssh
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== multi-eni test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    # Check that primary interface (eth0) has an IP address
+    if ip addr show eth0 2>/dev/null | grep -q "inet "; then
+        echo "OK: eth0 (primary) has an IP address"
+        ip addr show eth0 | grep "inet "
+    else
+        fail "eth0 (primary) has no IP address"
+    fi
+
+    # Check that secondary interface (eth1) exists
+    if ip link show eth1 >/dev/null 2>&1; then
+        echo "OK: eth1 (secondary) exists"
+    else
+        fail "eth1 (secondary) does not exist"
+    fi
+
+    # Check that secondary interface does NOT have an IP address
+    # (init should only configure primary)
+    if ip addr show eth1 2>/dev/null | grep -q "inet "; then
+        fail "eth1 (secondary) has an IP address but should not"
+    else
+        echo "OK: eth1 (secondary) has no IP address (as expected)"
+    fi
+
+    # Show all interfaces for debugging
+    echo "=== All interfaces ==="
+    ip addr
+
+    echo "PASS"
