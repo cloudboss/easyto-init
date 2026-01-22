@@ -7,13 +7,20 @@ Runs on host, accessible from VM via QEMU's gateway (10.0.2.2).
 import http.server
 import json
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 SCENARIOS_DIR = Path(sys.argv[2]) if len(sys.argv) > 2 else Path("scenarios")
 SCENARIO = sys.argv[3] if len(sys.argv) > 3 else "basic-boot"
 NIC_COUNT = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+# Spot termination delay: 0 = no termination, >0 = return notice after N seconds
+SPOT_TERMINATION_DELAY = int(sys.argv[5]) if len(sys.argv) > 5 else 0
 TOKEN = "mock-imds-token-12345"
+
+# Track server start time for spot termination simulation
+SERVER_START_TIME = time.time()
 
 # Generate MACs for each NIC (QEMU style: 52:54:00:12:34:XX)
 def generate_macs(count):
@@ -101,6 +108,11 @@ class IMDSHandler(http.server.BaseHTTPRequestHandler):
             self._handle_iam_metadata(meta_path)
             return
 
+        # Spot termination notices
+        if meta_path.startswith("spot/"):
+            self._handle_spot_metadata(meta_path)
+            return
+
         # Static metadata
         if meta_path in METADATA:
             content = METADATA[meta_path].encode()
@@ -183,12 +195,45 @@ class IMDSHandler(http.server.BaseHTTPRequestHandler):
 
         self.send_error(404)
 
+    def _handle_spot_metadata(self, meta_path):
+        """Handle spot instance metadata queries."""
+        # spot/instance-action - termination notice
+        if meta_path in ("spot/instance-action", "spot/instance-action/"):
+            # Check if we should simulate termination
+            if SPOT_TERMINATION_DELAY > 0:
+                elapsed = time.time() - SERVER_START_TIME
+                if elapsed >= SPOT_TERMINATION_DELAY:
+                    # Return termination notice
+                    termination_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                    response = {
+                        "action": "terminate",
+                        "time": termination_time,
+                    }
+                    content = json.dumps(response).encode()
+                    print(f"IMDS: Returning spot termination notice: {response}", file=sys.stderr, flush=True)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+                    return
+
+            # No termination scheduled - return 404
+            self.send_error(404)
+            return
+
+        self.send_error(404)
+
 
 if __name__ == "__main__":
     print(f"Mock IMDS server starting on 0.0.0.0:{PORT}", file=sys.stderr, flush=True)
     print(f"Scenarios dir: {SCENARIOS_DIR}", file=sys.stderr, flush=True)
     print(f"Current scenario: {SCENARIO}", file=sys.stderr, flush=True)
     print(f"NIC count: {NIC_COUNT}, MACs: {MACS}", file=sys.stderr, flush=True)
+    if SPOT_TERMINATION_DELAY > 0:
+        print(f"Spot termination: will trigger after {SPOT_TERMINATION_DELAY}s", file=sys.stderr, flush=True)
+    else:
+        print(f"Spot termination: disabled", file=sys.stderr, flush=True)
 
     server = http.server.HTTPServer(("0.0.0.0", PORT), IMDSHandler)
     server.serve_forever()

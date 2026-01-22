@@ -87,12 +87,14 @@ start_mock_imds()
 {
     scenario_name="$1"
     nic_count="$2"
-    log "Starting mock IMDS server for scenario: ${scenario_name} (${nic_count} NICs)"
+    spot_termination_delay="$3"
+    log "Starting mock IMDS server for scenario: ${scenario_name} (${nic_count} NICs, spot_delay=${spot_termination_delay}s)"
     python3 "${SCRIPT_DIR}/mocks/imds_server.py" \
         "${IMDS_PORT}" \
         "${SCRIPT_DIR}/scenarios" \
         "${scenario_name}" \
         "${nic_count}" \
+        "${spot_termination_delay}" \
         > "${INTEGRATION_OUT}/imds-${scenario_name}.log" 2>&1 &
     IMDS_PID=$!
 
@@ -127,9 +129,10 @@ run_scenario()
 
     # Read scenario config
     nic_count=$(get_scenario_config "${scenario_name}" "NIC_COUNT" "1")
+    spot_termination_delay=$(get_scenario_config "${scenario_name}" "SPOT_TERMINATION_DELAY" "0")
 
     # Start mock IMDS server for this scenario
-    start_mock_imds "${scenario_name}" "${nic_count}"
+    start_mock_imds "${scenario_name}" "${nic_count}" "${spot_termination_delay}"
 
     # Capture serial output
     output_file="${INTEGRATION_OUT}/${scenario_name}.log"
