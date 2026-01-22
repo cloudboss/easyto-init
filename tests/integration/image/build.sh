@@ -16,9 +16,10 @@ log()
 
 log "Creating test rootfs..."
 
-# Use docker to get a minimal alpine rootfs
+# Use docker to get a minimal alpine rootfs with curl for IMDS testing
 log "Extracting alpine rootfs..."
-container_id=$(docker create alpine:3.20 /bin/true)
+container_id=$(docker create alpine:3.20 sh -c "apk add --no-cache curl && rm -rf /var/cache/apk/*")
+docker start -a "${container_id}" > /dev/null
 docker export "${container_id}" | fakeroot tar -xf - -C "${ROOTFS_DIR}"
 docker rm "${container_id}" > /dev/null
 
