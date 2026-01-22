@@ -1,0 +1,14 @@
+disable-services:
+  - chrony
+  - ssh
+# Use a long-running command - the spot termination monitor should interrupt it
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== spot-termination test ==="
+    echo "Sleeping for 60 seconds (expecting spot termination interrupt)..."
+    sleep 60
+    # If we get here, spot termination didn't work
+    echo "FAIL: Sleep completed without spot termination interrupt"

@@ -24,10 +24,11 @@ use rustix::{
 use signal_hook::iterator::Signals;
 
 use crate::{
-    aws::context::AwsCtx,
+    aws::{context::AwsCtx, imds::ImdsClient},
     constants,
     fs::mkdir_p,
     login::{self, Find},
+    spot::start_spot_termination_monitor,
     vmspec::{NameValues, VmSpec},
 };
 
@@ -481,7 +482,7 @@ impl SupervisorBase {
 
     // This method should be called only once, but may be
     // called from multiple threads, hence the mutex.
-    fn stop(&mut self, timeout_tx: Sender<()>) {
+    pub(crate) fn stop(&mut self, timeout_tx: Sender<()>) {
         {
             let _locked = self.shutdown_mutex.lock();
             if self.shutdown {
@@ -526,6 +527,7 @@ impl SupervisorBase {
 
 pub struct Supervisor {
     base_ref: Arc<Mutex<SupervisorBase>>,
+    imds_client: Option<ImdsClient>,
 }
 
 impl Supervisor {
@@ -553,6 +555,9 @@ impl Supervisor {
 
         drop(vmspec);
 
+        // Get IMDS client for spot termination monitoring (optional - may fail)
+        let imds_client = aws_ctx.imds().ok().cloned();
+
         Ok(Self {
             base_ref: Arc::new(Mutex::new(SupervisorBase {
                 main_ref: Arc::new(Mutex::new(main)),
@@ -562,6 +567,7 @@ impl Supervisor {
                 shutdown_grace_period,
                 shutdown_mutex: Mutex::new(()),
             })),
+            imds_client,
         })
     }
 
@@ -592,6 +598,13 @@ impl Supervisor {
             debug!("Starting thread to reap child processes");
             Self::wait_children(main_start_rx, done_tx);
         });
+
+        // Start spot termination monitor if IMDS client is available
+        if let Some(imds_client) = self.imds_client.take() {
+            let spot_base_ref = self.base_ref.clone();
+            let spot_timeout_tx = timeout_tx.clone();
+            start_spot_termination_monitor(imds_client, spot_base_ref, spot_timeout_tx);
+        }
 
         let mut stopped = false;
         let mut select = Select::new();

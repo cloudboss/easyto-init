@@ -10,6 +10,7 @@ pub mod login;
 pub mod network;
 pub mod rdev;
 pub mod service;
+pub mod spot;
 pub mod system;
 pub mod uevent;
 pub mod vmspec;
