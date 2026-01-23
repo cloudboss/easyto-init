@@ -5,7 +5,9 @@ use log::{info, warn};
 use netlink_packet_route::address::{AddressAttribute as AddrAttr, AddressMessage};
 use netlink_packet_route::link::{InfoKind, LinkInfo};
 use netlink_packet_route::link::{LinkAttribute, LinkMessage};
-use rtnetlink::{Error as NlError, Handle as NlHandle, LinkUnspec, RouteMessageBuilder, new_connection};
+use rtnetlink::{
+    Error as NlError, Handle as NlHandle, LinkUnspec, RouteMessageBuilder, new_connection,
+};
 use rustix::fs::Mode;
 use rustix::system::sethostname;
 use serde::{Deserialize, Serialize};
@@ -195,7 +197,6 @@ impl NetlinkConnection {
         )
         .await
     }
-
 }
 
 pub(crate) fn initialize_network(rt: RtHandle, imds_client: &ImdsClientAsync) -> Result<()> {
@@ -809,13 +810,18 @@ impl PersistedNetworkState {
         let address: Ipv4Addr = ip.parse().ok()?;
         let gateway: Ipv4Addr = gw.parse().ok()?;
 
-        let resolver = self.resolver.as_ref().map_or_else(ResolverConfig::default, |r| {
-            ResolverConfig {
-                dns_servers: r.dns_servers.iter().filter_map(|s| s.parse().ok()).collect(),
+        let resolver = self
+            .resolver
+            .as_ref()
+            .map_or_else(ResolverConfig::default, |r| ResolverConfig {
+                dns_servers: r
+                    .dns_servers
+                    .iter()
+                    .filter_map(|s| s.parse().ok())
+                    .collect(),
                 domain_name: r.domain_name.clone(),
                 search_list: r.search_list.clone(),
-            }
-        });
+            });
 
         Some(DhcpLease {
             address: AddressConfig {
@@ -898,7 +904,12 @@ fn build_resolver_config(lease: Option<&DhcpLease>) -> Option<PersistedResolverC
         return None;
     }
     Some(PersistedResolverConfig {
-        dns_servers: lease.resolver.dns_servers.iter().map(|s| s.to_string()).collect(),
+        dns_servers: lease
+            .resolver
+            .dns_servers
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         domain_name: lease.resolver.domain_name.clone(),
         search_list: lease.resolver.search_list.clone(),
     })
