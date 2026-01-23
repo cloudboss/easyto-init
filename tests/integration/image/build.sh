@@ -5,6 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 INIT_BINARY="$1"
 EASYTO_ASSETS_RUNTIME="$2"
 OUTPUT="$3"
+SCENARIO_DIR="${4:-}"
 
 ROOTFS_DIR=$(mktemp -d)
 trap "rm -rf ${ROOTFS_DIR}" EXIT
@@ -58,6 +59,12 @@ cat > "${ROOTFS_DIR}/.easyto/metadata.json" << 'EOF'
   }
 }
 EOF
+
+# Apply scenario-specific overlay if present
+if [ -n "${SCENARIO_DIR}" ] && [ -d "${SCENARIO_DIR}/overlay" ]; then
+    log "Applying overlay from ${SCENARIO_DIR}/overlay..."
+    fakeroot cp -a "${SCENARIO_DIR}/overlay/." "${ROOTFS_DIR}/"
+fi
 
 # Create initramfs with fakeroot to preserve root ownership
 log "Creating initramfs..."
