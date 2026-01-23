@@ -10,7 +10,10 @@
       "last_seen": "2026-01-22T00:00:00Z",
       "ip_address": "10.0.2.15",
       "prefix_len": 24,
-      "gateway": "10.0.2.2"
+      "gateway": "10.0.2.2",
+      "dns_servers": ["8.8.8.8", "8.8.4.4"],
+      "domain_name": "example.com",
+      "search_list": ["example.com", "test.local"]
     }
   ]
 }

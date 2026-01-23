@@ -33,6 +33,14 @@ command:
         exit 1
     fi
 
+    # DNS configuration is optional (depends on DHCP server)
+    # Just check if present, don't fail if missing
+    if grep -q '"dns_servers"' /.easyto/etc/net/interfaces.json; then
+        echo "DNS servers persisted: yes"
+    else
+        echo "DNS servers persisted: no (DHCP server may not provide DNS)"
+    fi
+
     # Show the contents for debugging
     echo "interfaces.json content:"
     cat /.easyto/etc/net/interfaces.json

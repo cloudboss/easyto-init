@@ -22,6 +22,9 @@ pub(crate) struct IpConfig {
     pub(crate) address: Ipv4Addr,
     pub(crate) prefix_len: u8,
     pub(crate) gateway: Ipv4Addr,
+    pub(crate) dns_servers: Vec<Ipv4Addr>,
+    pub(crate) domain_name: Option<String>,
+    pub(crate) search_list: Vec<String>,
 }
 
 fn subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
@@ -65,6 +68,19 @@ fn write_resolv_conf(
         }
         Ok(())
     })
+}
+
+/// Write resolv.conf with DNS configuration from persisted state.
+pub(crate) fn write_resolv_conf_from_config(config: &IpConfig) -> Result<()> {
+    if !config.dns_servers.is_empty() {
+        write_resolv_conf(
+            &config.domain_name,
+            &config.search_list,
+            &config.dns_servers,
+        )
+    } else {
+        Ok(())
+    }
 }
 
 pub(crate) async fn run_dhcp_on_interface(
@@ -337,6 +353,9 @@ async fn apply_dhcp_config(
         address: addr,
         prefix_len,
         gateway,
+        dns_servers: dns_servers.clone(),
+        domain_name: domain_name.clone(),
+        search_list: search_list.clone(),
     };
 
     configure_address_and_route(nl, ifindex, &config).await?;
