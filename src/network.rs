@@ -26,7 +26,8 @@ use crate::aws::imds::ImdsClientAsync;
 use crate::backoff::RetryBackoff;
 use crate::constants::DIR_ET_ETC;
 use crate::dhcp::{
-    IpConfig, configure_address_and_route, run_dhcp_on_interface, write_resolv_conf_from_config,
+    AddressConfig, DhcpLease, ResolverConfig, configure_address_and_route, run_dhcp_on_interface,
+    write_resolver_config,
 };
 use crate::fs::{atomic_write, mkdir_p};
 
@@ -199,7 +200,7 @@ impl NetlinkConnection {
         .await
     }
 
-    pub(crate) async fn get_interface_ip_config(&self, ifindex: u32) -> Result<IpConfig> {
+    pub(crate) async fn get_interface_address_config(&self, ifindex: u32) -> Result<AddressConfig> {
         use netlink_packet_route::address::AddressAttribute;
         use netlink_packet_route::route::{RouteAttribute, RouteMessage};
 
@@ -255,15 +256,10 @@ impl NetlinkConnection {
 
         let gateway = gateway.ok_or_else(|| anyhow!("no default gateway found for interface"))?;
 
-        // Note: DNS configuration is not available from netlink, it comes from DHCP.
-        // When using this path, DNS will come from persisted state or DHCP.
-        Ok(IpConfig {
+        Ok(AddressConfig {
             address,
             prefix_len,
             gateway,
-            dns_servers: Vec::new(),
-            domain_name: None,
-            search_list: Vec::new(),
         })
     }
 }
@@ -309,12 +305,12 @@ async fn initialize_network_inner(imds_client: &ImdsClientAsync) -> Result<()> {
         select_primary_interface(&nl, imds_client, &interfaces, &persisted_state).await?;
     let final_primary = apply_primary_naming(&nl, &interfaces, &primary, &persisted_state).await?;
 
-    let ip_config =
+    let dhcp_lease =
         configure_primary_dhcp(&nl, &final_primary, bootstrap_ifindex, &persisted_state).await?;
 
-    // Persist interfaces with IP configuration after successful DHCP/config.
+    // Persist interfaces with DHCP lease after successful configuration.
     let final_interfaces = nl.get_interfaces().await?;
-    persist_interfaces(&final_interfaces, &final_primary.name, Some(&ip_config))?;
+    persist_interfaces(&final_interfaces, &final_primary.name, Some(&dhcp_lease))?;
 
     set_hostname(imds_client).await?;
 
@@ -392,7 +388,7 @@ async fn configure_primary_dhcp(
     primary: &InterfaceInfo,
     bootstrap_ifindex: Option<u32>,
     persisted_state: &PersistedNetworkState,
-) -> Result<IpConfig> {
+) -> Result<DhcpLease> {
     // Clean up bootstrap if it's different from primary.
     if let Some(bootstrap_idx) = bootstrap_ifindex {
         if bootstrap_idx != primary.ifindex {
@@ -404,21 +400,26 @@ async fn configure_primary_dhcp(
             }
         }
         // If bootstrap_idx == primary.ifindex, the interface is already configured.
-        // Get the current IP configuration from the interface.
-        return nl.get_interface_ip_config(primary.ifindex).await;
+        // Get the current address configuration from the interface.
+        // Note: DNS was written by bootstrap DHCP but we don't have it here to persist.
+        let address = nl.get_interface_address_config(primary.ifindex).await?;
+        return Ok(DhcpLease {
+            address,
+            resolver: ResolverConfig::default(),
+        });
     } else {
-        // No bootstrap (persisted primary) - try to use persisted IP config.
+        // No bootstrap (persisted primary) - try to use persisted config.
         nl.link_up(primary.ifindex).await?;
-        if let Some(config) = persisted_state.get_primary_ip_config() {
+        if let Some(lease) = persisted_state.get_primary_dhcp_lease() {
             info!(
                 "Using persisted IP configuration: {}/{}",
-                config.address, config.prefix_len
+                lease.address.address, lease.address.prefix_len
             );
-            configure_address_and_route(nl, primary.ifindex, &config).await?;
-            write_resolv_conf_from_config(&config)?;
-            return Ok(config);
+            configure_address_and_route(nl, primary.ifindex, &lease.address).await?;
+            write_resolver_config(&lease.resolver)?;
+            return Ok(lease);
         }
-        // No persisted IP config, run DHCP.
+        // No persisted config, run DHCP.
         if let Some(mac) = primary.mac {
             return run_dhcp_on_interface(nl, &primary.name, primary.ifindex, mac).await;
         }
@@ -862,7 +863,7 @@ impl PersistedNetworkState {
             .collect()
     }
 
-    fn get_primary_ip_config(&self) -> Option<IpConfig> {
+    fn get_primary_dhcp_lease(&self) -> Option<DhcpLease> {
         self.interfaces
             .iter()
             .find(|iface| iface.primary)
@@ -876,13 +877,17 @@ impl PersistedNetworkState {
                             .as_ref()
                             .map(|servers| servers.iter().filter_map(|s| s.parse().ok()).collect())
                             .unwrap_or_default();
-                        Some(IpConfig {
-                            address,
-                            prefix_len: prefix,
-                            gateway,
-                            dns_servers,
-                            domain_name: iface.domain_name.clone(),
-                            search_list: iface.search_list.clone().unwrap_or_default(),
+                        Some(DhcpLease {
+                            address: AddressConfig {
+                                address,
+                                prefix_len: prefix,
+                                gateway,
+                            },
+                            resolver: ResolverConfig {
+                                dns_servers,
+                                domain_name: iface.domain_name.clone(),
+                                search_list: iface.search_list.clone().unwrap_or_default(),
+                            },
                         })
                     }
                     _ => None,
@@ -908,7 +913,7 @@ fn family_info(name: &str) -> (String, Option<u32>) {
 fn persist_interfaces(
     interfaces: &[InterfaceInfo],
     primary_name: &str,
-    primary_ip_config: Option<&IpConfig>,
+    primary_lease: Option<&DhcpLease>,
 ) -> Result<()> {
     let dt: chrono::DateTime<Utc> = SystemTime::now().into();
     let now = dt.to_rfc3339();
@@ -919,23 +924,30 @@ fn persist_interfaces(
             let is_primary = n.name == primary_name;
             let (ip_address, prefix_len, gateway, dns_servers, domain_name, search_list) =
                 if is_primary {
-                    if let Some(config) = primary_ip_config {
-                        let dns = if config.dns_servers.is_empty() {
+                    if let Some(lease) = primary_lease {
+                        let dns = if lease.resolver.dns_servers.is_empty() {
                             None
                         } else {
-                            Some(config.dns_servers.iter().map(|s| s.to_string()).collect())
+                            Some(
+                                lease
+                                    .resolver
+                                    .dns_servers
+                                    .iter()
+                                    .map(|s| s.to_string())
+                                    .collect(),
+                            )
                         };
-                        let search = if config.search_list.is_empty() {
+                        let search = if lease.resolver.search_list.is_empty() {
                             None
                         } else {
-                            Some(config.search_list.clone())
+                            Some(lease.resolver.search_list.clone())
                         };
                         (
-                            Some(config.address.to_string()),
-                            Some(config.prefix_len),
-                            Some(config.gateway.to_string()),
+                            Some(lease.address.address.to_string()),
+                            Some(lease.address.prefix_len),
+                            Some(lease.address.gateway.to_string()),
                             dns,
-                            config.domain_name.clone(),
+                            lease.resolver.domain_name.clone(),
                             search,
                         )
                     } else {
@@ -1074,7 +1086,7 @@ mod test {
     }
 
     #[test]
-    fn test_get_primary_ip_config_present() {
+    fn test_get_primary_dhcp_lease_present() {
         let state = PersistedNetworkState {
             interfaces: vec![InterfaceEntry {
                 iface: "eth0".to_string(),
@@ -1093,20 +1105,20 @@ mod test {
             }],
         };
 
-        let config = state.get_primary_ip_config();
-        assert!(config.is_some());
-        let config = config.unwrap();
-        assert_eq!(config.address, Ipv4Addr::new(10, 0, 2, 15));
-        assert_eq!(config.prefix_len, 24);
-        assert_eq!(config.gateway, Ipv4Addr::new(10, 0, 2, 2));
-        assert_eq!(config.dns_servers.len(), 2);
-        assert_eq!(config.dns_servers[0], Ipv4Addr::new(8, 8, 8, 8));
-        assert_eq!(config.domain_name, Some("example.com".to_string()));
-        assert_eq!(config.search_list, vec!["example.com".to_string()]);
+        let lease = state.get_primary_dhcp_lease();
+        assert!(lease.is_some());
+        let lease = lease.unwrap();
+        assert_eq!(lease.address.address, Ipv4Addr::new(10, 0, 2, 15));
+        assert_eq!(lease.address.prefix_len, 24);
+        assert_eq!(lease.address.gateway, Ipv4Addr::new(10, 0, 2, 2));
+        assert_eq!(lease.resolver.dns_servers.len(), 2);
+        assert_eq!(lease.resolver.dns_servers[0], Ipv4Addr::new(8, 8, 8, 8));
+        assert_eq!(lease.resolver.domain_name, Some("example.com".to_string()));
+        assert_eq!(lease.resolver.search_list, vec!["example.com".to_string()]);
     }
 
     #[test]
-    fn test_get_primary_ip_config_missing_ip() {
+    fn test_get_primary_dhcp_lease_missing_ip() {
         let state = PersistedNetworkState {
             interfaces: vec![InterfaceEntry {
                 iface: "eth0".to_string(),
@@ -1125,11 +1137,11 @@ mod test {
             }],
         };
 
-        assert!(state.get_primary_ip_config().is_none());
+        assert!(state.get_primary_dhcp_lease().is_none());
     }
 
     #[test]
-    fn test_get_primary_ip_config_no_primary() {
+    fn test_get_primary_dhcp_lease_no_primary() {
         let state = PersistedNetworkState {
             interfaces: vec![InterfaceEntry {
                 iface: "eth0".to_string(),
@@ -1148,7 +1160,7 @@ mod test {
             }],
         };
 
-        assert!(state.get_primary_ip_config().is_none());
+        assert!(state.get_primary_dhcp_lease().is_none());
     }
 
     #[test]
