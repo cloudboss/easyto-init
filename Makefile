@@ -114,7 +114,8 @@ DOCKER_GID = $(shell getent group docker | cut -d: -f3)
 test-integration: \
 		$(HAS_IMAGE_LOCAL) \
 		$(DIR_OUT)/target/$(RUST_TARGET)/release/init \
-		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/
+		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
+		$(DIR_OUT)/vmlinuz
 	@docker run --rm -t \
 		-v $(DIR_ROOT):/code \
 		-v /var/run/docker.sock:/var/run/docker.sock \
@@ -140,6 +141,8 @@ test-integration-kvm: \
 		-e KEEP_LOGS=$(KEEP_LOGS) \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "./tests/integration/run.sh"
+
+build: $(DIR_OUT)/target/$(RUST_TARGET)/release/init
 
 release: $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz
 
