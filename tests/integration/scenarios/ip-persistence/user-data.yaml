@@ -33,13 +33,13 @@ command:
         exit 1
     fi
 
-    # DNS configuration is optional (depends on DHCP server)
-    # Just check if present, don't fail if missing
-    if grep -q '"dns_servers"' /.easyto/etc/net/interfaces.json; then
-        echo "DNS servers persisted: yes"
-    else
-        echo "DNS servers persisted: no (DHCP server may not provide DNS)"
+    # DNS configuration should be persisted (QEMU user-mode DHCP provides DNS)
+    if ! grep -q '"dns_servers"' /.easyto/etc/net/interfaces.json; then
+        echo "FAIL: dns_servers not found in interfaces.json"
+        cat /.easyto/etc/net/interfaces.json
+        exit 1
     fi
+    echo "DNS servers persisted: yes"
 
     # Show the contents for debugging
     echo "interfaces.json content:"
