@@ -46,11 +46,19 @@ pub fn sysctl<P: AsRef<Path>>(base_dir: P, key: &str, value: &str) -> Result<()>
         match write(&full_path, value) {
             Ok(()) => return Ok(()),
             Err(e) if e.kind() == ErrorKind::NotFound && elapsed < timeout => {
-                debug!("sysctl {} not found yet, retrying (elapsed: {:?})", key, elapsed);
+                debug!(
+                    "sysctl {} not found yet, retrying (elapsed: {:?})",
+                    key, elapsed
+                );
                 backoff.snooze();
             }
             Err(e) => {
-                return Err(anyhow!("unable to write {} to {:?}: {}", value, full_path, e));
+                return Err(anyhow!(
+                    "unable to write {} to {:?}: {}",
+                    value,
+                    full_path,
+                    e
+                ));
             }
         }
     }
