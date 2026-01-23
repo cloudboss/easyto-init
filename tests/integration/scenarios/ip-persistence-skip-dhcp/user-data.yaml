@@ -23,5 +23,23 @@ command:
     fi
     echo "Network connectivity verified"
 
+    # Check that resolv.conf was written from persisted DNS config
+    if ! grep -q "nameserver 8.8.8.8" /etc/resolv.conf; then
+        echo "FAIL: /etc/resolv.conf missing nameserver 8.8.8.8"
+        cat /etc/resolv.conf
+        exit 1
+    fi
+    if ! grep -q "domain example.com" /etc/resolv.conf; then
+        echo "FAIL: /etc/resolv.conf missing domain example.com"
+        cat /etc/resolv.conf
+        exit 1
+    fi
+    if ! grep -q "search example.com test.local" /etc/resolv.conf; then
+        echo "FAIL: /etc/resolv.conf missing search domains"
+        cat /etc/resolv.conf
+        exit 1
+    fi
+    echo "DNS configuration restored from persisted state"
+
     echo ""
     echo "PASS"
