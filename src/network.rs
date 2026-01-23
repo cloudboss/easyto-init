@@ -5,6 +5,7 @@ use log::{info, warn};
 use netlink_packet_route::address::{AddressAttribute as AddrAttr, AddressMessage};
 use netlink_packet_route::link::{InfoKind, LinkInfo};
 use netlink_packet_route::link::{LinkAttribute, LinkMessage};
+use netlink_packet_route::route::RouteAddress;
 use rtnetlink::{
     Error as NlError, Handle as NlHandle, LinkUnspec, RouteMessageBuilder, new_connection,
 };
@@ -24,7 +25,7 @@ use tokio::runtime::Handle as RtHandle;
 use crate::aws::imds::ImdsClientAsync;
 use crate::backoff::RetryBackoff;
 use crate::constants::DIR_ET_ETC;
-use crate::dhcp::run_dhcp_on_interface;
+use crate::dhcp::{IpConfig, configure_address_and_route, run_dhcp_on_interface};
 use crate::fs::{atomic_write, mkdir_p};
 
 #[derive(Debug, Clone)]
@@ -195,6 +196,69 @@ impl NetlinkConnection {
         )
         .await
     }
+
+    pub(crate) async fn get_interface_ip_config(&self, ifindex: u32) -> Result<IpConfig> {
+        use netlink_packet_route::address::AddressAttribute;
+        use netlink_packet_route::route::{RouteAttribute, RouteMessage};
+
+        // Get the first IPv4 address on this interface.
+        let mut addrs = self.address_stream(Some(ifindex));
+        let mut address: Option<Ipv4Addr> = None;
+        let mut prefix_len: Option<u8> = None;
+        while let Some(addr_res) = addrs.next().await {
+            let addr_msg = addr_res?;
+            if addr_msg.header.family == netlink_packet_route::AddressFamily::Inet {
+                prefix_len = Some(addr_msg.header.prefix_len);
+                for attr in &addr_msg.attributes {
+                    if let AddressAttribute::Address(IpAddr::V4(v4)) = attr {
+                        address = Some(*v4);
+                        break;
+                    }
+                }
+                if address.is_some() {
+                    break;
+                }
+            }
+        }
+
+        let address = address.ok_or_else(|| anyhow!("no IPv4 address found on interface"))?;
+        let prefix_len = prefix_len.ok_or_else(|| anyhow!("no prefix length found"))?;
+
+        // Get the default gateway from the routing table.
+        // Create a RouteMessage to query IPv4 routes.
+        let route_msg = RouteMessageBuilder::<Ipv4Addr>::default().build();
+        let mut routes = self.handle.route().get(route_msg).execute();
+        let mut gateway: Option<Ipv4Addr> = None;
+        while let Some(route_res) = routes.next().await {
+            let route: RouteMessage = route_res?;
+            // Look for default route (0.0.0.0/0) on this interface.
+            if route.header.destination_prefix_length == 0 {
+                let mut route_ifindex: Option<u32> = None;
+                let mut route_gateway: Option<Ipv4Addr> = None;
+                for attr in &route.attributes {
+                    match attr {
+                        RouteAttribute::Oif(idx) => route_ifindex = Some(*idx),
+                        RouteAttribute::Gateway(RouteAddress::Inet(v4)) => {
+                            route_gateway = Some(*v4);
+                        }
+                        _ => {}
+                    }
+                }
+                if route_ifindex == Some(ifindex) {
+                    gateway = route_gateway;
+                    break;
+                }
+            }
+        }
+
+        let gateway = gateway.ok_or_else(|| anyhow!("no default gateway found for interface"))?;
+
+        Ok(IpConfig {
+            address,
+            prefix_len,
+            gateway,
+        })
+    }
 }
 
 pub(crate) fn initialize_network(rt: RtHandle, imds_client: &ImdsClientAsync) -> Result<()> {
@@ -238,7 +302,12 @@ async fn initialize_network_inner(imds_client: &ImdsClientAsync) -> Result<()> {
         select_primary_interface(&nl, imds_client, &interfaces, &persisted_state).await?;
     let final_primary = apply_primary_naming(&nl, &interfaces, &primary, &persisted_state).await?;
 
-    configure_primary_dhcp(&nl, &final_primary, bootstrap_ifindex).await?;
+    let ip_config =
+        configure_primary_dhcp(&nl, &final_primary, bootstrap_ifindex, &persisted_state).await?;
+
+    // Persist interfaces with IP configuration after successful DHCP/config.
+    let final_interfaces = nl.get_interfaces().await?;
+    persist_interfaces(&final_interfaces, &final_primary.name, Some(&ip_config))?;
 
     set_hostname(imds_client).await?;
 
@@ -254,8 +323,7 @@ async fn set_hostname(imds_client: &ImdsClientAsync) -> Result<()> {
     let hostname_str: String = hostname.into();
     info!("Setting hostname to {}", &hostname_str);
 
-    sethostname(hostname_str.as_bytes())
-        .map_err(|e| anyhow!("failed to set hostname: {}", e))?;
+    sethostname(hostname_str.as_bytes()).map_err(|e| anyhow!("failed to set hostname: {}", e))?;
 
     Ok(())
 }
@@ -309,7 +377,6 @@ async fn apply_primary_naming(
         .find(|n| n.name == desired_name)
         .unwrap_or(chosen_primary)
         .clone();
-    persist_interfaces(&final_interfaces, &primary.name)?;
     Ok(primary)
 }
 
@@ -317,7 +384,8 @@ async fn configure_primary_dhcp(
     nl: &NetlinkConnection,
     primary: &InterfaceInfo,
     bootstrap_ifindex: Option<u32>,
-) -> Result<()> {
+    persisted_state: &PersistedNetworkState,
+) -> Result<IpConfig> {
     // Clean up bootstrap if it's different from primary.
     if let Some(bootstrap_idx) = bootstrap_ifindex {
         if bootstrap_idx != primary.ifindex {
@@ -325,19 +393,30 @@ async fn configure_primary_dhcp(
             flush_interface(nl, bootstrap_idx).await;
             nl.link_up(primary.ifindex).await?;
             if let Some(mac) = primary.mac {
-                run_dhcp_on_interface(nl, &primary.name, primary.ifindex, mac).await?;
+                return run_dhcp_on_interface(nl, &primary.name, primary.ifindex, mac).await;
             }
         }
         // If bootstrap_idx == primary.ifindex, the interface is already configured.
+        // Get the current IP configuration from the interface.
+        return nl.get_interface_ip_config(primary.ifindex).await;
     } else {
-        // No bootstrap (persisted primary) - run DHCP.
+        // No bootstrap (persisted primary) - try to use persisted IP config.
         nl.link_up(primary.ifindex).await?;
+        if let Some(config) = persisted_state.get_primary_ip_config() {
+            info!(
+                "Using persisted IP configuration: {}/{}",
+                config.address, config.prefix_len
+            );
+            configure_address_and_route(nl, primary.ifindex, &config).await?;
+            return Ok(config);
+        }
+        // No persisted IP config, run DHCP.
         if let Some(mac) = primary.mac {
-            run_dhcp_on_interface(nl, &primary.name, primary.ifindex, mac).await?;
+            return run_dhcp_on_interface(nl, &primary.name, primary.ifindex, mac).await;
         }
     }
 
-    Ok(())
+    Err(anyhow!("no MAC address available for primary interface"))
 }
 
 fn extract_interface(link: LinkMessage) -> Result<InterfaceInfo> {
@@ -716,6 +795,13 @@ struct InterfaceEntry {
     primary: bool,
     present: bool,
     last_seen: String,
+    // IP configuration from DHCP (for skipping DHCP on subsequent boots)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ip_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prefix_len: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -761,6 +847,26 @@ impl PersistedNetworkState {
             })
             .collect()
     }
+
+    fn get_primary_ip_config(&self) -> Option<IpConfig> {
+        self.interfaces
+            .iter()
+            .find(|iface| iface.primary)
+            .and_then(
+                |iface| match (&iface.ip_address, iface.prefix_len, &iface.gateway) {
+                    (Some(ip), Some(prefix), Some(gw)) => {
+                        let address: Ipv4Addr = ip.parse().ok()?;
+                        let gateway: Ipv4Addr = gw.parse().ok()?;
+                        Some(IpConfig {
+                            address,
+                            prefix_len: prefix,
+                            gateway,
+                        })
+                    }
+                    _ => None,
+                },
+            )
+    }
 }
 
 fn mac_to_string(mac: [u8; 6]) -> String {
@@ -777,21 +883,42 @@ fn family_info(name: &str) -> (String, Option<u32>) {
     }
 }
 
-fn persist_interfaces(interfaces: &[InterfaceInfo], primary_name: &str) -> Result<()> {
+fn persist_interfaces(
+    interfaces: &[InterfaceInfo],
+    primary_name: &str,
+    primary_ip_config: Option<&IpConfig>,
+) -> Result<()> {
     let dt: chrono::DateTime<Utc> = SystemTime::now().into();
     let now = dt.to_rfc3339();
     let entries: Vec<InterfaceEntry> = interfaces
         .iter()
         .map(|n| {
             let (family, idx) = family_info(&n.name);
+            let is_primary = n.name == primary_name;
+            let (ip_address, prefix_len, gateway) = if is_primary {
+                if let Some(config) = primary_ip_config {
+                    (
+                        Some(config.address.to_string()),
+                        Some(config.prefix_len),
+                        Some(config.gateway.to_string()),
+                    )
+                } else {
+                    (None, None, None)
+                }
+            } else {
+                (None, None, None)
+            };
             InterfaceEntry {
                 iface: n.name.clone(),
                 mac: n.mac.map(mac_to_string),
                 family,
                 index: idx,
-                primary: n.name == primary_name,
+                primary: is_primary,
                 present: true,
                 last_seen: now.clone(),
+                ip_address,
+                prefix_len,
+                gateway,
             }
         })
         .collect();
@@ -824,25 +951,46 @@ mod test {
 
     #[test]
     fn test_mac_to_string() {
-        assert_eq!(mac_to_string([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]), "00:11:22:33:44:55");
-        assert_eq!(mac_to_string([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]), "ff:ff:ff:ff:ff:ff");
-        assert_eq!(mac_to_string([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), "00:00:00:00:00:00");
-        assert_eq!(mac_to_string([0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f]), "0a:0b:0c:0d:0e:0f");
+        assert_eq!(
+            mac_to_string([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]),
+            "00:11:22:33:44:55"
+        );
+        assert_eq!(
+            mac_to_string([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+            "ff:ff:ff:ff:ff:ff"
+        );
+        assert_eq!(
+            mac_to_string([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            "00:00:00:00:00:00"
+        );
+        assert_eq!(
+            mac_to_string([0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f]),
+            "0a:0b:0c:0d:0e:0f"
+        );
     }
 
     #[test]
     fn test_parse_family_simple() {
         assert_eq!(
             parse_family("eth0"),
-            IfFamily::Simple { prefix: "eth".to_string(), index: 0 }
+            IfFamily::Simple {
+                prefix: "eth".to_string(),
+                index: 0
+            }
         );
         assert_eq!(
             parse_family("eth123"),
-            IfFamily::Simple { prefix: "eth".to_string(), index: 123 }
+            IfFamily::Simple {
+                prefix: "eth".to_string(),
+                index: 123
+            }
         );
         assert_eq!(
             parse_family("ens5"),
-            IfFamily::Simple { prefix: "ens".to_string(), index: 5 }
+            IfFamily::Simple {
+                prefix: "ens".to_string(),
+                index: 5
+            }
         );
     }
 
@@ -884,5 +1032,124 @@ mod test {
         assert!(is_virtual_kind(&InfoKind::Vlan));
         assert!(is_virtual_kind(&InfoKind::Wireguard));
         assert!(!is_virtual_kind(&InfoKind::Dummy));
+    }
+
+    #[test]
+    fn test_get_primary_ip_config_present() {
+        let state = PersistedNetworkState {
+            interfaces: vec![InterfaceEntry {
+                iface: "eth0".to_string(),
+                mac: Some("00:11:22:33:44:55".to_string()),
+                family: "eth".to_string(),
+                index: Some(0),
+                primary: true,
+                present: true,
+                last_seen: "2026-01-01T00:00:00Z".to_string(),
+                ip_address: Some("10.0.2.15".to_string()),
+                prefix_len: Some(24),
+                gateway: Some("10.0.2.2".to_string()),
+            }],
+        };
+
+        let config = state.get_primary_ip_config();
+        assert!(config.is_some());
+        let config = config.unwrap();
+        assert_eq!(config.address, Ipv4Addr::new(10, 0, 2, 15));
+        assert_eq!(config.prefix_len, 24);
+        assert_eq!(config.gateway, Ipv4Addr::new(10, 0, 2, 2));
+    }
+
+    #[test]
+    fn test_get_primary_ip_config_missing_ip() {
+        let state = PersistedNetworkState {
+            interfaces: vec![InterfaceEntry {
+                iface: "eth0".to_string(),
+                mac: Some("00:11:22:33:44:55".to_string()),
+                family: "eth".to_string(),
+                index: Some(0),
+                primary: true,
+                present: true,
+                last_seen: "2026-01-01T00:00:00Z".to_string(),
+                ip_address: None,
+                prefix_len: None,
+                gateway: None,
+            }],
+        };
+
+        assert!(state.get_primary_ip_config().is_none());
+    }
+
+    #[test]
+    fn test_get_primary_ip_config_no_primary() {
+        let state = PersistedNetworkState {
+            interfaces: vec![InterfaceEntry {
+                iface: "eth0".to_string(),
+                mac: Some("00:11:22:33:44:55".to_string()),
+                family: "eth".to_string(),
+                index: Some(0),
+                primary: false,
+                present: true,
+                last_seen: "2026-01-01T00:00:00Z".to_string(),
+                ip_address: Some("10.0.2.15".to_string()),
+                prefix_len: Some(24),
+                gateway: Some("10.0.2.2".to_string()),
+            }],
+        };
+
+        assert!(state.get_primary_ip_config().is_none());
+    }
+
+    #[test]
+    fn test_interface_entry_serialization_with_ip() {
+        let entry = InterfaceEntry {
+            iface: "eth0".to_string(),
+            mac: Some("00:11:22:33:44:55".to_string()),
+            family: "eth".to_string(),
+            index: Some(0),
+            primary: true,
+            present: true,
+            last_seen: "2026-01-01T00:00:00Z".to_string(),
+            ip_address: Some("10.0.2.15".to_string()),
+            prefix_len: Some(24),
+            gateway: Some("10.0.2.2".to_string()),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"ip_address\":\"10.0.2.15\""));
+        assert!(json.contains("\"prefix_len\":24"));
+        assert!(json.contains("\"gateway\":\"10.0.2.2\""));
+
+        let parsed: InterfaceEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.ip_address, Some("10.0.2.15".to_string()));
+        assert_eq!(parsed.prefix_len, Some(24));
+        assert_eq!(parsed.gateway, Some("10.0.2.2".to_string()));
+    }
+
+    #[test]
+    fn test_interface_entry_serialization_without_ip() {
+        let entry = InterfaceEntry {
+            iface: "eth0".to_string(),
+            mac: Some("00:11:22:33:44:55".to_string()),
+            family: "eth".to_string(),
+            index: Some(0),
+            primary: true,
+            present: true,
+            last_seen: "2026-01-01T00:00:00Z".to_string(),
+            ip_address: None,
+            prefix_len: None,
+            gateway: None,
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        // With skip_serializing_if, None fields should not appear
+        assert!(!json.contains("ip_address"));
+        assert!(!json.contains("prefix_len"));
+        assert!(!json.contains("gateway"));
+
+        // But parsing it back should still work
+        let parsed: InterfaceEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.ip_address, None);
+        assert_eq!(parsed.prefix_len, None);
+        assert_eq!(parsed.gateway, None);
     }
 }
