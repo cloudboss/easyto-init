@@ -25,7 +25,9 @@ use tokio::runtime::Handle as RtHandle;
 use crate::aws::imds::ImdsClientAsync;
 use crate::backoff::RetryBackoff;
 use crate::constants::DIR_ET_ETC;
-use crate::dhcp::{IpConfig, configure_address_and_route, run_dhcp_on_interface};
+use crate::dhcp::{
+    IpConfig, configure_address_and_route, run_dhcp_on_interface, write_resolv_conf_from_config,
+};
 use crate::fs::{atomic_write, mkdir_p};
 
 #[derive(Debug, Clone)]
@@ -253,10 +255,15 @@ impl NetlinkConnection {
 
         let gateway = gateway.ok_or_else(|| anyhow!("no default gateway found for interface"))?;
 
+        // Note: DNS configuration is not available from netlink, it comes from DHCP.
+        // When using this path, DNS will come from persisted state or DHCP.
         Ok(IpConfig {
             address,
             prefix_len,
             gateway,
+            dns_servers: Vec::new(),
+            domain_name: None,
+            search_list: Vec::new(),
         })
     }
 }
@@ -408,6 +415,7 @@ async fn configure_primary_dhcp(
                 config.address, config.prefix_len
             );
             configure_address_and_route(nl, primary.ifindex, &config).await?;
+            write_resolv_conf_from_config(&config)?;
             return Ok(config);
         }
         // No persisted IP config, run DHCP.
@@ -802,6 +810,12 @@ struct InterfaceEntry {
     prefix_len: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dns_servers: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domain_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_list: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -857,10 +871,18 @@ impl PersistedNetworkState {
                     (Some(ip), Some(prefix), Some(gw)) => {
                         let address: Ipv4Addr = ip.parse().ok()?;
                         let gateway: Ipv4Addr = gw.parse().ok()?;
+                        let dns_servers: Vec<Ipv4Addr> = iface
+                            .dns_servers
+                            .as_ref()
+                            .map(|servers| servers.iter().filter_map(|s| s.parse().ok()).collect())
+                            .unwrap_or_default();
                         Some(IpConfig {
                             address,
                             prefix_len: prefix,
                             gateway,
+                            dns_servers,
+                            domain_name: iface.domain_name.clone(),
+                            search_list: iface.search_list.clone().unwrap_or_default(),
                         })
                     }
                     _ => None,
@@ -895,19 +917,33 @@ fn persist_interfaces(
         .map(|n| {
             let (family, idx) = family_info(&n.name);
             let is_primary = n.name == primary_name;
-            let (ip_address, prefix_len, gateway) = if is_primary {
-                if let Some(config) = primary_ip_config {
-                    (
-                        Some(config.address.to_string()),
-                        Some(config.prefix_len),
-                        Some(config.gateway.to_string()),
-                    )
+            let (ip_address, prefix_len, gateway, dns_servers, domain_name, search_list) =
+                if is_primary {
+                    if let Some(config) = primary_ip_config {
+                        let dns = if config.dns_servers.is_empty() {
+                            None
+                        } else {
+                            Some(config.dns_servers.iter().map(|s| s.to_string()).collect())
+                        };
+                        let search = if config.search_list.is_empty() {
+                            None
+                        } else {
+                            Some(config.search_list.clone())
+                        };
+                        (
+                            Some(config.address.to_string()),
+                            Some(config.prefix_len),
+                            Some(config.gateway.to_string()),
+                            dns,
+                            config.domain_name.clone(),
+                            search,
+                        )
+                    } else {
+                        (None, None, None, None, None, None)
+                    }
                 } else {
-                    (None, None, None)
-                }
-            } else {
-                (None, None, None)
-            };
+                    (None, None, None, None, None, None)
+                };
             InterfaceEntry {
                 iface: n.name.clone(),
                 mac: n.mac.map(mac_to_string),
@@ -919,6 +955,9 @@ fn persist_interfaces(
                 ip_address,
                 prefix_len,
                 gateway,
+                dns_servers,
+                domain_name,
+                search_list,
             }
         })
         .collect();
@@ -1048,6 +1087,9 @@ mod test {
                 ip_address: Some("10.0.2.15".to_string()),
                 prefix_len: Some(24),
                 gateway: Some("10.0.2.2".to_string()),
+                dns_servers: Some(vec!["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
+                domain_name: Some("example.com".to_string()),
+                search_list: Some(vec!["example.com".to_string()]),
             }],
         };
 
@@ -1057,6 +1099,10 @@ mod test {
         assert_eq!(config.address, Ipv4Addr::new(10, 0, 2, 15));
         assert_eq!(config.prefix_len, 24);
         assert_eq!(config.gateway, Ipv4Addr::new(10, 0, 2, 2));
+        assert_eq!(config.dns_servers.len(), 2);
+        assert_eq!(config.dns_servers[0], Ipv4Addr::new(8, 8, 8, 8));
+        assert_eq!(config.domain_name, Some("example.com".to_string()));
+        assert_eq!(config.search_list, vec!["example.com".to_string()]);
     }
 
     #[test]
@@ -1073,6 +1119,9 @@ mod test {
                 ip_address: None,
                 prefix_len: None,
                 gateway: None,
+                dns_servers: None,
+                domain_name: None,
+                search_list: None,
             }],
         };
 
@@ -1093,6 +1142,9 @@ mod test {
                 ip_address: Some("10.0.2.15".to_string()),
                 prefix_len: Some(24),
                 gateway: Some("10.0.2.2".to_string()),
+                dns_servers: None,
+                domain_name: None,
+                search_list: None,
             }],
         };
 
@@ -1112,17 +1164,26 @@ mod test {
             ip_address: Some("10.0.2.15".to_string()),
             prefix_len: Some(24),
             gateway: Some("10.0.2.2".to_string()),
+            dns_servers: Some(vec!["8.8.8.8".to_string()]),
+            domain_name: Some("example.com".to_string()),
+            search_list: Some(vec!["example.com".to_string()]),
         };
 
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"ip_address\":\"10.0.2.15\""));
         assert!(json.contains("\"prefix_len\":24"));
         assert!(json.contains("\"gateway\":\"10.0.2.2\""));
+        assert!(json.contains("\"dns_servers\":[\"8.8.8.8\"]"));
+        assert!(json.contains("\"domain_name\":\"example.com\""));
+        assert!(json.contains("\"search_list\":[\"example.com\"]"));
 
         let parsed: InterfaceEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.ip_address, Some("10.0.2.15".to_string()));
         assert_eq!(parsed.prefix_len, Some(24));
         assert_eq!(parsed.gateway, Some("10.0.2.2".to_string()));
+        assert_eq!(parsed.dns_servers, Some(vec!["8.8.8.8".to_string()]));
+        assert_eq!(parsed.domain_name, Some("example.com".to_string()));
+        assert_eq!(parsed.search_list, Some(vec!["example.com".to_string()]));
     }
 
     #[test]
@@ -1138,6 +1199,9 @@ mod test {
             ip_address: None,
             prefix_len: None,
             gateway: None,
+            dns_servers: None,
+            domain_name: None,
+            search_list: None,
         };
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -1145,11 +1209,17 @@ mod test {
         assert!(!json.contains("ip_address"));
         assert!(!json.contains("prefix_len"));
         assert!(!json.contains("gateway"));
+        assert!(!json.contains("dns_servers"));
+        assert!(!json.contains("domain_name"));
+        assert!(!json.contains("search_list"));
 
         // But parsing it back should still work
         let parsed: InterfaceEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.ip_address, None);
         assert_eq!(parsed.prefix_len, None);
         assert_eq!(parsed.gateway, None);
+        assert_eq!(parsed.dns_servers, None);
+        assert_eq!(parsed.domain_name, None);
+        assert_eq!(parsed.search_list, None);
     }
 }
