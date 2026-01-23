@@ -1,0 +1,27 @@
+disable-services:
+  - chrony
+  - ssh
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== ip-persistence-skip-dhcp test ==="
+
+    # Check the IP address is configured (should be from persisted config)
+    ip_addr=$(ip -4 addr show eth0 | grep -o 'inet [0-9.]*' | awk '{print $2}')
+    if [ "${ip_addr}" != "10.0.2.15" ]; then
+        echo "FAIL: Expected IP 10.0.2.15, got ${ip_addr}"
+        exit 1
+    fi
+    echo "IP address: ${ip_addr} (correct)"
+
+    # Test connectivity to the host (IMDS mock server)
+    if ! curl -s -o /dev/null "http://10.0.2.2:8080/latest/meta-data/instance-id"; then
+        echo "FAIL: Cannot reach mock IMDS server"
+        exit 1
+    fi
+    echo "Network connectivity verified"
+
+    echo ""
+    echo "PASS"

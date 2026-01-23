@@ -16,25 +16,31 @@ use crate::constants::FILE_ETC_RESOLV_CONF;
 use crate::fs::atomic_write;
 use crate::network::NetlinkConnection;
 
+/// IP configuration obtained from DHCP or persisted state.
+#[derive(Debug, Clone)]
+pub(crate) struct IpConfig {
+    pub(crate) address: Ipv4Addr,
+    pub(crate) prefix_len: u8,
+    pub(crate) gateway: Ipv4Addr,
+}
+
 fn subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
     let m = u32::from_be_bytes(mask.octets());
     m.count_ones() as u8
 }
 
-async fn configure_address_and_route(
+pub(crate) async fn configure_address_and_route(
     nl: &NetlinkConnection,
     ifindex: u32,
-    addr: Ipv4Addr,
-    prefix: u8,
-    gateway: Ipv4Addr,
+    config: &IpConfig,
 ) -> Result<()> {
-    nl.address_add(ifindex, IpAddr::V4(addr), prefix)
+    nl.address_add(ifindex, IpAddr::V4(config.address), config.prefix_len)
         .await
         .context("failed to add IP address")?;
     nl.route_add(
         ifindex,
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        IpAddr::V4(gateway),
+        IpAddr::V4(config.gateway),
         0,
     )
     .await
@@ -66,7 +72,7 @@ pub(crate) async fn run_dhcp_on_interface(
     interface: &str,
     ifindex: u32,
     mac: [u8; 6],
-) -> Result<()> {
+) -> Result<IpConfig> {
     let timeout = Duration::from_secs(30);
     let cap = Duration::from_secs(5);
     let start = Instant::now();
@@ -92,7 +98,7 @@ pub(crate) async fn run_dhcp_on_interface(
         };
 
         match attempt_dhcp_exchange(&sock, &mut buf, interface, ifindex, mac, nl).await {
-            Ok(()) => return Ok(()),
+            Ok(config) => return Ok(config),
             Err(e) => {
                 warn!("DHCP attempt failed on {}: {}", interface, e);
                 last_error = Some(e);
@@ -128,7 +134,7 @@ async fn attempt_dhcp_exchange(
     ifindex: u32,
     mac: [u8; 6],
     nl: &NetlinkConnection,
-) -> Result<()> {
+) -> Result<IpConfig> {
     // Generate transaction ID.
     let xid = OsRng
         .try_next_u32()
@@ -284,7 +290,11 @@ fn is_error_retryable(error: &io::Error) -> bool {
     kind == io::ErrorKind::WouldBlock || kind == io::ErrorKind::TimedOut
 }
 
-async fn apply_dhcp_config(nl: &NetlinkConnection, ifindex: u32, ack_msg: &Message) -> Result<()> {
+async fn apply_dhcp_config(
+    nl: &NetlinkConnection,
+    ifindex: u32,
+    ack_msg: &Message,
+) -> Result<IpConfig> {
     let addr = ack_msg.yiaddr();
 
     let subnet = ack_msg
@@ -322,15 +332,20 @@ async fn apply_dhcp_config(nl: &NetlinkConnection, ifindex: u32, ack_msg: &Messa
         _ => Vec::new(),
     };
 
-    let prefix = subnet_mask_to_prefix(subnet);
+    let prefix_len = subnet_mask_to_prefix(subnet);
+    let config = IpConfig {
+        address: addr,
+        prefix_len,
+        gateway,
+    };
 
-    configure_address_and_route(nl, ifindex, addr, prefix, gateway).await?;
+    configure_address_and_route(nl, ifindex, &config).await?;
 
     if !dns_servers.is_empty() {
         write_resolv_conf(&domain_name, &search_list, &dns_servers)?;
     }
 
-    Ok(())
+    Ok(config)
 }
 
 #[cfg(test)]

@@ -41,7 +41,12 @@ impl<'a> Mount<'a> {
                 debug!("Mount point {:?} already mounted, skipping", path);
                 Ok(())
             }
-            Err(e) => Err(anyhow!("unable to mount {} on {:?}: {}", self.source, path, e)),
+            Err(e) => Err(anyhow!(
+                "unable to mount {} on {:?}: {}",
+                self.source,
+                path,
+                e
+            )),
         }
     }
 }
