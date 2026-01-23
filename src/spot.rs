@@ -59,8 +59,7 @@ fn monitor_loop(
                 return;
             }
             Ok(None) => {
-                // No termination scheduled, continue polling
-                debug!("No spot termination notice");
+                // No termination scheduled, continue polling.
             }
             Err(e) => {
                 // Log warning but continue polling - could be transient network issue
