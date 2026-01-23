@@ -31,7 +31,10 @@ pub fn start_spot_termination_monitor(
     timeout_tx: Sender<()>,
 ) {
     thread::spawn(move || {
-        debug!("Starting spot termination monitor (polling every {:?})", POLL_INTERVAL);
+        debug!(
+            "Starting spot termination monitor (polling every {:?})",
+            POLL_INTERVAL
+        );
         monitor_loop(imds_client, base_ref, timeout_tx);
     });
 }
@@ -88,14 +91,8 @@ fn check_spot_termination(imds_client: &ImdsClient) -> anyhow::Result<Option<Spo
             let parsed: serde_json::Value = serde_json::from_str(response_str)
                 .map_err(|e| anyhow::anyhow!("failed to parse spot action response: {}", e))?;
 
-            let action = parsed["action"]
-                .as_str()
-                .unwrap_or("unknown")
-                .to_string();
-            let time = parsed["time"]
-                .as_str()
-                .unwrap_or("unknown")
-                .to_string();
+            let action = parsed["action"].as_str().unwrap_or("unknown").to_string();
+            let time = parsed["time"].as_str().unwrap_or("unknown").to_string();
 
             Ok(Some(SpotAction { action, time }))
         }
