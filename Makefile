@@ -121,6 +121,7 @@ test-integration: \
 		--group-add $(DOCKER_GID) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
+		-e KEEP_LOGS=$(KEEP_LOGS) \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "./tests/integration/run.sh"
 
@@ -136,6 +137,7 @@ test-integration-kvm: \
 		--device=/dev/kvm \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
+		-e KEEP_LOGS=$(KEEP_LOGS) \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "./tests/integration/run.sh"
 
