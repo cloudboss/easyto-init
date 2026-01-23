@@ -5,14 +5,10 @@ use log::{info, warn};
 use netlink_packet_route::address::{AddressAttribute as AddrAttr, AddressMessage};
 use netlink_packet_route::link::{InfoKind, LinkInfo};
 use netlink_packet_route::link::{LinkAttribute, LinkMessage};
-use netlink_packet_route::route::RouteAddress;
-use rtnetlink::{
-    Error as NlError, Handle as NlHandle, LinkUnspec, RouteMessageBuilder, new_connection,
-};
+use rtnetlink::{Error as NlError, Handle as NlHandle, LinkUnspec, RouteMessageBuilder, new_connection};
 use rustix::fs::Mode;
 use rustix::system::sethostname;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -200,68 +196,6 @@ impl NetlinkConnection {
         .await
     }
 
-    pub(crate) async fn get_interface_address_config(&self, ifindex: u32) -> Result<AddressConfig> {
-        use netlink_packet_route::address::AddressAttribute;
-        use netlink_packet_route::route::{RouteAttribute, RouteMessage};
-
-        // Get the first IPv4 address on this interface.
-        let mut addrs = self.address_stream(Some(ifindex));
-        let mut address: Option<Ipv4Addr> = None;
-        let mut prefix_len: Option<u8> = None;
-        while let Some(addr_res) = addrs.next().await {
-            let addr_msg = addr_res?;
-            if addr_msg.header.family == netlink_packet_route::AddressFamily::Inet {
-                prefix_len = Some(addr_msg.header.prefix_len);
-                for attr in &addr_msg.attributes {
-                    if let AddressAttribute::Address(IpAddr::V4(v4)) = attr {
-                        address = Some(*v4);
-                        break;
-                    }
-                }
-                if address.is_some() {
-                    break;
-                }
-            }
-        }
-
-        let address = address.ok_or_else(|| anyhow!("no IPv4 address found on interface"))?;
-        let prefix_len = prefix_len.ok_or_else(|| anyhow!("no prefix length found"))?;
-
-        // Get the default gateway from the routing table.
-        // Create a RouteMessage to query IPv4 routes.
-        let route_msg = RouteMessageBuilder::<Ipv4Addr>::default().build();
-        let mut routes = self.handle.route().get(route_msg).execute();
-        let mut gateway: Option<Ipv4Addr> = None;
-        while let Some(route_res) = routes.next().await {
-            let route: RouteMessage = route_res?;
-            // Look for default route (0.0.0.0/0) on this interface.
-            if route.header.destination_prefix_length == 0 {
-                let mut route_ifindex: Option<u32> = None;
-                let mut route_gateway: Option<Ipv4Addr> = None;
-                for attr in &route.attributes {
-                    match attr {
-                        RouteAttribute::Oif(idx) => route_ifindex = Some(*idx),
-                        RouteAttribute::Gateway(RouteAddress::Inet(v4)) => {
-                            route_gateway = Some(*v4);
-                        }
-                        _ => {}
-                    }
-                }
-                if route_ifindex == Some(ifindex) {
-                    gateway = route_gateway;
-                    break;
-                }
-            }
-        }
-
-        let gateway = gateway.ok_or_else(|| anyhow!("no default gateway found for interface"))?;
-
-        Ok(AddressConfig {
-            address,
-            prefix_len,
-            gateway,
-        })
-    }
 }
 
 pub(crate) fn initialize_network(rt: RtHandle, imds_client: &ImdsClientAsync) -> Result<()> {
@@ -301,12 +235,12 @@ async fn initialize_network_inner(imds_client: &ImdsClientAsync) -> Result<()> {
 
     ensure_loopback(&nl, &interfaces).await?;
 
-    let (primary, bootstrap_ifindex) =
+    let (primary, bootstrap) =
         select_primary_interface(&nl, imds_client, &interfaces, &persisted_state).await?;
     let final_primary = apply_primary_naming(&nl, &interfaces, &primary, &persisted_state).await?;
 
     let dhcp_lease =
-        configure_primary_dhcp(&nl, &final_primary, bootstrap_ifindex, &persisted_state).await?;
+        configure_primary_dhcp(&nl, &final_primary, bootstrap, &persisted_state).await?;
 
     // Persist interfaces with DHCP lease after successful configuration.
     let final_interfaces = nl.get_interfaces().await?;
@@ -336,7 +270,7 @@ async fn select_primary_interface(
     imds_client: &ImdsClientAsync,
     interfaces: &[InterfaceInfo],
     persisted_state: &PersistedNetworkState,
-) -> Result<(InterfaceInfo, Option<u32>)> {
+) -> Result<(InterfaceInfo, Option<(u32, DhcpLease)>)> {
     // Check for persisted primary first.
     if let Some(persisted_primary_mac) = persisted_state.get_primary_mac()
         && let Some(primary) = interfaces
@@ -348,14 +282,15 @@ async fn select_primary_interface(
     }
 
     // No persisted primary, bootstrap the first one found and then verify against IMDS.
-    let bootstrap_ifindex = establish_bootstrap_connectivity(nl, interfaces).await?;
+    let (bootstrap_ifindex, bootstrap_lease) =
+        establish_bootstrap_connectivity(nl, interfaces).await?;
     let primary_mac = discover_primary_mac_via_imds(imds_client, Duration::from_secs(10)).await?;
     let primary = interfaces
         .find_by_mac(&primary_mac)
         .ok_or_else(|| anyhow!("failed to find interface info for MAC {}", primary_mac))?;
     info!("Using discovered primary interface {}", primary.name);
 
-    Ok((primary, Some(bootstrap_ifindex)))
+    Ok((primary, Some((bootstrap_ifindex, bootstrap_lease))))
 }
 
 async fn apply_primary_naming(
@@ -386,11 +321,11 @@ async fn apply_primary_naming(
 async fn configure_primary_dhcp(
     nl: &NetlinkConnection,
     primary: &InterfaceInfo,
-    bootstrap_ifindex: Option<u32>,
+    bootstrap: Option<(u32, DhcpLease)>,
     persisted_state: &PersistedNetworkState,
 ) -> Result<DhcpLease> {
     // Clean up bootstrap if it's different from primary.
-    if let Some(bootstrap_idx) = bootstrap_ifindex {
+    if let Some((bootstrap_idx, bootstrap_lease)) = bootstrap {
         if bootstrap_idx != primary.ifindex {
             // Bootstrap was on a different interface - flush it and configure primary.
             flush_interface(nl, bootstrap_idx).await;
@@ -399,14 +334,8 @@ async fn configure_primary_dhcp(
                 return run_dhcp_on_interface(nl, &primary.name, primary.ifindex, mac).await;
             }
         }
-        // If bootstrap_idx == primary.ifindex, the interface is already configured.
-        // Get the current address configuration from the interface.
-        // Note: DNS was written by bootstrap DHCP but we don't have it here to persist.
-        let address = nl.get_interface_address_config(primary.ifindex).await?;
-        return Ok(DhcpLease {
-            address,
-            resolver: ResolverConfig::default(),
-        });
+        // Bootstrap was on the primary interface - use the existing lease.
+        return Ok(bootstrap_lease);
     } else {
         // No bootstrap (persisted primary) - try to use persisted config.
         nl.link_up(primary.ifindex).await?;
@@ -415,6 +344,8 @@ async fn configure_primary_dhcp(
                 "Using persisted IP configuration: {}/{}",
                 lease.address.address, lease.address.prefix_len
             );
+            // Flush any existing addresses before applying persisted config.
+            flush_interface(nl, primary.ifindex).await;
             configure_address_and_route(nl, primary.ifindex, &lease.address).await?;
             write_resolver_config(&lease.resolver)?;
             return Ok(lease);
@@ -710,7 +641,7 @@ async fn wait_for_carrier(nl: &NetlinkConnection, ifindex: u32, timeout: Duratio
 async fn establish_bootstrap_connectivity(
     nl: &NetlinkConnection,
     interfaces: &[InterfaceInfo],
-) -> Result<u32> {
+) -> Result<(u32, DhcpLease)> {
     let ignored_prefixes = [
         "lo", "veth", "docker", "br", "virbr", "vlan", "tun", "tap", "macvtap", "bond", "team",
         "wg", "ppp", "dummy",
@@ -756,12 +687,11 @@ async fn establish_bootstrap_connectivity(
             continue;
         }
         if let Some(mac) = interface.mac
-            && run_dhcp_on_interface(nl, &interface.name, interface.ifindex, mac)
-                .await
-                .is_ok()
+            && let Ok(lease) =
+                run_dhcp_on_interface(nl, &interface.name, interface.ifindex, mac).await
         {
             info!("Bootstrap connectivity established on {}", interface.name);
-            return Ok(interface.ifindex);
+            return Ok((interface.ifindex, lease));
         }
         warn!("DHCP failed on {}", interface.name);
     }
@@ -804,24 +734,31 @@ struct InterfaceEntry {
     primary: bool,
     present: bool,
     last_seen: String,
-    // IP configuration from DHCP (for skipping DHCP on subsequent boots)
+    // Per-interface address configuration from DHCP
     #[serde(skip_serializing_if = "Option::is_none")]
     ip_address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prefix_len: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    dns_servers: Option<Vec<String>>,
+}
+
+/// System-wide resolver configuration (there's only one /etc/resolv.conf).
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+struct PersistedResolverConfig {
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    dns_servers: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     domain_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    search_list: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    search_list: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct PersistedNetworkState {
     interfaces: Vec<InterfaceEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolver: Option<PersistedResolverConfig>,
 }
 
 impl PersistedNetworkState {
@@ -864,35 +801,30 @@ impl PersistedNetworkState {
     }
 
     fn get_primary_dhcp_lease(&self) -> Option<DhcpLease> {
-        self.interfaces
-            .iter()
-            .find(|iface| iface.primary)
-            .and_then(
-                |iface| match (&iface.ip_address, iface.prefix_len, &iface.gateway) {
-                    (Some(ip), Some(prefix), Some(gw)) => {
-                        let address: Ipv4Addr = ip.parse().ok()?;
-                        let gateway: Ipv4Addr = gw.parse().ok()?;
-                        let dns_servers: Vec<Ipv4Addr> = iface
-                            .dns_servers
-                            .as_ref()
-                            .map(|servers| servers.iter().filter_map(|s| s.parse().ok()).collect())
-                            .unwrap_or_default();
-                        Some(DhcpLease {
-                            address: AddressConfig {
-                                address,
-                                prefix_len: prefix,
-                                gateway,
-                            },
-                            resolver: ResolverConfig {
-                                dns_servers,
-                                domain_name: iface.domain_name.clone(),
-                                search_list: iface.search_list.clone().unwrap_or_default(),
-                            },
-                        })
-                    }
-                    _ => None,
-                },
-            )
+        let primary = self.interfaces.iter().find(|iface| iface.primary)?;
+        let (ip, prefix, gw) = match (&primary.ip_address, primary.prefix_len, &primary.gateway) {
+            (Some(ip), Some(prefix), Some(gw)) => (ip, prefix, gw),
+            _ => return None,
+        };
+        let address: Ipv4Addr = ip.parse().ok()?;
+        let gateway: Ipv4Addr = gw.parse().ok()?;
+
+        let resolver = self.resolver.as_ref().map_or_else(ResolverConfig::default, |r| {
+            ResolverConfig {
+                dns_servers: r.dns_servers.iter().filter_map(|s| s.parse().ok()).collect(),
+                domain_name: r.domain_name.clone(),
+                search_list: r.search_list.clone(),
+            }
+        });
+
+        Some(DhcpLease {
+            address: AddressConfig {
+                address,
+                prefix_len: prefix,
+                gateway,
+            },
+            resolver,
+        })
     }
 }
 
@@ -910,6 +842,68 @@ fn family_info(name: &str) -> (String, Option<u32>) {
     }
 }
 
+/// Per-interface address configuration for persistence.
+#[derive(Default)]
+struct PersistedAddressConfig {
+    ip_address: Option<String>,
+    prefix_len: Option<u8>,
+    gateway: Option<String>,
+}
+
+impl PersistedAddressConfig {
+    fn from_address(addr: &AddressConfig) -> Self {
+        Self {
+            ip_address: Some(addr.address.to_string()),
+            prefix_len: Some(addr.prefix_len),
+            gateway: Some(addr.gateway.to_string()),
+        }
+    }
+}
+
+fn build_interface_entry(
+    interface: &InterfaceInfo,
+    primary_name: &str,
+    primary_lease: Option<&DhcpLease>,
+    now: &str,
+) -> InterfaceEntry {
+    let (family, index) = family_info(&interface.name);
+    let is_primary = interface.name == primary_name;
+    let addr_config = if is_primary {
+        primary_lease
+            .map(|lease| PersistedAddressConfig::from_address(&lease.address))
+            .unwrap_or_default()
+    } else {
+        PersistedAddressConfig::default()
+    };
+    InterfaceEntry {
+        iface: interface.name.clone(),
+        mac: interface.mac.map(mac_to_string),
+        family,
+        index,
+        primary: is_primary,
+        present: true,
+        last_seen: now.to_string(),
+        ip_address: addr_config.ip_address,
+        prefix_len: addr_config.prefix_len,
+        gateway: addr_config.gateway,
+    }
+}
+
+fn build_resolver_config(lease: Option<&DhcpLease>) -> Option<PersistedResolverConfig> {
+    let lease = lease?;
+    if lease.resolver.dns_servers.is_empty()
+        && lease.resolver.domain_name.is_none()
+        && lease.resolver.search_list.is_empty()
+    {
+        return None;
+    }
+    Some(PersistedResolverConfig {
+        dns_servers: lease.resolver.dns_servers.iter().map(|s| s.to_string()).collect(),
+        domain_name: lease.resolver.domain_name.clone(),
+        search_list: lease.resolver.search_list.clone(),
+    })
+}
+
 fn persist_interfaces(
     interfaces: &[InterfaceInfo],
     primary_name: &str,
@@ -919,68 +913,20 @@ fn persist_interfaces(
     let now = dt.to_rfc3339();
     let entries: Vec<InterfaceEntry> = interfaces
         .iter()
-        .map(|n| {
-            let (family, idx) = family_info(&n.name);
-            let is_primary = n.name == primary_name;
-            let (ip_address, prefix_len, gateway, dns_servers, domain_name, search_list) =
-                if is_primary {
-                    if let Some(lease) = primary_lease {
-                        let dns = if lease.resolver.dns_servers.is_empty() {
-                            None
-                        } else {
-                            Some(
-                                lease
-                                    .resolver
-                                    .dns_servers
-                                    .iter()
-                                    .map(|s| s.to_string())
-                                    .collect(),
-                            )
-                        };
-                        let search = if lease.resolver.search_list.is_empty() {
-                            None
-                        } else {
-                            Some(lease.resolver.search_list.clone())
-                        };
-                        (
-                            Some(lease.address.address.to_string()),
-                            Some(lease.address.prefix_len),
-                            Some(lease.address.gateway.to_string()),
-                            dns,
-                            lease.resolver.domain_name.clone(),
-                            search,
-                        )
-                    } else {
-                        (None, None, None, None, None, None)
-                    }
-                } else {
-                    (None, None, None, None, None, None)
-                };
-            InterfaceEntry {
-                iface: n.name.clone(),
-                mac: n.mac.map(mac_to_string),
-                family,
-                index: idx,
-                primary: is_primary,
-                present: true,
-                last_seen: now.clone(),
-                ip_address,
-                prefix_len,
-                gateway,
-                dns_servers,
-                domain_name,
-                search_list,
-            }
-        })
+        .map(|n| build_interface_entry(n, primary_name, primary_lease, &now))
         .collect();
 
-    let payload = json!({ "interfaces": entries });
+    let resolver = build_resolver_config(primary_lease);
+    let state = PersistedNetworkState {
+        interfaces: entries,
+        resolver,
+    };
     let dir = format!("{}/net", DIR_ET_ETC);
     mkdir_p(Path::new(&dir), Mode::from(0o755))?;
     let path = format!("{}/interfaces.json", dir);
 
     atomic_write(&path, |mut f| {
-        let s = serde_json::to_string_pretty(&payload)
+        let s = serde_json::to_string_pretty(&state)
             .map_err(|e| anyhow!("unable to convert payload to string: {}", e))?;
         f.write_all(s.as_bytes())
             .map_err(|e| anyhow!("unable to write {}: {}", path, e))
@@ -1099,10 +1045,12 @@ mod test {
                 ip_address: Some("10.0.2.15".to_string()),
                 prefix_len: Some(24),
                 gateway: Some("10.0.2.2".to_string()),
-                dns_servers: Some(vec!["8.8.8.8".to_string(), "8.8.4.4".to_string()]),
-                domain_name: Some("example.com".to_string()),
-                search_list: Some(vec!["example.com".to_string()]),
             }],
+            resolver: Some(PersistedResolverConfig {
+                dns_servers: vec!["8.8.8.8".to_string(), "8.8.4.4".to_string()],
+                domain_name: Some("example.com".to_string()),
+                search_list: vec!["example.com".to_string()],
+            }),
         };
 
         let lease = state.get_primary_dhcp_lease();
@@ -1131,10 +1079,8 @@ mod test {
                 ip_address: None,
                 prefix_len: None,
                 gateway: None,
-                dns_servers: None,
-                domain_name: None,
-                search_list: None,
             }],
+            resolver: None,
         };
 
         assert!(state.get_primary_dhcp_lease().is_none());
@@ -1154,10 +1100,8 @@ mod test {
                 ip_address: Some("10.0.2.15".to_string()),
                 prefix_len: Some(24),
                 gateway: Some("10.0.2.2".to_string()),
-                dns_servers: None,
-                domain_name: None,
-                search_list: None,
             }],
+            resolver: None,
         };
 
         assert!(state.get_primary_dhcp_lease().is_none());
@@ -1176,26 +1120,17 @@ mod test {
             ip_address: Some("10.0.2.15".to_string()),
             prefix_len: Some(24),
             gateway: Some("10.0.2.2".to_string()),
-            dns_servers: Some(vec!["8.8.8.8".to_string()]),
-            domain_name: Some("example.com".to_string()),
-            search_list: Some(vec!["example.com".to_string()]),
         };
 
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"ip_address\":\"10.0.2.15\""));
         assert!(json.contains("\"prefix_len\":24"));
         assert!(json.contains("\"gateway\":\"10.0.2.2\""));
-        assert!(json.contains("\"dns_servers\":[\"8.8.8.8\"]"));
-        assert!(json.contains("\"domain_name\":\"example.com\""));
-        assert!(json.contains("\"search_list\":[\"example.com\"]"));
 
         let parsed: InterfaceEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.ip_address, Some("10.0.2.15".to_string()));
         assert_eq!(parsed.prefix_len, Some(24));
         assert_eq!(parsed.gateway, Some("10.0.2.2".to_string()));
-        assert_eq!(parsed.dns_servers, Some(vec!["8.8.8.8".to_string()]));
-        assert_eq!(parsed.domain_name, Some("example.com".to_string()));
-        assert_eq!(parsed.search_list, Some(vec!["example.com".to_string()]));
     }
 
     #[test]
@@ -1211,9 +1146,6 @@ mod test {
             ip_address: None,
             prefix_len: None,
             gateway: None,
-            dns_servers: None,
-            domain_name: None,
-            search_list: None,
         };
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -1221,17 +1153,72 @@ mod test {
         assert!(!json.contains("ip_address"));
         assert!(!json.contains("prefix_len"));
         assert!(!json.contains("gateway"));
-        assert!(!json.contains("dns_servers"));
-        assert!(!json.contains("domain_name"));
-        assert!(!json.contains("search_list"));
 
         // But parsing it back should still work
         let parsed: InterfaceEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.ip_address, None);
         assert_eq!(parsed.prefix_len, None);
         assert_eq!(parsed.gateway, None);
-        assert_eq!(parsed.dns_servers, None);
-        assert_eq!(parsed.domain_name, None);
-        assert_eq!(parsed.search_list, None);
+    }
+
+    #[test]
+    fn test_persisted_state_serialization_with_resolver() {
+        let state = PersistedNetworkState {
+            interfaces: vec![InterfaceEntry {
+                iface: "eth0".to_string(),
+                mac: Some("00:11:22:33:44:55".to_string()),
+                family: "eth".to_string(),
+                index: Some(0),
+                primary: true,
+                present: true,
+                last_seen: "2026-01-01T00:00:00Z".to_string(),
+                ip_address: Some("10.0.2.15".to_string()),
+                prefix_len: Some(24),
+                gateway: Some("10.0.2.2".to_string()),
+            }],
+            resolver: Some(PersistedResolverConfig {
+                dns_servers: vec!["8.8.8.8".to_string()],
+                domain_name: Some("example.com".to_string()),
+                search_list: vec!["example.com".to_string()],
+            }),
+        };
+
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        assert!(json.contains("\"resolver\""));
+        assert!(json.contains("\"dns_servers\""));
+        assert!(json.contains("8.8.8.8"));
+        assert!(json.contains("\"domain_name\": \"example.com\""));
+
+        let parsed: PersistedNetworkState = serde_json::from_str(&json).unwrap();
+        assert!(parsed.resolver.is_some());
+        let resolver = parsed.resolver.unwrap();
+        assert_eq!(resolver.dns_servers, vec!["8.8.8.8".to_string()]);
+        assert_eq!(resolver.domain_name, Some("example.com".to_string()));
+    }
+
+    #[test]
+    fn test_persisted_state_serialization_without_resolver() {
+        let state = PersistedNetworkState {
+            interfaces: vec![InterfaceEntry {
+                iface: "eth0".to_string(),
+                mac: Some("00:11:22:33:44:55".to_string()),
+                family: "eth".to_string(),
+                index: Some(0),
+                primary: true,
+                present: true,
+                last_seen: "2026-01-01T00:00:00Z".to_string(),
+                ip_address: None,
+                prefix_len: None,
+                gateway: None,
+            }],
+            resolver: None,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        // resolver should be omitted when None
+        assert!(!json.contains("resolver"));
+
+        let parsed: PersistedNetworkState = serde_json::from_str(&json).unwrap();
+        assert!(parsed.resolver.is_none());
     }
 }
