@@ -4,7 +4,10 @@ set -eu
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
 OUTPUT_DIR="${PROJECT_ROOT}/_output"
-INTEGRATION_OUT="${OUTPUT_DIR}/integration"
+
+# Create temp directory for this test run
+mkdir -p "${OUTPUT_DIR}"
+INTEGRATION_OUT="${OUTPUT_DIR}/$(cd "${OUTPUT_DIR}" && mktemp -d integration.XXXXXX)"
 
 # Kernel and assets from easyto-assets
 EASYTO_ASSETS_RUNTIME="${OUTPUT_DIR}/easyto-assets-runtime-v0.3.0"
@@ -28,6 +31,7 @@ LOCALSTACK_CONTAINER=""
 TIMEOUT=90
 VERBOSE="${VERBOSE:-}"
 SCENARIO="${SCENARIO:-}"
+KEEP_LOGS="${KEEP_LOGS:-}"
 
 log()
 {
@@ -51,9 +55,10 @@ check_prerequisites()
 
 build_test_image()
 {
+    scenario_dir="${1:-}"
     log "Building test image..."
     mkdir -p "${INTEGRATION_OUT}"
-    "${SCRIPT_DIR}/image/build.sh" "${INIT_BINARY}" "${EASYTO_ASSETS_RUNTIME}" "${INITRAMFS}"
+    "${SCRIPT_DIR}/image/build.sh" "${INIT_BINARY}" "${EASYTO_ASSETS_RUNTIME}" "${INITRAMFS}" "${scenario_dir}"
 }
 
 get_scenario_config()
@@ -199,6 +204,19 @@ run_scenario()
     [ -d "${scenario_dir}" ] || die "scenario not found: ${scenario_name}"
 
     log "Running scenario: ${scenario_name}"
+
+    # Track if we need to rebuild after overlay scenarios
+    if [ -d "${scenario_dir}/overlay" ]; then
+        # Rebuild with overlay for this scenario
+        log "Rebuilding image with overlay..."
+        build_test_image "${scenario_dir}"
+        IMAGE_HAS_OVERLAY=1
+    elif [ "${IMAGE_HAS_OVERLAY:-0}" = "1" ]; then
+        # Previous scenario had overlay, rebuild base image
+        log "Rebuilding base image..."
+        build_test_image ""
+        IMAGE_HAS_OVERLAY=0
+    fi
 
     # Read scenario config
     nic_count=$(get_scenario_config "${scenario_name}" "NIC_COUNT" "1")
@@ -353,10 +371,18 @@ main()
 
     if [ ${failed} -gt 0 ]; then
         log "${failed} scenario(s) failed"
+        log "Logs available at: ${INTEGRATION_OUT}"
         exit 1
     fi
 
     log "All scenarios passed"
+
+    # Clean up temp directory on success unless KEEP_LOGS is set
+    if [ -z "${KEEP_LOGS}" ]; then
+        rm -rf "${INTEGRATION_OUT}"
+    else
+        log "Logs available at: ${INTEGRATION_OUT}"
+    fi
 }
 
 main "$@"
