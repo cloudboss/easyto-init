@@ -1,0 +1,16 @@
+{
+  "interfaces": [
+    {
+      "iface": "eth0",
+      "mac": "52:54:00:12:34:56",
+      "family": "eth",
+      "index": 0,
+      "primary": true,
+      "present": true,
+      "last_seen": "2026-01-22T00:00:00Z",
+      "ip_address": "10.0.2.15",
+      "prefix_len": 24,
+      "gateway": "10.0.2.2"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+disable-services:
+  - chrony
+  - ssh
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== ip-persistence test ==="
+
+    # Check that interfaces.json was created
+    if [ ! -f /.easyto/etc/net/interfaces.json ]; then
+        echo "FAIL: interfaces.json not found"
+        exit 1
+    fi
+
+    # Check that it contains IP configuration for the primary interface
+    if ! grep -q '"ip_address"' /.easyto/etc/net/interfaces.json; then
+        echo "FAIL: ip_address not found in interfaces.json"
+        cat /.easyto/etc/net/interfaces.json
+        exit 1
+    fi
+
+    if ! grep -q '"prefix_len"' /.easyto/etc/net/interfaces.json; then
+        echo "FAIL: prefix_len not found in interfaces.json"
+        cat /.easyto/etc/net/interfaces.json
+        exit 1
+    fi
+
+    if ! grep -q '"gateway"' /.easyto/etc/net/interfaces.json; then
+        echo "FAIL: gateway not found in interfaces.json"
+        cat /.easyto/etc/net/interfaces.json
+        exit 1
+    fi
+
+    # Show the contents for debugging
+    echo "interfaces.json content:"
+    cat /.easyto/etc/net/interfaces.json
+    echo ""
+
+    echo "PASS"
