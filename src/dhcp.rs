@@ -16,15 +16,27 @@ use crate::constants::FILE_ETC_RESOLV_CONF;
 use crate::fs::atomic_write;
 use crate::network::NetlinkConnection;
 
-/// IP configuration obtained from DHCP or persisted state.
+/// Per-interface address configuration.
 #[derive(Debug, Clone)]
-pub(crate) struct IpConfig {
+pub(crate) struct AddressConfig {
     pub(crate) address: Ipv4Addr,
     pub(crate) prefix_len: u8,
     pub(crate) gateway: Ipv4Addr,
+}
+
+/// System-wide DNS resolver configuration.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ResolverConfig {
     pub(crate) dns_servers: Vec<Ipv4Addr>,
     pub(crate) domain_name: Option<String>,
     pub(crate) search_list: Vec<String>,
+}
+
+/// Combined configuration from DHCP lease.
+#[derive(Debug, Clone)]
+pub(crate) struct DhcpLease {
+    pub(crate) address: AddressConfig,
+    pub(crate) resolver: ResolverConfig,
 }
 
 fn subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
@@ -35,7 +47,7 @@ fn subnet_mask_to_prefix(mask: Ipv4Addr) -> u8 {
 pub(crate) async fn configure_address_and_route(
     nl: &NetlinkConnection,
     ifindex: u32,
-    config: &IpConfig,
+    config: &AddressConfig,
 ) -> Result<()> {
     nl.address_add(ifindex, IpAddr::V4(config.address), config.prefix_len)
         .await
@@ -70,8 +82,8 @@ fn write_resolv_conf(
     })
 }
 
-/// Write resolv.conf with DNS configuration from persisted state.
-pub(crate) fn write_resolv_conf_from_config(config: &IpConfig) -> Result<()> {
+/// Write resolv.conf with DNS configuration.
+pub(crate) fn write_resolver_config(config: &ResolverConfig) -> Result<()> {
     if !config.dns_servers.is_empty() {
         write_resolv_conf(
             &config.domain_name,
@@ -88,7 +100,7 @@ pub(crate) async fn run_dhcp_on_interface(
     interface: &str,
     ifindex: u32,
     mac: [u8; 6],
-) -> Result<IpConfig> {
+) -> Result<DhcpLease> {
     let timeout = Duration::from_secs(30);
     let cap = Duration::from_secs(5);
     let start = Instant::now();
@@ -150,7 +162,7 @@ async fn attempt_dhcp_exchange(
     ifindex: u32,
     mac: [u8; 6],
     nl: &NetlinkConnection,
-) -> Result<IpConfig> {
+) -> Result<DhcpLease> {
     // Generate transaction ID.
     let xid = OsRng
         .try_next_u32()
@@ -310,7 +322,7 @@ async fn apply_dhcp_config(
     nl: &NetlinkConnection,
     ifindex: u32,
     ack_msg: &Message,
-) -> Result<IpConfig> {
+) -> Result<DhcpLease> {
     let addr = ack_msg.yiaddr();
 
     let subnet = ack_msg
@@ -349,22 +361,27 @@ async fn apply_dhcp_config(
     };
 
     let prefix_len = subnet_mask_to_prefix(subnet);
-    let config = IpConfig {
+    let address_config = AddressConfig {
         address: addr,
         prefix_len,
         gateway,
+    };
+    let resolver_config = ResolverConfig {
         dns_servers: dns_servers.clone(),
         domain_name: domain_name.clone(),
         search_list: search_list.clone(),
     };
 
-    configure_address_and_route(nl, ifindex, &config).await?;
+    configure_address_and_route(nl, ifindex, &address_config).await?;
 
     if !dns_servers.is_empty() {
         write_resolv_conf(&domain_name, &search_list, &dns_servers)?;
     }
 
-    Ok(config)
+    Ok(DhcpLease {
+        address: address_config,
+        resolver: resolver_config,
+    })
 }
 
 #[cfg(test)]
