@@ -45,12 +45,6 @@ use crate::{constants, container};
 pub fn initialize() -> Result<()> {
     let base_dir = "/";
 
-    // SAFETY: there must be no other threads writing or reading env vars
-    // concurrently, so this is called before any other threads are started.
-    unsafe {
-        env::set_var("SSL_CERT_FILE", constants::FILE_AMAZON_PEM);
-    }
-
     init_logger(Level::Info).map_err(|e| anyhow!("unable to initialize logger: {}", e))?;
     info!("Starting init process");
 
