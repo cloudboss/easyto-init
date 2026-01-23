@@ -107,6 +107,7 @@ Tests output PASS/FAIL to serial console. The runner checks for these markers.
 - Keep commentary technical and concise
 - Do not use the `libc` crate; use `rustix` instead for system calls
 - Prefer imports over fully qualified names at call sites (e.g., `use anyhow::Result` and `Result<T>` instead of `anyhow::Result<T>`)
+- Rust code must be formatted with `rustfmt --edition 2024`
 
 ### Shell Scripts
 
