@@ -1,18 +1,13 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const default_target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // For release builds, default to x86_64-linux-musl for static linking
-    const target = if (optimize != .Debug)
-        b.resolveTargetQuery(.{
-            .cpu_arch = .x86_64,
-            .os_tag = .linux,
-            .abi = .musl,
-        })
-    else
-        default_target;
+    const target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .abi = .musl,
+    });
 
     const mod = b.addModule("easyto_init", .{
         .root_source_file = b.path("src/root.zig"),
