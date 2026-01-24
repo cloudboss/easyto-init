@@ -1,0 +1,25 @@
+disable-services:
+  - chrony
+  - ssh
+security:
+  run-as-user-id: 65534
+  run-as-group-id: 65534
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== user-group test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    EXPECTED_UID="65534"
+    EXPECTED_GID="65534"
+    ACTUAL_UID=$(id -u)
+    ACTUAL_GID=$(id -g)
+
+    [ "${ACTUAL_UID}" = "${EXPECTED_UID}" ] || fail "uid is '${ACTUAL_UID}', expected '${EXPECTED_UID}'"
+    [ "${ACTUAL_GID}" = "${EXPECTED_GID}" ] || fail "gid is '${ACTUAL_GID}', expected '${EXPECTED_GID}'"
+
+    echo "PASS"

@@ -1,0 +1,19 @@
+disable-services:
+  - chrony
+  - ssh
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== hostname test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    EXPECTED="test-host"
+    ACTUAL=$(hostname)
+
+    [ "${ACTUAL}" = "${EXPECTED}" ] || fail "hostname is '${ACTUAL}', expected '${EXPECTED}'"
+
+    echo "PASS"

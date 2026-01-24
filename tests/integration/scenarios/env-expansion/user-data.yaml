@@ -1,0 +1,33 @@
+disable-services:
+  - chrony
+  - ssh
+env:
+  - name: MY_VAR
+    value: hello
+  - name: OTHER_VAR
+    value: world
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== env-expansion test ==="
+
+    # The args below were expanded before exec
+    # With sh -c, ${0} is the first arg after the script, ${1} is the second
+    if [ "${0}" != "hello" ]; then
+        echo "FAIL: \${0} should be 'hello', got '${0}'"
+        exit 1
+    fi
+    echo "\${0} expanded correctly: OK"
+
+    if [ "${1}" != "hello-world" ]; then
+        echo "FAIL: \${1} should be 'hello-world', got '${1}'"
+        exit 1
+    fi
+    echo "\${1} expanded correctly: OK"
+
+    echo "PASS"
+  - $(MY_VAR)
+  - $(MY_VAR)-$(OTHER_VAR)

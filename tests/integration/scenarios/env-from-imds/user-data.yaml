@@ -1,0 +1,34 @@
+disable-services:
+  - chrony
+  - ssh
+env-from:
+  - imds:
+      name: INSTANCE_ID
+      path: instance-id
+  - imds:
+      name: AZ
+      path: placement/availability-zone
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== env-from-imds test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    # Check INSTANCE_ID was fetched from IMDS
+    # Note: IMDS responses may include trailing newlines, so use case pattern
+    case "${INSTANCE_ID}" in
+        i-test12345*) echo "INSTANCE_ID: OK" ;;
+        *) fail "INSTANCE_ID is '${INSTANCE_ID}', expected 'i-test12345'" ;;
+    esac
+
+    # Check AZ was fetched from IMDS
+    case "${AZ}" in
+        us-east-1a*) echo "AZ: OK" ;;
+        *) fail "AZ is '${AZ}', expected 'us-east-1a'" ;;
+    esac
+
+    echo "PASS"

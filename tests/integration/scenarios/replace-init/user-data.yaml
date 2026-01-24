@@ -1,0 +1,33 @@
+disable-services:
+  - chrony
+  - ssh
+replace-init: true
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== replace-init test ==="
+
+    # When replace-init is true, PID 1 should be running our shell
+    # We verify this by checking /proc/1/comm is "sh"
+    # Note: we can't use $$ or /proc/self because subshells have different PIDs
+    comm=$(cat /proc/1/comm)
+    if [ "${comm}" != "sh" ]; then
+        echo "FAIL: /proc/1/comm is '${comm}', expected 'sh'"
+        poweroff -f
+    fi
+    echo "/proc/1/comm is sh: OK"
+
+    # Verify the command line matches our script
+    # /proc/1/cmdline contains null-separated args
+    if ! cat /proc/1/cmdline | tr '\0' ' ' | grep -q "replace-init test"; then
+        echo "FAIL: /proc/1/cmdline does not contain our script"
+        cat /proc/1/cmdline | tr '\0' ' '
+        poweroff -f
+    fi
+    echo "/proc/1/cmdline contains our script: OK"
+
+    echo "PASS"
+    poweroff -f

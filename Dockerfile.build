@@ -1,0 +1,27 @@
+ARG FROM=alpine:3.23.2
+FROM ${FROM}
+
+ARG UID=1000
+ARG GID=1000
+ARG ZIG_VERSION=0.15.2
+
+RUN apk add --no-cache \
+    coreutils \
+    curl \
+    docker-cli \
+    fakeroot \
+    python3 \
+    qemu-system-x86_64 \
+    tar \
+    xz
+
+RUN curl -L -o /tmp/zig.tar.xz \
+    "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" && \
+    tar -xJf /tmp/zig.tar.xz -C /usr/local && \
+    ln -s /usr/local/zig-x86_64-linux-${ZIG_VERSION}/zig /usr/local/bin/zig && \
+    rm /tmp/zig.tar.xz
+
+RUN addgroup -g ${GID} build && \
+    adduser -u ${UID} -G build -D build
+
+USER build

@@ -1,0 +1,52 @@
+disable-services:
+  - chrony
+  - ssh
+volumes:
+  - ssm:
+      path: /app/config/
+      mount:
+        destination: /config
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== ssm-parameter test ==="
+
+    # Check if SSM parameters were mounted as files
+    if [ ! -f /config/database_host ]; then
+        echo "FAIL: /config/database_host not found"
+        exit 1
+    fi
+
+    # Verify content
+    content=$(cat /config/database_host)
+    if [ "$content" != "localhost" ]; then
+        echo "FAIL: database_host has wrong content: $content"
+        exit 1
+    fi
+
+    if [ ! -f /config/database_port ]; then
+        echo "FAIL: /config/database_port not found"
+        exit 1
+    fi
+
+    content=$(cat /config/database_port)
+    if [ "$content" != "5432" ]; then
+        echo "FAIL: database_port has wrong content: $content"
+        exit 1
+    fi
+
+    if [ ! -f /config/api_key ]; then
+        echo "FAIL: /config/api_key not found"
+        exit 1
+    fi
+
+    content=$(cat /config/api_key)
+    if [ "$content" != "secret-api-key-12345" ]; then
+        echo "FAIL: api_key has wrong content: $content"
+        exit 1
+    fi
+
+    echo "SSM parameters verified"
+    echo "PASS"

@@ -1,0 +1,45 @@
+disable-services:
+  - chrony
+  - ssh
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== iam-credentials test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    # IMDS endpoint (via QEMU gateway)
+    IMDS="${AWS_EC2_METADATA_SERVICE_ENDPOINT}"
+    echo "IMDS endpoint: ${IMDS}"
+
+    # Get IMDSv2 token
+    TOKEN=$(curl -s -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 300" "${IMDS}/latest/api/token")
+    [ -n "${TOKEN}" ] || fail "failed to get IMDS token"
+    echo "OK: Got IMDS token"
+
+    # List IAM roles
+    ROLE=$(curl -s -H "X-aws-ec2-metadata-token: ${TOKEN}" "${IMDS}/latest/meta-data/iam/security-credentials/")
+    [ -n "${ROLE}" ] || fail "failed to get IAM role"
+    echo "OK: Found IAM role: ${ROLE}"
+
+    # Get credentials for the role
+    CREDS=$(curl -s -H "X-aws-ec2-metadata-token: ${TOKEN}" "${IMDS}/latest/meta-data/iam/security-credentials/${ROLE}")
+    [ -n "${CREDS}" ] || fail "failed to get IAM credentials"
+    echo "OK: Got IAM credentials"
+
+    # Verify credentials contain expected fields
+    echo "${CREDS}" | grep -q '"Code"' || fail "credentials missing Code field"
+    echo "${CREDS}" | grep -q '"AccessKeyId"' || fail "credentials missing AccessKeyId field"
+    echo "${CREDS}" | grep -q '"SecretAccessKey"' || fail "credentials missing SecretAccessKey field"
+    echo "${CREDS}" | grep -q '"Token"' || fail "credentials missing Token field"
+    echo "${CREDS}" | grep -q '"Expiration"' || fail "credentials missing Expiration field"
+    echo "OK: Credentials contain all required fields"
+
+    # Show credentials (for debugging)
+    echo "=== Credentials ==="
+    echo "${CREDS}"
+
+    echo "PASS"

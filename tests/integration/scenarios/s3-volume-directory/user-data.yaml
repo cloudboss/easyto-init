@@ -1,0 +1,49 @@
+disable-services:
+  - chrony
+  - ssh
+volumes:
+  - s3:
+      bucket: files-bucket
+      key-prefix: app/config/
+      mount:
+        destination: /config
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== s3-volume-directory test ==="
+
+    # Check all files were downloaded
+    echo "Listing /config:"
+    ls -laR /config
+
+    if [ ! -f /config/file1.txt ]; then
+        echo "FAIL: /config/file1.txt not found"
+        exit 1
+    fi
+    if [ "$(cat /config/file1.txt)" != "File 1 content" ]; then
+        echo "FAIL: file1.txt has wrong content"
+        exit 1
+    fi
+
+    if [ ! -f /config/file2.txt ]; then
+        echo "FAIL: /config/file2.txt not found"
+        exit 1
+    fi
+    if [ "$(cat /config/file2.txt)" != "File 2 content" ]; then
+        echo "FAIL: file2.txt has wrong content"
+        exit 1
+    fi
+
+    if [ ! -f /config/subdir/nested.txt ]; then
+        echo "FAIL: /config/subdir/nested.txt not found"
+        exit 1
+    fi
+    if [ "$(cat /config/subdir/nested.txt)" != "Nested file content" ]; then
+        echo "FAIL: nested.txt has wrong content"
+        exit 1
+    fi
+
+    echo "All S3 directory files verified"
+    echo "PASS"

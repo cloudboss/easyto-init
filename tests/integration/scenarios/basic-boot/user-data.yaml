@@ -1,0 +1,4 @@
+disable-services:
+  - chrony
+  - ssh
+command: ["/test-entrypoint"]

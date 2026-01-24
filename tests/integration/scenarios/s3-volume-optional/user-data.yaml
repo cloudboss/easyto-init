@@ -1,0 +1,16 @@
+disable-services:
+  - chrony
+  - ssh
+volumes:
+  - s3:
+      bucket: empty-bucket
+      key-prefix: non-existent/
+      optional: true
+      mount:
+        destination: /config
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "PASS"

@@ -1,0 +1,36 @@
+disable-services:
+  - chrony
+  - ssh
+volumes:
+  - s3:
+      bucket: test-bucket
+      key-prefix: config/
+      mount:
+        destination: /config
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== s3-volume test ==="
+
+    # Check if S3 files were mounted
+    if [ ! -f /config/greeting.txt ]; then
+        echo "FAIL: /config/greeting.txt not found"
+        exit 1
+    fi
+
+    # Verify content
+    content=$(cat /config/greeting.txt)
+    if [ "$content" != "Hello from S3!" ]; then
+        echo "FAIL: greeting.txt has wrong content: $content"
+        exit 1
+    fi
+
+    if [ ! -f /config/settings.conf ]; then
+        echo "FAIL: /config/settings.conf not found"
+        exit 1
+    fi
+
+    echo "S3 volume content verified"
+    echo "PASS"

@@ -1,0 +1,20 @@
+disable-services:
+  - chrony
+  - ssh
+working-dir: /tmp
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== working-dir test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    EXPECTED="/tmp"
+    ACTUAL=$(pwd)
+
+    [ "${ACTUAL}" = "${EXPECTED}" ] || fail "working dir is '${ACTUAL}', expected '${EXPECTED}'"
+
+    echo "PASS"

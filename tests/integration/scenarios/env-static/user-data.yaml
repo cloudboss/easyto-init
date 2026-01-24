@@ -1,0 +1,28 @@
+disable-services:
+  - chrony
+  - ssh
+env:
+  - name: TEST_VAR1
+    value: hello
+  - name: TEST_VAR2
+    value: world with spaces
+  - name: TEST_VAR3
+    value: value=with=equals
+  - name: TEST_EMPTY
+    value: ""
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== env-static test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    [ "${TEST_VAR1}" = "hello" ] || fail "TEST_VAR1 != hello (got: ${TEST_VAR1})"
+    [ "${TEST_VAR2}" = "world with spaces" ] || fail "TEST_VAR2 != 'world with spaces'"
+    [ "${TEST_VAR3}" = "value=with=equals" ] || fail "TEST_VAR3 != 'value=with=equals'"
+    [ "${TEST_EMPTY}" = "" ] || fail "TEST_EMPTY is not empty"
+
+    echo "PASS"
