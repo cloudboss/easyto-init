@@ -12,8 +12,8 @@ pub fn main() !void {
         .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
     };
 
-    try init.run(alloc) catch |err| {
-        std.log.err("System error: {any}\n", .{err});
+    init.run(alloc) catch |err| {
+        std.log.err("system error: {any}\n", .{err});
     };
 
     if (is_debug) {

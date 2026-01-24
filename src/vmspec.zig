@@ -88,28 +88,22 @@ pub const VmSpec = struct {
 
         if (config.User != null) {
             const user_group_names = try UserGroupNames.from_string(config.User.?);
-            var passwd_file = try std.fs.openFileAbsolute(
-                constants.FILE_ETC_PASSWD,
-                .{},
-            );
-            defer passwd_file.close();
-            const uid = try login.user_group_id(
+            const passwd_contents = try std.fs.cwd().readFileAlloc(
                 allocator,
-                passwd_file.reader().any(),
-                user_group_names.user,
+                constants.FILE_ETC_PASSWD,
+                1048576,
             );
+            defer allocator.free(passwd_contents);
+            const uid = try login.user_group_id(passwd_contents, user_group_names.user);
             vmspec.security.@"run-as-user-id" = uid;
             if (user_group_names.group != null) {
-                var group_file = try std.fs.openFileAbsolute(
-                    constants.FILE_ETC_GROUP,
-                    .{},
-                );
-                defer group_file.close();
-                const gid = try login.user_group_id(
+                const group_contents = try std.fs.cwd().readFileAlloc(
                     allocator,
-                    group_file.reader().any(),
-                    user_group_names.group.?,
+                    constants.FILE_ETC_GROUP,
+                    1048576,
                 );
+                defer allocator.free(group_contents);
+                const gid = try login.user_group_id(group_contents, user_group_names.group.?);
                 vmspec.security.@"run-as-group-id" = gid;
             }
         }

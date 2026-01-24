@@ -90,7 +90,11 @@ pub fn poweroff() void {
     const MAGIC1 = linux.LINUX_REBOOT.MAGIC1.MAGIC1;
     const MAGIC2 = linux.LINUX_REBOOT.MAGIC2.MAGIC2;
     const POWER_OFF = linux.LINUX_REBOOT.CMD.POWER_OFF;
-    _ = linux.reboot(MAGIC1, MAGIC2, POWER_OFF, null);
+    const ret = linux.reboot(MAGIC1, MAGIC2, POWER_OFF, null);
+    const e = std.posix.errno(ret);
+    if (e != .SUCCESS) {
+        std.log.err("failed to power off: {s}", .{@tagName(e)});
+    }
 }
 
 test "device_has_numeric_suffix" {

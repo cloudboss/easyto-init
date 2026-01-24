@@ -1,20 +1,14 @@
 const std = @import("std");
 const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
-const AnyReader = std.io.AnyReader;
 
 const string = @import("string.zig");
 
-pub fn user_group_id(allocator: Allocator, reader: AnyReader, name: []const u8) !u32 {
-    var line = std.ArrayList(u8).init(allocator);
-    defer line.deinit();
+pub fn user_group_id(contents: []const u8, name: []const u8) !u32 {
+    var lines = std.mem.splitScalar(u8, contents, '\n');
 
-    const writer = line.writer();
-
-    while (reader.streamUntilDelimiter(writer, '\n', null)) {
-        defer line.clearRetainingCapacity();
-
-        var fields = std.mem.splitSequence(u8, line.items, ":");
+    while (lines.next()) |line| {
+        var fields = std.mem.splitSequence(u8, line, ":");
 
         const field0 = fields.next() orelse return error.InvalidUserGroupFile;
         if (!string.equals(field0, name)) continue;
@@ -26,9 +20,6 @@ pub fn user_group_id(allocator: Allocator, reader: AnyReader, name: []const u8) 
             return error.InvalidUserGroupId;
         };
         return id;
-    } else |err| switch (err) {
-        error.EndOfStream => {},
-        else => return err,
     }
 
     return error.UserGroupIdNotFound;
@@ -46,12 +37,11 @@ test "user_group_id user id" {
         \\wsdd:x:974:974:Web Services Dynamic Discovery host daemon:/:/sbin/nologin
         \\stapunpriv:x:159:159:systemtap unprivileged user:/var/lib/stapunpriv:/sbin/nologin
     ;
-    const reader = string.Reader.init(contents).reader();
 
-    const id = user_group_id(testing.allocator, reader, "tcpdump");
+    const id = user_group_id(contents, "tcpdump");
     try testing.expectEqual(72, id);
 
-    const notfound = user_group_id(testing.allocator, reader, "xyz");
+    const notfound = user_group_id(contents, "xyz");
     try testing.expectError(error.UserGroupIdNotFound, notfound);
 }
 
@@ -67,11 +57,10 @@ test "user_group_id group id" {
         \\gnome-remote-desktop:x:973:
         \\stapunpriv:x:159:stapunpriv
     ;
-    const reader = string.Reader.init(contents).reader();
 
-    const id = user_group_id(testing.allocator, reader, "joseph");
+    const id = user_group_id(contents, "joseph");
     try testing.expectEqual(1000, id);
 
-    const notfound = user_group_id(testing.allocator, reader, "xyz");
+    const notfound = user_group_id(contents, "xyz");
     try testing.expectError(error.UserGroupIdNotFound, notfound);
 }
