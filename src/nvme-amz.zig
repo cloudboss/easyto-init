@@ -183,8 +183,6 @@ pub fn nvme_identify_ctrl(fd: std.posix.fd_t, errno: *usize) !NvmeIdCtrl {
 
 /// A structure containing vendor-specific device names.
 pub const Names = struct {
-    allocator: Allocator,
-
     /// Device name defined in the block device mapping.
     device_name: ?[]const u8,
     /// Virtual name for instance store volumes, such as ephemeral0.
@@ -253,19 +251,14 @@ pub const Names = struct {
         }
 
         return Names{
-            .allocator = allocator,
             .device_name = device_name,
             .virtual_name = virtual_name,
         };
     }
 
-    pub fn deinit(self: *Names) void {
-        if (self.device_name != null) {
-            self.allocator.free(self.device_name.?);
-        }
-        if (self.virtual_name != null) {
-            self.allocator.free(self.virtual_name.?);
-        }
+    pub fn deinit(self: *Names, allocator: Allocator) void {
+        if (self.device_name) |dn| allocator.free(dn);
+        if (self.virtual_name) |vn| allocator.free(vn);
     }
 
     pub fn format(self: Names, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -287,8 +280,6 @@ pub const Model = enum {
 
 /// An NVMe device, containing a subset of all identifying information.
 pub const Nvme = struct {
-    allocator: Allocator,
-
     /// The [model](Model) of the device.
     model: Model,
     /// The [structure](Names) containing vendor-specific device names.
@@ -318,7 +309,6 @@ pub const Nvme = struct {
         const names = try Names.from_string(allocator, &ctrl.vs.bdev);
 
         return Nvme{
-            .allocator = allocator,
             .model = model,
             .names = names,
             .vendor_id = ctrl.vid,
@@ -329,8 +319,8 @@ pub const Nvme = struct {
         return self.names.device_name orelse self.names.virtual_name orelse Error.NoDeviceName;
     }
 
-    pub fn deinit(self: *Nvme) void {
-        self.names.deinit();
+    pub fn deinit(self: *Nvme, allocator: Allocator) void {
+        self.names.deinit(allocator);
     }
 
     pub fn format(self: Nvme, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -354,7 +344,7 @@ test "parse nvme names empty" {
 test "parse nvme names without virtual_name" {
     const allocator = testing.allocator;
     var names = try Names.from_string(allocator, "/dev/sda1");
-    defer names.deinit();
+    defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sda1"));
     try testing.expect(names.virtual_name == null);
@@ -363,7 +353,7 @@ test "parse nvme names without virtual_name" {
 test "parse nvme names without virtual_name including spaces" {
     const allocator = testing.allocator;
     var names = try Names.from_string(allocator, "/dev/sda1    ");
-    defer names.deinit();
+    defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sda1"));
     try testing.expect(names.virtual_name == null);
@@ -372,7 +362,7 @@ test "parse nvme names without virtual_name including spaces" {
 test "parse nvme names without virtual_name without /dev" {
     const allocator = testing.allocator;
     var names = try Names.from_string(allocator, "sda1");
-    defer names.deinit();
+    defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sda1"));
     try testing.expect(names.virtual_name == null);
@@ -381,7 +371,7 @@ test "parse nvme names without virtual_name without /dev" {
 test "parse nvme names without virtual_name without /dev including spaces" {
     const allocator = testing.allocator;
     var names = try Names.from_string(allocator, "sda1    ");
-    defer names.deinit();
+    defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sda1"));
     try testing.expect(names.virtual_name == null);
@@ -390,7 +380,7 @@ test "parse nvme names without virtual_name without /dev including spaces" {
 test "parse nvme names with virtual_name" {
     const allocator = testing.allocator;
     var names = try Names.from_string(allocator, "ephemeral0:/dev/sdf");
-    defer names.deinit();
+    defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sdf"));
     try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));
@@ -399,7 +389,7 @@ test "parse nvme names with virtual_name" {
 test "parse nvme names with virtual_name including spaces" {
     const allocator = testing.allocator;
     var names = try Names.from_string(allocator, "ephemeral0:/dev/sdf    ");
-    defer names.deinit();
+    defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sdf"));
     try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));
@@ -408,7 +398,7 @@ test "parse nvme names with virtual_name including spaces" {
 test "parse nvme names with virtual_name without /dev" {
     const allocator = testing.allocator;
     var names = try Names.from_string(allocator, "ephemeral0:sdf");
-    defer names.deinit();
+    defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sdf"));
     try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));
@@ -417,7 +407,7 @@ test "parse nvme names with virtual_name without /dev" {
 test "parse nvme names with virtual_name without /dev including spaces" {
     const allocator = testing.allocator;
     var names = try Names.from_string(allocator, "ephemeral0:sdf   ");
-    defer names.deinit();
+    defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sdf"));
     try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));
@@ -426,7 +416,7 @@ test "parse nvme names with virtual_name without /dev including spaces" {
 test "parse nvme names with virtual_name with device_name none" {
     const allocator = testing.allocator;
     var names = try Names.from_string(allocator, "ephemeral0:none");
-    defer names.deinit();
+    defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));
     try testing.expect(names.device_name == null);
@@ -434,10 +424,8 @@ test "parse nvme names with virtual_name with device_name none" {
 
 test "nvme struct no names" {
     const nvme = Nvme{
-        .allocator = testing.allocator,
         .model = Model.AmazonElasticBlockStore,
         .names = Names{
-            .allocator = testing.allocator,
             .device_name = null,
             .virtual_name = null,
         },
@@ -451,10 +439,8 @@ test "nvme struct no names" {
 
 test "nvme struct only device_name" {
     const nvme = Nvme{
-        .allocator = testing.allocator,
         .model = Model.AmazonElasticBlockStore,
         .names = Names{
-            .allocator = testing.allocator,
             .device_name = "nvme0n1",
             .virtual_name = null,
         },
@@ -465,10 +451,8 @@ test "nvme struct only device_name" {
 
 test "nvme struct only virtual_name" {
     const nvme = Nvme{
-        .allocator = testing.allocator,
         .model = Model.AmazonElasticBlockStore,
         .names = Names{
-            .allocator = testing.allocator,
             .device_name = null,
             .virtual_name = "ephemeral0",
         },
@@ -479,10 +463,8 @@ test "nvme struct only virtual_name" {
 
 test "nvme struct both device_name and virtual_name" {
     const nvme = Nvme{
-        .allocator = testing.allocator,
         .model = Model.AmazonElasticBlockStore,
         .names = Names{
-            .allocator = testing.allocator,
             .device_name = "sdf",
             .virtual_name = "ephemeral0",
         },

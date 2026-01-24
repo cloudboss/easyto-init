@@ -27,8 +27,6 @@ const UserGroupNames = struct {
 };
 
 pub const VmSpec = struct {
-    allocator: Allocator,
-
     args: ?[][]const u8 = null,
     command: ?[][]const u8 = null,
     debug: ?bool = false,
@@ -46,7 +44,7 @@ pub const VmSpec = struct {
     fn env_strings_to_name_values(allocator: Allocator, env: []const []const u8) ![]NameValue {
         var name_values = try ArrayList(NameValue).initCapacity(allocator, env.len);
         errdefer {
-            for (name_values.items) |*nv| nv.deinit();
+            for (name_values.items) |*nv| nv.deinit(allocator);
             name_values.deinit(allocator);
         }
         for (env) |e| {
@@ -60,7 +58,6 @@ pub const VmSpec = struct {
             var value = try ArrayList(u8).initCapacity(allocator, rest.len);
             try value.appendSlice(allocator, rest);
             try name_values.append(allocator, NameValue{
-                .allocator = allocator,
                 .name = try name.toOwnedSlice(allocator),
                 .value = try value.toOwnedSlice(allocator),
             });
@@ -76,7 +73,6 @@ pub const VmSpec = struct {
             null;
 
         var vmspec = VmSpec{
-            .allocator = allocator,
             .args = config.Cmd,
             .command = config.Entrypoint,
             .env = env,
@@ -113,13 +109,12 @@ pub const VmSpec = struct {
 };
 
 pub const NameValue = struct {
-    allocator: Allocator,
     name: []const u8,
     value: []const u8,
 
-    pub fn deinit(self: *NameValue) void {
-        self.allocator.free(self.name);
-        self.allocator.free(self.value);
+    pub fn deinit(self: *NameValue, allocator: Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.value);
     }
 };
 
@@ -234,7 +229,6 @@ test "VmSpec.env_strings_to_name_values single" {
     const env_strings = [_][]const u8{"PATH=/bin:/usr/bin"};
     const expected = [_]NameValue{
         .{
-            .allocator = testing.allocator,
             .name = "PATH",
             .value = "/bin:/usr/bin",
         },
@@ -243,10 +237,11 @@ test "VmSpec.env_strings_to_name_values single" {
         testing.allocator,
         &env_strings,
     );
+    defer {
+        for (actual) |*nv| nv.deinit(testing.allocator);
+        testing.allocator.free(actual);
+    }
     try testing.expectEqualDeep(&expected, actual);
-
-    for (actual) |*nv| nv.deinit();
-    testing.allocator.free(actual);
 }
 
 test "VmSpec.env_strings_to_name_values multiple" {
@@ -257,17 +252,14 @@ test "VmSpec.env_strings_to_name_values multiple" {
     };
     const expected = [_]NameValue{
         .{
-            .allocator = testing.allocator,
             .name = "PATH",
             .value = "/bin:/usr/bin",
         },
         .{
-            .allocator = testing.allocator,
             .name = "HOME",
             .value = "/app",
         },
         .{
-            .allocator = testing.allocator,
             .name = "SHELL",
             .value = "/bin/sh",
         },
@@ -276,10 +268,11 @@ test "VmSpec.env_strings_to_name_values multiple" {
         testing.allocator,
         &env_strings,
     );
+    defer {
+        for (actual) |*nv| nv.deinit(testing.allocator);
+        testing.allocator.free(actual);
+    }
     try testing.expectEqualDeep(&expected, actual);
-
-    for (actual) |*nv| nv.deinit();
-    testing.allocator.free(actual);
 }
 
 test "VmSpec.env_strings_to_name_values multiple error" {

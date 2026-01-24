@@ -22,7 +22,7 @@ pub fn link_nvme_devices(allocator: Allocator) !void {
         var nvme_info = nvme.Nvme.from_fd(allocator, device_dir.fd, &errno) catch {
             continue;
         };
-        defer nvme_info.deinit();
+        defer nvme_info.deinit(allocator);
         const ec2_device_name = try nvme_info.name();
         var buf: [128]u8 = undefined;
         const device_link_path = try fmt.bufPrint(&buf, "{s}/{s}", .{ constants.DIR_DEV, ec2_device_name });
@@ -30,9 +30,11 @@ pub fn link_nvme_devices(allocator: Allocator) !void {
 
         // Link partitions too if they exist.
         var partitions = try disk_partitions(allocator, device_name);
-        defer partitions.deinit(allocator);
+        defer {
+            for (partitions.items) |*p| p.deinit(allocator);
+            partitions.deinit(allocator);
+        }
         for (partitions.items) |*partition| {
-            defer partition.deinit(allocator);
             var pt_buf: [128]u8 = undefined;
             const partition_name = if (device_has_numeric_suffix(ec2_device_name))
                 try fmt.bufPrint(&pt_buf, "{s}p{s}", .{ ec2_device_name, partition.partition })
@@ -49,8 +51,7 @@ pub const PartitionInfo = struct {
     device: []const u8,
     partition: []const u8,
 
-    fn deinit(self: *PartitionInfo, allocator: Allocator) void {
-        allocator.free(self.device);
+    pub fn deinit(self: *PartitionInfo, allocator: Allocator) void {
         allocator.free(self.partition);
     }
 };
