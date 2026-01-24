@@ -1,0 +1,11 @@
+.{
+    .name = .easyto_init,
+    .version = "0.0.0",
+    .dependencies = .{},
+    .fingerprint = 0xb2e6bbb659318356,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
