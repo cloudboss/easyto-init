@@ -56,17 +56,27 @@ const Link = struct {
 };
 
 pub fn run(allocator: Allocator) !void {
+    std.log.info("easyto-init started", .{});
+
+    std.log.info("mounting base filesystems", .{});
     try base_mounts();
 
     try setup_test_mode();
 
+    std.log.info("creating base symlinks", .{});
     try base_links();
 
+    std.log.info("linking nvme devices", .{});
     try system.link_nvme_devices(allocator);
 
+    std.log.info("reading metadata", .{});
     const config_file_path = constants.DIR_ET ++ "/" ++ constants.FILE_METADATA;
     const config_file = try read_metadata(allocator, config_file_path);
+
+    std.log.info("parsing vmspec", .{});
     _ = try VmSpec.from_config_file(allocator, &config_file);
+
+    std.log.info("init complete, halting", .{});
 }
 
 fn base_mounts() !void {
