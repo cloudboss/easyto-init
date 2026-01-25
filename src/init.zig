@@ -127,7 +127,7 @@ fn base_mounts() !void {
         .{
             .source = "sys",
             .flags = ms.NODEV | ms.NOEXEC | ms.NOSUID,
-            .fs_type = "sys",
+            .fs_type = "sysfs",
             .mode = 0o555,
             .target = constants.DIR_SYS,
         },
