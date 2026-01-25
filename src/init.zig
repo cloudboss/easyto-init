@@ -58,6 +58,8 @@ const Link = struct {
 pub fn run(allocator: Allocator) !void {
     try base_mounts();
 
+    try setup_test_mode();
+
     try base_links();
 
     try system.link_nvme_devices(allocator);
@@ -175,6 +177,33 @@ fn base_links() !void {
             if (err != error.PathAlreadyExists) return err;
         };
     }
+}
+
+fn setup_test_mode() !void {
+    _ = std.posix.getenv("EASYTO_TEST_MODE") orelse return;
+
+    std.log.info("test mode enabled", .{});
+
+    const tty_path = "/dev/ttyS0";
+
+    // Make serial console accessible to non-root users
+    const tty_fd = std.posix.open(tty_path, .{ .ACCMODE = .WRONLY }, 0) catch |err| {
+        std.log.err("unable to open {s}: {s}", .{ tty_path, @errorName(err) });
+        return err;
+    };
+
+    std.posix.fchmod(tty_fd, 0o666) catch |err| {
+        std.log.err("unable to chmod {s}: {s}", .{ tty_path, @errorName(err) });
+        return err;
+    };
+
+    // Redirect stderr to serial console
+    std.posix.dup2(tty_fd, std.posix.STDERR_FILENO) catch |err| {
+        std.log.err("unable to dup2 stderr to {s}: {s}", .{ tty_path, @errorName(err) });
+        return err;
+    };
+
+    std.posix.close(tty_fd);
 }
 
 fn read_metadata(allocator: Allocator, path: []const u8) !container.ConfigFile {
