@@ -24,7 +24,10 @@ pub const Mount = struct {
     target: []const u8,
 
     pub fn execute(self: Mount, errno: *usize) !void {
-        try mkdir_p(@ptrCast(self.target), self.mode);
+        mkdir_p(self.target, self.mode) catch |err| {
+            std.log.err("failed to create directory {s}: {s}", .{ self.target, @errorName(err) });
+            return err;
+        };
         const ret = mount(
             @ptrCast(self.source),
             @ptrCast(self.target),
@@ -32,10 +35,15 @@ pub const Mount = struct {
             self.flags,
             @intFromPtr(@as(?[*:0]const u8, @ptrCast(self.options))),
         );
-        switch (std.posix.errno(ret)) {
+        const e = std.posix.errno(ret);
+        switch (e) {
             .SUCCESS => {},
+            .BUSY => {
+                std.log.warn("mount point {s} already mounted, skipping", .{self.target});
+            },
             else => {
-                errno.* = @intFromEnum(std.posix.errno(ret));
+                std.log.err("mount {s} on {s} failed: {s}", .{ self.source, self.target, @tagName(e) });
+                errno.* = @intFromEnum(e);
                 return Error.MountError;
             },
         }
@@ -163,7 +171,9 @@ fn base_links() !void {
     };
 
     for (links) |link| {
-        try std.posix.link(link.target, link.path);
+        std.posix.symlink(link.target, link.path) catch |err| {
+            if (err != error.PathAlreadyExists) return err;
+        };
     }
 }
 
