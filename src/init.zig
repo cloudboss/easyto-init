@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const constants = @import("constants.zig");
 const container = @import("container.zig");
 const mkdir_p = @import("fs.zig").mkdir_p;
+const Supervisor = @import("service.zig").Supervisor;
 const system = @import("system.zig");
 const VmSpec = @import("vmspec.zig").VmSpec;
 
@@ -74,9 +75,31 @@ pub fn run(allocator: Allocator) !void {
     const config_file = try read_metadata(allocator, config_file_path);
 
     std.log.info("parsing vmspec", .{});
-    _ = try VmSpec.from_config_file(allocator, &config_file);
+    const vmspec = try VmSpec.from_config_file(allocator, &config_file);
 
-    std.log.info("init complete, halting", .{});
+    const command = vmspec.full_command();
+    const args = vmspec.command_args();
+    const uid = vmspec.security.@"run-as-user-id" orelse 0;
+    const gid = vmspec.security.@"run-as-group-id" orelse 0;
+    const working_dir = vmspec.@"working-dir" orelse "/";
+    const shutdown_grace_period = vmspec.@"shutdown-grace-period" orelse 10;
+
+    std.log.info("starting supervisor", .{});
+    var supervisor = Supervisor.init(
+        allocator,
+        command,
+        args,
+        vmspec.env,
+        working_dir,
+        uid,
+        gid,
+        shutdown_grace_period,
+    );
+
+    try supervisor.start();
+    supervisor.wait();
+
+    std.log.info("supervisor finished, shutting down", .{});
 }
 
 fn base_mounts() !void {
@@ -226,7 +249,7 @@ fn read_metadata(allocator: Allocator, path: []const u8) !container.ConfigFile {
         container.ConfigFile,
         allocator,
         contents,
-        .{},
+        .{ .ignore_unknown_fields = true },
     );
     return parsed.value;
 }

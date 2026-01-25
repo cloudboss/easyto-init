@@ -4,6 +4,7 @@ pub const DIR_DEV_MQUEUE = "/dev/mqueue";
 pub const DIR_DEV_PTS = "/dev/pts";
 pub const DIR_DEV_SHM = "/dev/shm";
 pub const DIR_ET = "/.easyto";
+pub const DIR_ET_BIN = "/.easyto/bin";
 pub const DIR_ET_ETC = "/.easyto/etc";
 pub const DIR_ET_RUN = "/.easyto/run";
 pub const DIR_ET_SBIN = "/.easyto/sbin";

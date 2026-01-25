@@ -10,6 +10,8 @@ const ConfigFile = container.ConfigFile;
 const login = @import("login.zig");
 const string = @import("string.zig");
 
+const default_command = [_][]const u8{constants.DIR_ET_BIN ++ "/sh"};
+
 const Error = error{
     InvalidEnvironmentVariable,
     InvalidUserGroup,
@@ -65,6 +67,28 @@ pub const VmSpec = struct {
         return try name_values.toOwnedSlice(allocator);
     }
 
+    pub fn full_command(self: *const VmSpec) []const []const u8 {
+        const command_len = if (self.command) |c| c.len else 0;
+        const args_len = if (self.args) |a| a.len else 0;
+
+        if (command_len == 0 and args_len == 0) {
+            return &default_command;
+        }
+
+        if (command_len > 0) {
+            return self.command.?;
+        }
+        return self.args.?;
+    }
+
+    pub fn command_args(self: *const VmSpec) ?[]const []const u8 {
+        const command_len = if (self.command) |c| c.len else 0;
+        if (command_len > 0) {
+            return self.args;
+        }
+        return null;
+    }
+
     pub fn from_config_file(allocator: Allocator, config_file: *const ConfigFile) !VmSpec {
         const config = config_file.config orelse Config{};
         const env = if (config.Env != null)
@@ -84,23 +108,33 @@ pub const VmSpec = struct {
 
         if (config.User != null) {
             const user_group_names = try UserGroupNames.from_string(config.User.?);
-            const passwd_contents = try std.fs.cwd().readFileAlloc(
-                allocator,
-                constants.FILE_ETC_PASSWD,
-                1048576,
-            );
-            defer allocator.free(passwd_contents);
-            const uid = try login.user_group_id(passwd_contents, user_group_names.user);
-            vmspec.security.@"run-as-user-id" = uid;
-            if (user_group_names.group != null) {
-                const group_contents = try std.fs.cwd().readFileAlloc(
+
+            if (std.fmt.parseInt(u32, user_group_names.user, 10)) |uid| {
+                vmspec.security.@"run-as-user-id" = uid;
+            } else |_| {
+                const passwd_contents = try std.fs.cwd().readFileAlloc(
                     allocator,
-                    constants.FILE_ETC_GROUP,
+                    constants.FILE_ETC_PASSWD,
                     1048576,
                 );
-                defer allocator.free(group_contents);
-                const gid = try login.user_group_id(group_contents, user_group_names.group.?);
-                vmspec.security.@"run-as-group-id" = gid;
+                defer allocator.free(passwd_contents);
+                const uid = try login.user_group_id(passwd_contents, user_group_names.user);
+                vmspec.security.@"run-as-user-id" = uid;
+            }
+
+            if (user_group_names.group) |group| {
+                if (std.fmt.parseInt(u32, group, 10)) |gid| {
+                    vmspec.security.@"run-as-group-id" = gid;
+                } else |_| {
+                    const group_contents = try std.fs.cwd().readFileAlloc(
+                        allocator,
+                        constants.FILE_ETC_GROUP,
+                        1048576,
+                    );
+                    defer allocator.free(group_contents);
+                    const gid = try login.user_group_id(group_contents, group);
+                    vmspec.security.@"run-as-group-id" = gid;
+                }
             }
         }
 
@@ -287,4 +321,47 @@ test "VmSpec.env_strings_to_name_values multiple error" {
         &env_strings,
     );
     try testing.expectError(Error.InvalidEnvironmentVariable, actual);
+}
+
+test "VmSpec.full_command with both empty" {
+    const vmspec = VmSpec{};
+    const cmd = vmspec.full_command();
+    try testing.expectEqual(@as(usize, 1), cmd.len);
+    try testing.expectEqualStrings("/.easyto/bin/sh", cmd[0]);
+}
+
+test "VmSpec.full_command with command only" {
+    var command_arr = [_][]const u8{ "/bin/echo", "hello" };
+    const vmspec = VmSpec{
+        .command = &command_arr,
+    };
+    const cmd = vmspec.full_command();
+    try testing.expectEqual(@as(usize, 2), cmd.len);
+    try testing.expectEqualStrings("/bin/echo", cmd[0]);
+    try testing.expectEqualStrings("hello", cmd[1]);
+}
+
+test "VmSpec.full_command with args only" {
+    var args_arr = [_][]const u8{ "/bin/sh", "-c", "echo test" };
+    const vmspec = VmSpec{
+        .args = &args_arr,
+    };
+    const cmd = vmspec.full_command();
+    try testing.expectEqual(@as(usize, 3), cmd.len);
+    try testing.expectEqualStrings("/bin/sh", cmd[0]);
+}
+
+test "VmSpec.full_command with command and args" {
+    var command_arr = [_][]const u8{"/bin/echo"};
+    var args_arr = [_][]const u8{ "hello", "world" };
+    const vmspec = VmSpec{
+        .command = &command_arr,
+        .args = &args_arr,
+    };
+    const cmd = vmspec.full_command();
+    try testing.expectEqual(@as(usize, 1), cmd.len);
+    try testing.expectEqualStrings("/bin/echo", cmd[0]);
+    const cmd_args = vmspec.command_args();
+    try testing.expect(cmd_args != null);
+    try testing.expectEqual(@as(usize, 2), cmd_args.?.len);
 }
