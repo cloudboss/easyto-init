@@ -192,8 +192,6 @@ fn base_links() !void {
 fn setup_test_mode() !void {
     _ = std.posix.getenv("EASYTO_TEST_MODE") orelse return;
 
-    std.log.info("test mode enabled", .{});
-
     const tty_path = "/dev/ttyS0";
 
     // Make serial console accessible to non-root users
@@ -214,6 +212,8 @@ fn setup_test_mode() !void {
     };
 
     std.posix.close(tty_fd);
+
+    std.log.info("test mode enabled", .{});
 }
 
 fn read_metadata(allocator: Allocator, path: []const u8) !container.ConfigFile {
