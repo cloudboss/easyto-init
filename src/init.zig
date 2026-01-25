@@ -72,10 +72,12 @@ pub fn run(allocator: Allocator) !void {
 
     std.log.info("reading metadata", .{});
     const config_file_path = constants.DIR_ET ++ "/" ++ constants.FILE_METADATA;
-    const config_file = try read_metadata(allocator, config_file_path);
+    var metadata = try read_metadata(allocator, config_file_path);
+    defer metadata.deinit();
 
     std.log.info("parsing vmspec", .{});
-    const vmspec = try VmSpec.from_config_file(allocator, &config_file);
+    var vmspec = try VmSpec.from_config_file(allocator, &metadata.parsed.value);
+    defer vmspec.deinit(allocator);
 
     const command = vmspec.full_command();
     const args = vmspec.command_args();
@@ -239,17 +241,33 @@ fn setup_test_mode() !void {
     std.log.info("test mode enabled", .{});
 }
 
-fn read_metadata(allocator: Allocator, path: []const u8) !container.ConfigFile {
+const Metadata = struct {
+    contents: []const u8,
+    parsed: std.json.Parsed(container.ConfigFile),
+    allocator: Allocator,
+
+    fn deinit(self: *Metadata) void {
+        self.parsed.deinit();
+        self.allocator.free(self.contents);
+    }
+};
+
+fn read_metadata(allocator: Allocator, path: []const u8) !Metadata {
     const contents = try std.fs.cwd().readFileAlloc(
         allocator,
         path,
         1073741824,
     );
+    errdefer allocator.free(contents);
     const parsed = try std.json.parseFromSlice(
         container.ConfigFile,
         allocator,
         contents,
         .{ .ignore_unknown_fields = true },
     );
-    return parsed.value;
+    return Metadata{
+        .contents = contents,
+        .parsed = parsed,
+        .allocator = allocator,
+    };
 }

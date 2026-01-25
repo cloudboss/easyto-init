@@ -140,6 +140,15 @@ pub const VmSpec = struct {
 
         return vmspec;
     }
+
+    pub fn deinit(self: *VmSpec, allocator: Allocator) void {
+        if (self.env) |env| {
+            for (env) |*nv| {
+                @constCast(nv).deinit(allocator);
+            }
+            allocator.free(env);
+        }
+    }
 };
 
 pub const NameValue = struct {
