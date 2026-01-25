@@ -6,7 +6,6 @@ ARG GID=1000
 ARG ZIG_VERSION=0.15.2
 
 RUN apk add --no-cache \
-    coreutils \
     curl \
     docker-cli \
     fakeroot \
