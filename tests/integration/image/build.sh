@@ -7,6 +7,15 @@ EASYTO_ASSETS_RUNTIME="$2"
 OUTPUT="$3"
 SCENARIO_DIR="${4:-}"
 
+# Cache in the main output directory (_output/)
+OUTPUT_DIR=$(cd "$(dirname "${OUTPUT}")/.." && pwd)
+
+# Generate cache key from alpine image and assets version
+ALPINE_IMAGE="alpine:3.20"
+ASSETS_VERSION=$(basename "${EASYTO_ASSETS_RUNTIME}")
+CACHE_KEY=$(echo "${ALPINE_IMAGE}:${ASSETS_VERSION}" | sha256sum | cut -c1-16)
+CACHE_FILE="${OUTPUT_DIR}/test-rootfs-${CACHE_KEY}.tar"
+
 ROOTFS_DIR=$(mktemp -d)
 trap "rm -rf ${ROOTFS_DIR}" EXIT
 
@@ -15,27 +24,42 @@ log()
     echo "[build-image] $*"
 }
 
-log "Creating test rootfs..."
+build_base_rootfs()
+{
+    log "Creating test rootfs..."
 
-# Use docker to get a minimal alpine rootfs with curl for IMDS testing
-log "Extracting alpine rootfs..."
-container_id=$(docker create alpine:3.20 sh -c "apk add --no-cache curl && rm -rf /var/cache/apk/*")
-docker start -a "${container_id}" > /dev/null
-docker export "${container_id}" | fakeroot tar -xf - -C "${ROOTFS_DIR}"
-docker rm "${container_id}" > /dev/null
+    # Use docker to get a minimal alpine rootfs with curl for IMDS testing
+    log "Extracting alpine rootfs..."
+    container_id=$(docker create ${ALPINE_IMAGE} sh -c "apk add --no-cache curl && rm -rf /var/cache/apk/*")
+    docker start -a "${container_id}" > /dev/null
+    docker export "${container_id}" | fakeroot tar -xf - -C "${ROOTFS_DIR}"
+    docker rm "${container_id}" > /dev/null
 
-# Extract all asset tarballs from easyto-assets-runtime onto rootfs
-log "Installing easyto-assets-runtime..."
-for tarball in "${EASYTO_ASSETS_RUNTIME}"/*.tar; do
-    [ -f "${tarball}" ] || continue
-    log "  Extracting $(basename "${tarball}")..."
-    fakeroot tar -xf "${tarball}" -C "${ROOTFS_DIR}"
-done
+    # Extract all asset tarballs from easyto-assets-runtime onto rootfs
+    log "Installing easyto-assets-runtime..."
+    for tarball in "${EASYTO_ASSETS_RUNTIME}"/*.tar; do
+        [ -f "${tarball}" ] || continue
+        log "  Extracting $(basename "${tarball}")..."
+        fakeroot tar -xf "${tarball}" -C "${ROOTFS_DIR}"
+    done
 
-# Add service users required by chrony
-log "Adding service users..."
-echo "cb-chrony:x:400:400:chrony:/var/lib/chrony:/sbin/nologin" >> "${ROOTFS_DIR}/etc/passwd"
-echo "cb-chrony:x:400:" >> "${ROOTFS_DIR}/etc/group"
+    # Add service users required by chrony
+    log "Adding service users..."
+    echo "cb-chrony:x:400:400:chrony:/var/lib/chrony:/sbin/nologin" >> "${ROOTFS_DIR}/etc/passwd"
+    echo "cb-chrony:x:400:" >> "${ROOTFS_DIR}/etc/group"
+
+    # Save to cache
+    log "Saving rootfs cache..."
+    (cd "${ROOTFS_DIR}" && fakeroot tar -cf "${CACHE_FILE}" .)
+}
+
+# Check for cached rootfs
+if [ -f "${CACHE_FILE}" ]; then
+    log "Using cached rootfs (${CACHE_KEY})..."
+    fakeroot tar -xf "${CACHE_FILE}" -C "${ROOTFS_DIR}"
+else
+    build_base_rootfs
+fi
 
 # Install the init binary
 log "Installing init binary..."
