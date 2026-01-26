@@ -5,6 +5,8 @@ const ms = std.os.linux.MS;
 const Mode = std.fs.File.Mode;
 const Allocator = std.mem.Allocator;
 
+const aws_sdk = @import("aws_sdk");
+
 const constants = @import("constants.zig");
 const container = @import("container.zig");
 const mkdir_p = @import("fs.zig").mkdir_p;
@@ -71,6 +73,14 @@ pub fn run(allocator: Allocator) !void {
     std.log.info("initializing network", .{});
     try network.initializeNetwork(allocator);
 
+    // Fetch user data from IMDS
+    std.log.info("fetching user data from IMDS", .{});
+    const user_data = fetchUserData(allocator) catch |err| blk: {
+        std.log.warn("failed to fetch user data: {s}, continuing without", .{@errorName(err)});
+        break :blk null;
+    };
+    defer if (user_data) |ud| allocator.free(ud);
+
     std.log.info("linking nvme devices", .{});
     try system.link_nvme_devices(allocator);
 
@@ -82,6 +92,23 @@ pub fn run(allocator: Allocator) !void {
     std.log.info("parsing vmspec", .{});
     var vmspec = try VmSpec.from_config_file(allocator, &metadata.parsed.value);
     defer vmspec.deinit(allocator);
+
+    // Parse and merge user data if available
+    if (user_data) |ud| {
+        std.log.info("parsing user data YAML", .{});
+        if (VmSpec.from_yaml(allocator, ud)) |user_vmspec_opt| {
+            if (user_vmspec_opt) |user_vmspec| {
+                std.log.info("merging user data into vmspec", .{});
+                try vmspec.merge(allocator, user_vmspec);
+                // Note: user_vmspec memory is intentionally kept alive since vmspec
+                // references strings from it (args, command, etc.). For an init process
+                // that runs forever, this small amount of memory is acceptable.
+            }
+        } else |err| {
+            std.log.err("unable to parse user data: {s}", .{@errorName(err)});
+            return err;
+        }
+    }
 
     const command = vmspec.full_command();
     const args = vmspec.command_args();
@@ -274,4 +301,24 @@ fn read_metadata(allocator: Allocator, path: []const u8) !Metadata {
         .parsed = parsed,
         .allocator = allocator,
     };
+}
+
+fn fetchUserData(allocator: Allocator) !?[]const u8 {
+    var imds_client = aws_sdk.imds.ImdsClient.init(allocator, .{}) catch |err| {
+        std.log.err("failed to initialize IMDS client: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer imds_client.deinit();
+
+    // User data endpoint returns 404 if no user data is configured
+    const user_data = imds_client.get("/latest/user-data") catch |err| {
+        if (err == error.HttpNotFound) {
+            std.log.info("no user data configured in IMDS", .{});
+            return null;
+        }
+        std.log.err("failed to fetch user data from IMDS: {s}", .{@errorName(err)});
+        return err;
+    };
+
+    return user_data;
 }

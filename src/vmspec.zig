@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const testing = std.testing;
+const yaml = @import("yaml.zig");
 
 const constants = @import("constants.zig");
 const container = @import("container.zig");
@@ -12,9 +13,69 @@ const string = @import("string.zig");
 
 const default_command = [_][]const u8{constants.DIR_ET_BIN ++ "/sh"};
 
+/// Merge two NameValue slices. Values from `other` override values in `base` with the same name.
+/// Items from `base` that aren't in `other` are kept; all items from `other` are added.
+/// Strings are copied to ensure proper ownership.
+fn mergeNameValues(allocator: Allocator, base: ?[]const NameValue, other: []const NameValue) ![]NameValue {
+    if (other.len == 0) {
+        // Nothing to merge, keep base as-is (base items are already owned)
+        if (base) |b| {
+            return try allocator.dupe(NameValue, b);
+        }
+        return try allocator.alloc(NameValue, 0);
+    }
+
+    const base_slice = base orelse &[_]NameValue{};
+
+    // Count how many base items are not overridden
+    var keep_count: usize = 0;
+    for (base_slice) |base_nv| {
+        var found = false;
+        for (other) |other_nv| {
+            if (std.mem.eql(u8, base_nv.name, other_nv.name)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) keep_count += 1;
+    }
+
+    // Allocate result: kept base items + all other items
+    var result = try ArrayList(NameValue).initCapacity(allocator, keep_count + other.len);
+    errdefer {
+        for (result.items) |*nv| nv.deinit(allocator);
+        result.deinit(allocator);
+    }
+
+    // Add base items that aren't being overridden (these are already owned, just copy pointers)
+    for (base_slice) |base_nv| {
+        var found = false;
+        for (other) |other_nv| {
+            if (std.mem.eql(u8, base_nv.name, other_nv.name)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            try result.append(allocator, base_nv);
+        }
+    }
+
+    // Add all items from other (copy strings to transfer ownership)
+    for (other) |other_nv| {
+        try result.append(allocator, NameValue{
+            .name = try allocator.dupe(u8, other_nv.name),
+            .value = try allocator.dupe(u8, other_nv.value),
+        });
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
 const Error = error{
     InvalidEnvironmentVariable,
     InvalidUserGroup,
+    InvalidYaml,
 };
 
 const UserGroupNames = struct {
@@ -36,12 +97,16 @@ pub const VmSpec = struct {
     env: ?[]NameValue = null,
     @"env-from": ?[]EnvFromSource = null,
     @"init-scripts": ?[][]const u8 = null,
+    modules: ?[][]const u8 = null,
     @"replace-init": ?bool = false,
     security: Security = Security{},
     @"shutdown-grace-period": ?u64 = 10,
     sysctls: ?[]NameValue = null,
     volumes: ?[]Volume = null,
     @"working-dir": ?[]const u8 = "/",
+
+    // Ownership tracking - fields set by merge() that need to be freed
+    owns_sysctls: bool = false,
 
     fn env_strings_to_name_values(allocator: Allocator, env: []const []const u8) ![]NameValue {
         var name_values = try ArrayList(NameValue).initCapacity(allocator, env.len);
@@ -142,11 +207,214 @@ pub const VmSpec = struct {
     }
 
     pub fn deinit(self: *VmSpec, allocator: Allocator) void {
+        // Only free env - it's always owned (either from env_strings_to_name_values or merge)
         if (self.env) |env| {
             for (env) |*nv| {
                 @constCast(nv).deinit(allocator);
             }
             allocator.free(env);
+            self.env = null;
+        }
+        // Only free sysctls if owned (from merge)
+        if (self.owns_sysctls) {
+            if (self.sysctls) |sysctls| {
+                for (sysctls) |*nv| {
+                    @constCast(nv).deinit(allocator);
+                }
+                allocator.free(sysctls);
+                self.sysctls = null;
+            }
+        }
+    }
+
+    /// Parse user data from YAML string.
+    /// Returns null if the content is empty.
+    pub fn from_yaml(allocator: Allocator, content: []const u8) !?VmSpec {
+        const trimmed = std.mem.trim(u8, content, " \t\r\n");
+        if (trimmed.len == 0) {
+            return null;
+        }
+
+        const parsed = yaml.parse(allocator, content) catch |err| {
+            std.log.err("failed to parse user data YAML: {s}", .{@errorName(err)});
+            return err;
+        };
+
+        return try fromYamlValue(allocator, parsed);
+    }
+
+    fn fromYamlValue(allocator: Allocator, value: yaml.Value) !VmSpec {
+        var vmspec = VmSpec{};
+
+        const map = value.getMap() orelse {
+            std.log.err("user data is not a valid YAML map", .{});
+            return error.InvalidYaml;
+        };
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "args")) {
+                vmspec.args = try parseStringList(allocator, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "command")) {
+                vmspec.command = try parseStringList(allocator, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "debug")) {
+                if (entry.value.getString()) |s| {
+                    vmspec.debug = std.mem.eql(u8, s, "true");
+                }
+            } else if (std.mem.eql(u8, entry.key, "disable-services")) {
+                vmspec.@"disable-services" = try parseStringList(allocator, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "env")) {
+                vmspec.env = try parseNameValueList(allocator, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "init-scripts")) {
+                vmspec.@"init-scripts" = try parseStringList(allocator, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "modules")) {
+                vmspec.modules = try parseStringList(allocator, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "replace-init")) {
+                if (entry.value.getString()) |s| {
+                    vmspec.@"replace-init" = std.mem.eql(u8, s, "true");
+                }
+            } else if (std.mem.eql(u8, entry.key, "security")) {
+                vmspec.security = try parseSecurity(entry.value);
+            } else if (std.mem.eql(u8, entry.key, "shutdown-grace-period")) {
+                if (entry.value.getString()) |s| {
+                    vmspec.@"shutdown-grace-period" = std.fmt.parseInt(u64, s, 10) catch 10;
+                }
+            } else if (std.mem.eql(u8, entry.key, "sysctls")) {
+                vmspec.sysctls = try parseNameValueList(allocator, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "working-dir")) {
+                vmspec.@"working-dir" = entry.value.getString();
+            }
+            // Note: env-from and volumes require more complex parsing
+        }
+
+        return vmspec;
+    }
+
+    fn parseStringList(allocator: Allocator, value: yaml.Value) !?[][]const u8 {
+        const list = value.getList() orelse return null;
+        var result = try ArrayList([]const u8).initCapacity(allocator, list.len);
+        errdefer {
+            for (result.items) |s| allocator.free(s);
+            result.deinit(allocator);
+        }
+
+        for (list) |item| {
+            if (item.getString()) |s| {
+                try result.append(allocator, try allocator.dupe(u8, s));
+            }
+        }
+
+        return try result.toOwnedSlice(allocator);
+    }
+
+    fn parseNameValueList(allocator: Allocator, value: yaml.Value) !?[]NameValue {
+        const list = value.getList() orelse return null;
+        var result = try ArrayList(NameValue).initCapacity(allocator, list.len);
+        errdefer {
+            for (result.items) |*nv| nv.deinit(allocator);
+            result.deinit(allocator);
+        }
+
+        for (list) |item| {
+            const item_map = item.getMap() orelse continue;
+            var name: ?[]const u8 = null;
+            var val: ?[]const u8 = null;
+
+            for (item_map) |entry| {
+                if (std.mem.eql(u8, entry.key, "name")) {
+                    name = entry.value.getString();
+                } else if (std.mem.eql(u8, entry.key, "value")) {
+                    val = entry.value.getString();
+                }
+            }
+
+            if (name != null) {
+                try result.append(allocator, .{
+                    .name = try allocator.dupe(u8, name.?),
+                    .value = try allocator.dupe(u8, val orelse ""),
+                });
+            }
+        }
+
+        return try result.toOwnedSlice(allocator);
+    }
+
+    fn parseSecurity(value: yaml.Value) !Security {
+        var security = Security{};
+        const map = value.getMap() orelse return security;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "run-as-user-id")) {
+                if (entry.value.getString()) |s| {
+                    security.@"run-as-user-id" = std.fmt.parseInt(u32, s, 10) catch null;
+                }
+            } else if (std.mem.eql(u8, entry.key, "run-as-group-id")) {
+                if (entry.value.getString()) |s| {
+                    security.@"run-as-group-id" = std.fmt.parseInt(u32, s, 10) catch null;
+                }
+            } else if (std.mem.eql(u8, entry.key, "readonly-root-fs")) {
+                if (entry.value.getString()) |s| {
+                    security.@"readonly-root-fs" = std.mem.eql(u8, s, "true");
+                }
+            }
+        }
+
+        return security;
+    }
+
+    /// Merge user data into this VmSpec.
+    /// Fields from `other` override fields in `self` when present.
+    pub fn merge(self: *VmSpec, allocator: Allocator, other: VmSpec) !void {
+        if (other.args != null) {
+            self.args = other.args;
+        }
+        if (other.command != null) {
+            self.command = other.command;
+            // If command is overridden but args is not in other, clear args
+            if (other.args == null) {
+                self.args = null;
+            }
+        }
+        if (other.debug != null and other.debug.?) {
+            self.debug = other.debug;
+        }
+        if (other.@"disable-services" != null) {
+            self.@"disable-services" = other.@"disable-services";
+        }
+        if (other.env != null) {
+            const old_env = self.env;
+            self.env = try mergeNameValues(allocator, self.env, other.env.?);
+            // Free old env (note: base items are now in the merged result, so we only free the slice itself)
+            if (old_env) |oe| {
+                // Don't free individual items - they're referenced in the new merged result
+                // or will be freed via the merged result
+                allocator.free(oe);
+            }
+        }
+        if (other.@"env-from" != null) {
+            self.@"env-from" = other.@"env-from";
+        }
+        if (other.@"init-scripts" != null) {
+            self.@"init-scripts" = other.@"init-scripts";
+        }
+        if (other.modules != null) {
+            self.modules = other.modules;
+        }
+        if (other.@"replace-init" != null and other.@"replace-init".?) {
+            self.@"replace-init" = other.@"replace-init";
+        }
+        self.security.merge(other.security);
+        if (other.@"shutdown-grace-period" != null) {
+            self.@"shutdown-grace-period" = other.@"shutdown-grace-period";
+        }
+        if (other.sysctls != null) {
+            self.sysctls = try mergeNameValues(allocator, self.sysctls, other.sysctls.?);
+            self.owns_sysctls = true;
+        }
+        if (other.volumes != null) {
+            self.volumes = other.volumes;
+        }
+        if (other.@"working-dir" != null) {
+            self.@"working-dir" = other.@"working-dir";
         }
     }
 };
@@ -201,6 +469,21 @@ pub const Security = struct {
     @"run-as-group-id": ?u32 = null,
     @"run-as-user-id": ?u32 = null,
     sshd: Sshd = Sshd{},
+
+    pub fn merge(self: *Security, other: Security) void {
+        if (other.@"readonly-root-fs" != null) {
+            self.@"readonly-root-fs" = other.@"readonly-root-fs";
+        }
+        if (other.@"run-as-group-id" != null) {
+            self.@"run-as-group-id" = other.@"run-as-group-id";
+        }
+        if (other.@"run-as-user-id" != null) {
+            self.@"run-as-user-id" = other.@"run-as-user-id";
+        }
+        if (other.sshd.enable != null) {
+            self.sshd = other.sshd;
+        }
+    }
 };
 
 pub const Sshd = struct {

@@ -13,7 +13,7 @@ pub fn main() !void {
     };
 
     init.run(alloc) catch |err| {
-        std.log.err("system error: {any}\n", .{err});
+        std.log.err("System error: {s}", .{@errorName(err)});
     };
 
     if (is_debug) {

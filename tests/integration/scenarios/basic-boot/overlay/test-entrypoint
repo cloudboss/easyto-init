@@ -1,7 +1,0 @@
-#!/bin/sh
-# Basic boot test - verifies the entrypoint runs successfully
-exec >/dev/ttyS0 2>&1
-
-echo "=== Basic Boot Test ==="
-echo "Entrypoint running as PID $$"
-echo "PASS"

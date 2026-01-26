@@ -10,6 +10,7 @@ const nvme = @import("nvme-amz.zig");
 const string = @import("string.zig");
 const system = @import("system.zig");
 const vmspec = @import("vmspec.zig");
+const yaml = @import("yaml.zig");
 
 const testing = std.testing;
 
@@ -25,4 +26,5 @@ test {
     testing.refAllDecls(string);
     testing.refAllDecls(system);
     testing.refAllDecls(vmspec);
+    testing.refAllDecls(yaml);
 }
