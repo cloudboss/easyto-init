@@ -8,41 +8,41 @@ command:
     exec >/dev/ttyS0 2>&1
     echo "=== ip-persistence test ==="
 
-    # Check that interfaces.json was created
+    # Check that network.json was created
     if [ ! -f /.easyto/var/lib/network.json ]; then
-        echo "FAIL: interfaces.json not found"
+        echo "FAIL: network.json not found"
         exit 1
     fi
 
     # Check that it contains IP configuration for the primary interface
     if ! grep -q '"ip_address"' /.easyto/var/lib/network.json; then
-        echo "FAIL: ip_address not found in interfaces.json"
+        echo "FAIL: ip_address not found in network.json"
         cat /.easyto/var/lib/network.json
         exit 1
     fi
 
     if ! grep -q '"prefix_len"' /.easyto/var/lib/network.json; then
-        echo "FAIL: prefix_len not found in interfaces.json"
+        echo "FAIL: prefix_len not found in network.json"
         cat /.easyto/var/lib/network.json
         exit 1
     fi
 
     if ! grep -q '"gateway"' /.easyto/var/lib/network.json; then
-        echo "FAIL: gateway not found in interfaces.json"
+        echo "FAIL: gateway not found in network.json"
         cat /.easyto/var/lib/network.json
         exit 1
     fi
 
     # DNS configuration should be persisted (QEMU user-mode DHCP provides DNS)
     if ! grep -q '"dns_servers"' /.easyto/var/lib/network.json; then
-        echo "FAIL: dns_servers not found in interfaces.json"
+        echo "FAIL: dns_servers not found in network.json"
         cat /.easyto/var/lib/network.json
         exit 1
     fi
     echo "DNS servers persisted: yes"
 
     # Show the contents for debugging
-    echo "interfaces.json content:"
+    echo "network.json content:"
     cat /.easyto/var/lib/network.json
     echo ""
 
