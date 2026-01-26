@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const constants = @import("constants.zig");
 const container = @import("container.zig");
 const mkdir_p = @import("fs.zig").mkdir_p;
+const network = @import("network.zig");
 const Supervisor = @import("service.zig").Supervisor;
 const system = @import("system.zig");
 const VmSpec = @import("vmspec.zig").VmSpec;
@@ -66,6 +67,9 @@ pub fn run(allocator: Allocator) !void {
 
     std.log.info("creating base symlinks", .{});
     try base_links();
+
+    std.log.info("initializing network", .{});
+    try network.initializeNetwork(allocator);
 
     std.log.info("linking nvme devices", .{});
     try system.link_nvme_devices(allocator);

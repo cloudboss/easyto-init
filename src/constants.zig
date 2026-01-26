@@ -9,6 +9,7 @@ pub const DIR_ET_ETC = "/.easyto/etc";
 pub const DIR_ET_RUN = "/.easyto/run";
 pub const DIR_ET_SBIN = "/.easyto/sbin";
 pub const DIR_ET_SERVICES = "/.easyto/services";
+pub const DIR_ET_VAR_LIB = "/.easyto/var/lib";
 pub const DIR_PROC = "/proc";
 pub const DIR_ROOT = "/";
 pub const DIR_ROOT_HOME = "/root";
@@ -18,7 +19,9 @@ pub const DIR_SYS_KERNEL_DEBUG = "/sys/kernel/debug";
 
 pub const FILE_ETC_GROUP = "/etc/group";
 pub const FILE_ETC_PASSWD = "/etc/passwd";
+pub const FILE_ETC_RESOLV_CONF = "/etc/resolv.conf";
 pub const FILE_METADATA = "metadata.json";
+pub const FILE_NETWORK_JSON = "network.json";
 
 pub const GROUP_NAME_WHEEL = "wheel";
 

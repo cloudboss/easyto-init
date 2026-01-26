@@ -9,9 +9,19 @@ pub fn build(b: *std.Build) void {
         .abi = .musl,
     });
 
+    // Dependencies
+    const aws_sdk_dep = b.dependency("aws_sdk", .{ .target = target, .optimize = optimize });
+    const dhcpz_dep = b.dependency("dhcpz", .{ .target = target });
+    const nlz_dep = b.dependency("nlz", .{ .target = target, .optimize = optimize });
+
     const mod = b.addModule("easyto_init", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .imports = &.{
+            .{ .name = "aws_sdk", .module = aws_sdk_dep.module("aws_sdk") },
+            .{ .name = "dhcpz", .module = dhcpz_dep.module("dhcpz") },
+            .{ .name = "nlz", .module = nlz_dep.module("nlz") },
+        },
     });
 
     const exe = b.addExecutable(.{
@@ -21,7 +31,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
+                .{ .name = "aws_sdk", .module = aws_sdk_dep.module("aws_sdk") },
+                .{ .name = "dhcpz", .module = dhcpz_dep.module("dhcpz") },
                 .{ .name = "easyto_init", .module = mod },
+                .{ .name = "nlz", .module = nlz_dep.module("nlz") },
             },
         }),
     });

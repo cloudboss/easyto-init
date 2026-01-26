@@ -1,7 +1,17 @@
 .{
     .name = .easyto_init,
     .version = "0.0.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .aws_sdk = .{
+            .path = "../aws-sdk-for-zig",
+        },
+        .dhcpz = .{
+            .path = "../dhcpz",
+        },
+        .nlz = .{
+            .path = "../nlz",
+        },
+    },
     .fingerprint = 0xb2e6bbb659318356,
     .paths = .{
         "build.zig",
