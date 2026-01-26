@@ -109,6 +109,9 @@ pub fn run(allocator: Allocator) !void {
         }
     }
 
+    std.log.info("applying sysctls", .{});
+    try system.setSysctls(vmspec.sysctls);
+
     const command = vmspec.full_command();
     const args = vmspec.command_args();
     const uid = vmspec.security.@"run-as-user-id" orelse 0;

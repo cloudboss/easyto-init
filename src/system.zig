@@ -6,6 +6,7 @@ const testing = std.testing;
 
 const constants = @import("constants.zig");
 const nvme = @import("nvme-amz.zig");
+const NameValue = @import("vmspec.zig").NameValue;
 
 const SYS_BLOCK_PATH = "/sys/block";
 
@@ -96,6 +97,70 @@ pub fn poweroff() void {
     if (e != .SUCCESS) {
         std.log.err("failed to power off: {s}", .{@tagName(e)});
     }
+}
+
+/// Write a sysctl value to /proc/sys.
+/// Converts dotted key (e.g., "net.ipv4.ip_forward") to path (/proc/sys/net/ipv4/ip_forward).
+pub fn sysctl(key: []const u8, value: []const u8) !void {
+    var path_buf: [256]u8 = undefined;
+    const path = procPathFromDotted(&path_buf, key) catch |err| {
+        std.log.err("sysctl key too long: {s}", .{key});
+        return err;
+    };
+
+    const file = std.fs.openFileAbsolute(path, .{ .mode = .write_only }) catch |err| {
+        std.log.err("failed to open {s}: {s}", .{ path, @errorName(err) });
+        return err;
+    };
+    defer file.close();
+
+    file.writeAll(value) catch |err| {
+        std.log.err("failed to write to {s}: {s}", .{ path, @errorName(err) });
+        return err;
+    };
+
+    std.log.debug("set sysctl {s}={s}", .{ key, value });
+}
+
+/// Apply all sysctls from the given slice.
+pub fn setSysctls(sysctls: ?[]const NameValue) !void {
+    const items = sysctls orelse return;
+    for (items) |nv| {
+        try sysctl(nv.name, nv.value);
+    }
+}
+
+/// Convert dotted sysctl key to /proc/sys path.
+/// e.g., "net.ipv4.ip_forward" -> "/proc/sys/net/ipv4/ip_forward"
+fn procPathFromDotted(buf: []u8, key: []const u8) ![]const u8 {
+    const prefix = constants.DIR_PROC ++ "/sys/";
+    if (prefix.len + key.len > buf.len) return error.BufferTooSmall;
+
+    @memcpy(buf[0..prefix.len], prefix);
+    var pos: usize = prefix.len;
+
+    for (key) |c| {
+        if (c == '.') {
+            buf[pos] = '/';
+        } else {
+            buf[pos] = c;
+        }
+        pos += 1;
+    }
+
+    return buf[0..pos];
+}
+
+test "procPathFromDotted" {
+    var buf: [256]u8 = undefined;
+    const result = try procPathFromDotted(&buf, "net.ipv4.ip_forward");
+    try testing.expectEqualStrings("/proc/sys/net/ipv4/ip_forward", result);
+}
+
+test "procPathFromDotted single component" {
+    var buf: [256]u8 = undefined;
+    const result = try procPathFromDotted(&buf, "hostname");
+    try testing.expectEqualStrings("/proc/sys/hostname", result);
 }
 
 test "device_has_numeric_suffix" {
