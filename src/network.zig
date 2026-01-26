@@ -150,7 +150,9 @@ fn initializeNetworkInner(allocator: Allocator) !void {
     defer imds_client.deinit();
 
     // Load persisted state if available
-    const persisted_state = loadPersistedState(allocator) catch PersistedNetworkState{};
+    var parsed_state = loadPersistedState(allocator);
+    defer parsed_state.deinit();
+    const persisted_state = parsed_state.value();
 
     // Get current interfaces
     var links = socket.getLinks(allocator) catch {
@@ -183,8 +185,8 @@ fn initializeNetworkInner(allocator: Allocator) !void {
     // Apply primary naming (rename to eth0 if needed)
     const final_primary = try applyPrimaryNaming(&socket, interfaces.items, primary, &persisted_state, allocator);
 
-    // Configure DHCP on primary
-    const dhcp_result = try configurePrimaryDhcp(&socket, primary, final_primary, bootstrap_lease, allocator);
+    // Configure DHCP on primary (or use persisted config if available)
+    const dhcp_result = try configurePrimaryDhcp(&socket, primary, final_primary, bootstrap_lease, &persisted_state, allocator);
     var dhcp_lease = dhcp_result.lease;
     defer dhcp_lease.deinit(allocator);
 
@@ -380,6 +382,7 @@ fn configurePrimaryDhcp(
     original_primary: InterfaceInfo,
     final_primary_name: []const u8,
     bootstrap_lease: ?DhcpLease,
+    persisted_state: *const PersistedNetworkState,
     allocator: Allocator,
 ) !ConfigureDhcpResult {
     // Re-enumerate to get current state after potential rename
@@ -413,6 +416,61 @@ fn configurePrimaryDhcp(
         }
         // Bootstrap was on different interface, need to flush and reconfigure
         flushInterface(socket, original_primary.ifindex, allocator);
+    } else {
+        // No bootstrap (persisted primary) - check for persisted IP configuration
+        if (getPersistedPrimaryConfig(persisted_state)) |persisted_config| {
+            std.log.info("Using persisted IP configuration", .{});
+
+            // Bring up interface
+            socket.setLinkUp(primary.ifindex, allocator) catch |err| {
+                std.log.err("failed to bring up primary interface: {s}", .{@errorName(err)});
+                return Error.NetlinkError;
+            };
+
+            // Flush any existing addresses
+            flushInterface(socket, primary.ifindex, allocator);
+
+            // Apply persisted address
+            const ip_addr = persisted_config.ip_address.?;
+            const prefix_len = persisted_config.prefix_len.?;
+            try applyPersistedConfig(socket, primary.ifindex, ip_addr, prefix_len, persisted_config.gateway, allocator);
+
+            // Write resolver config
+            if (persisted_state.resolver) |resolver| {
+                writeResolverConfig(resolver) catch |err| {
+                    std.log.warn("failed to write resolver config: {s}", .{@errorName(err)});
+                };
+            }
+
+            // Parse gateway if present
+            const gw_bytes = if (persisted_config.gateway) |gw|
+                parseIpv4Address(gw) catch [4]u8{ 0, 0, 0, 0 }
+            else
+                [4]u8{ 0, 0, 0, 0 };
+
+            // Parse address
+            const addr_bytes = parseIpv4Address(ip_addr) catch {
+                std.log.err("invalid persisted IP address: {s}", .{ip_addr});
+                return Error.NetworkInitFailed;
+            };
+
+            // Return a synthetic lease (resolver is empty since we wrote resolv.conf directly)
+            return .{
+                .lease = DhcpLease{
+                    .address = AddressConfig{
+                        .address = addr_bytes,
+                        .prefix_len = prefix_len,
+                        .gateway = gw_bytes,
+                    },
+                    .resolver = ResolverConfig{
+                        .dns_servers = &.{},
+                        .domain_name = null,
+                        .search_list = &.{},
+                    },
+                },
+                .reused_bootstrap = false,
+            };
+        }
     }
 
     // Bring up and configure primary
@@ -453,6 +511,104 @@ fn getPersistedPrimaryMac(state: *const PersistedNetworkState) ?[]const u8 {
         }
     }
     return null;
+}
+
+/// Get persisted IP configuration for the primary interface.
+/// Returns the interface entry if it has a valid IP configuration.
+fn getPersistedPrimaryConfig(state: *const PersistedNetworkState) ?InterfaceEntry {
+    for (state.interfaces) |entry| {
+        if (entry.primary and entry.ip_address != null and entry.prefix_len != null) {
+            return entry;
+        }
+    }
+    return null;
+}
+
+/// Apply persisted IP configuration to an interface.
+fn applyPersistedConfig(
+    socket: *nlz.Socket,
+    ifindex: u32,
+    ip_address: []const u8,
+    prefix_len: u8,
+    gateway: ?[]const u8,
+    allocator: Allocator,
+) !void {
+    // Parse IP address into bytes
+    const addr = parseIpv4Address(ip_address) catch |err| {
+        std.log.err("failed to parse persisted IP address {s}: {s}", .{ ip_address, @errorName(err) });
+        return Error.NetworkInitFailed;
+    };
+
+    // Add address to interface
+    socket.addAddressIPv4(ifindex, addr, prefix_len, allocator) catch |err| {
+        std.log.err("failed to add persisted address: {s}", .{@errorName(err)});
+        return Error.NetlinkError;
+    };
+
+    // Add default route if gateway is specified
+    if (gateway) |gw| {
+        const gw_addr = parseIpv4Address(gw) catch |err| {
+            std.log.err("failed to parse persisted gateway {s}: {s}", .{ gw, @errorName(err) });
+            return Error.NetworkInitFailed;
+        };
+
+        socket.addRouteIPv4(ifindex, .{ 0, 0, 0, 0 }, gw_addr, 0, allocator) catch |err| {
+            std.log.err("failed to add persisted default route: {s}", .{@errorName(err)});
+            return Error.NetlinkError;
+        };
+    }
+}
+
+/// Parse an IPv4 address string into 4 bytes.
+fn parseIpv4Address(ip_str: []const u8) ![4]u8 {
+    var result: [4]u8 = undefined;
+    var i: usize = 0;
+    var it = std.mem.splitScalar(u8, ip_str, '.');
+    while (it.next()) |octet_str| {
+        if (i >= 4) return error.InvalidAddress;
+        result[i] = std.fmt.parseInt(u8, octet_str, 10) catch return error.InvalidAddress;
+        i += 1;
+    }
+    if (i != 4) return error.InvalidAddress;
+    return result;
+}
+
+/// Write resolver configuration from persisted state.
+fn writeResolverConfig(resolver: PersistedResolverConfig) !void {
+    const file = std.fs.cwd().createFile("/etc/resolv.conf", .{}) catch |err| {
+        std.log.err("failed to create /etc/resolv.conf: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const writer = fbs.writer();
+
+    // Write domain
+    if (resolver.domain_name) |domain| {
+        writer.print("domain {s}\n", .{domain}) catch {};
+    }
+
+    // Write search list
+    if (resolver.search_list.len > 0) {
+        writer.writeAll("search") catch {};
+        for (resolver.search_list) |domain| {
+            writer.print(" {s}", .{domain}) catch {};
+        }
+        writer.writeAll("\n") catch {};
+    }
+
+    // Write nameservers
+    for (resolver.dns_servers) |server| {
+        writer.print("nameserver {s}\n", .{server}) catch {};
+    }
+
+    // Write buffer to file
+    file.writeAll(fbs.getWritten()) catch |err| {
+        std.log.err("failed to write resolv.conf: {s}", .{@errorName(err)});
+        return err;
+    };
 }
 
 fn establishBootstrapConnectivity(
@@ -1116,21 +1272,45 @@ fn persistInterfaces(
     };
 }
 
-fn loadPersistedState(allocator: Allocator) !PersistedNetworkState {
+const ParsedNetworkState = struct {
+    parsed: ?std.json.Parsed(PersistedNetworkState),
+    contents: ?[]const u8,
+    allocator: Allocator,
+
+    pub fn value(self: *const ParsedNetworkState) PersistedNetworkState {
+        if (self.parsed) |p| {
+            return p.value;
+        }
+        return PersistedNetworkState{};
+    }
+
+    pub fn deinit(self: *ParsedNetworkState) void {
+        if (self.parsed) |p| {
+            p.deinit();
+            self.parsed = null;
+        }
+        if (self.contents) |c| {
+            self.allocator.free(c);
+            self.contents = null;
+        }
+    }
+};
+
+fn loadPersistedState(allocator: Allocator) ParsedNetworkState {
     const path = constants.DIR_ET_VAR_LIB ++ "/" ++ constants.FILE_NETWORK_JSON;
 
     const contents = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch {
-        return PersistedNetworkState{};
+        return ParsedNetworkState{ .parsed = null, .contents = null, .allocator = allocator };
     };
-    defer allocator.free(contents);
 
     const parsed = std.json.parseFromSlice(PersistedNetworkState, allocator, contents, .{
         .ignore_unknown_fields = true,
     }) catch {
-        return PersistedNetworkState{};
+        allocator.free(contents);
+        return ParsedNetworkState{ .parsed = null, .contents = null, .allocator = allocator };
     };
 
-    return parsed.value;
+    return ParsedNetworkState{ .parsed = parsed, .contents = contents, .allocator = allocator };
 }
 
 fn parseFamily(name: []const u8) IfFamily {

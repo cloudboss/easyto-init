@@ -239,6 +239,7 @@ pub const VmSpec = struct {
             std.log.err("failed to parse user data YAML: {s}", .{@errorName(err)});
             return err;
         };
+        defer parsed.deinit(allocator);
 
         return try fromYamlValue(allocator, parsed);
     }
