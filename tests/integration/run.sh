@@ -4,13 +4,14 @@ set -eu
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
 OUTPUT_DIR="${PROJECT_ROOT}/_output"
+EASYTO_ASSETS_VERSION=${EASYTO_ASSETS_VERSION:?EASYTO_ASSETS_VERSION must be defined}
 
 # Create temp directory for this test run
 mkdir -p "${OUTPUT_DIR}"
 INTEGRATION_OUT="${OUTPUT_DIR}/$(cd "${OUTPUT_DIR}" && mktemp -d integration.XXXXXX)"
 
 # Kernel and assets from easyto-assets
-EASYTO_ASSETS_RUNTIME="${OUTPUT_DIR}/easyto-assets-runtime-v0.3.0"
+EASYTO_ASSETS_RUNTIME="${OUTPUT_DIR}/easyto-assets-runtime-${EASYTO_ASSETS_VERSION}"
 KERNEL="${OUTPUT_DIR}/vmlinuz"
 
 # Built init binary
