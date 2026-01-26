@@ -91,18 +91,17 @@ pub fn run(allocator: Allocator) !void {
 
     std.log.info("parsing vmspec", .{});
     var vmspec = try VmSpec.from_config_file(allocator, &metadata.parsed.value);
-    defer vmspec.deinit(allocator);
+    defer vmspec.deinit();
 
     // Parse and merge user data if available
     if (user_data) |ud| {
         std.log.info("parsing user data YAML", .{});
         if (VmSpec.from_yaml(allocator, ud)) |user_vmspec_opt| {
-            if (user_vmspec_opt) |user_vmspec| {
+            if (user_vmspec_opt) |user_vmspec_const| {
+                var user_vmspec = user_vmspec_const;
+                defer user_vmspec.deinit();
                 std.log.info("merging user data into vmspec", .{});
-                try vmspec.merge(allocator, user_vmspec);
-                // Note: user_vmspec memory is intentionally kept alive since vmspec
-                // references strings from it (args, command, etc.). For an init process
-                // that runs forever, this small amount of memory is acceptable.
+                try vmspec.merge(user_vmspec);
             }
         } else |err| {
             std.log.err("unable to parse user data: {s}", .{@errorName(err)});

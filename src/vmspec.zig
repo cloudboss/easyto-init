@@ -105,8 +105,8 @@ pub const VmSpec = struct {
     volumes: ?[]Volume = null,
     @"working-dir": ?[]const u8 = "/",
 
-    // Ownership tracking - fields set by merge() that need to be freed
-    owns_sysctls: bool = false,
+    /// Arena allocator that owns all string allocations in this VmSpec.
+    arena: ?std.heap.ArenaAllocator = null,
 
     fn env_strings_to_name_values(allocator: Allocator, env: []const []const u8) ![]NameValue {
         var name_values = try ArrayList(NameValue).initCapacity(allocator, env.len);
@@ -155,20 +155,26 @@ pub const VmSpec = struct {
     }
 
     pub fn from_config_file(allocator: Allocator, config_file: *const ConfigFile) !VmSpec {
-        const config = config_file.config orelse Config{};
-        const env = if (config.Env != null)
-            try VmSpec.env_strings_to_name_values(allocator, config.Env.?)
-        else
-            null;
-
         var vmspec = VmSpec{
-            .args = config.Cmd,
-            .command = config.Entrypoint,
-            .env = env,
+            .arena = std.heap.ArenaAllocator.init(allocator),
         };
+        errdefer vmspec.deinit();
 
-        if (config.WorkingDir != null) {
-            vmspec.@"working-dir" = config.WorkingDir;
+        const arena_alloc = vmspec.arena.?.allocator();
+        const config = config_file.config orelse Config{};
+
+        // Dupe string arrays to arena
+        if (config.Cmd) |cmd| {
+            vmspec.args = try dupeStringSlice(arena_alloc, cmd);
+        }
+        if (config.Entrypoint) |ep| {
+            vmspec.command = try dupeStringSlice(arena_alloc, ep);
+        }
+        if (config.Env) |env| {
+            vmspec.env = try VmSpec.env_strings_to_name_values(arena_alloc, env);
+        }
+        if (config.WorkingDir) |wd| {
+            vmspec.@"working-dir" = try arena_alloc.dupe(u8, wd);
         }
 
         if (config.User != null) {
@@ -206,25 +212,27 @@ pub const VmSpec = struct {
         return vmspec;
     }
 
-    pub fn deinit(self: *VmSpec, allocator: Allocator) void {
-        // Only free env - it's always owned (either from env_strings_to_name_values or merge)
-        if (self.env) |env| {
-            for (env) |*nv| {
-                @constCast(nv).deinit(allocator);
-            }
-            allocator.free(env);
-            self.env = null;
+    fn dupeStringSlice(allocator: Allocator, slice: []const []const u8) ![][]const u8 {
+        var result = try allocator.alloc([]const u8, slice.len);
+        for (slice, 0..) |s, i| {
+            result[i] = try allocator.dupe(u8, s);
         }
-        // Only free sysctls if owned (from merge)
-        if (self.owns_sysctls) {
-            if (self.sysctls) |sysctls| {
-                for (sysctls) |*nv| {
-                    @constCast(nv).deinit(allocator);
-                }
-                allocator.free(sysctls);
-                self.sysctls = null;
-            }
+        return result;
+    }
+
+    pub fn deinit(self: *VmSpec) void {
+        if (self.arena) |*arena| {
+            arena.deinit();
+            self.arena = null;
         }
+    }
+
+    /// Get the arena allocator, creating it if needed.
+    fn getArenaAllocator(self: *VmSpec, backing_allocator: Allocator) Allocator {
+        if (self.arena == null) {
+            self.arena = std.heap.ArenaAllocator.init(backing_allocator);
+        }
+        return self.arena.?.allocator();
     }
 
     /// Parse user data from YAML string.
@@ -235,17 +243,23 @@ pub const VmSpec = struct {
             return null;
         }
 
-        const parsed = yaml.parse(allocator, content) catch |err| {
+        var parsed = yaml.parse(allocator, content) catch |err| {
             std.log.err("failed to parse user data YAML: {s}", .{@errorName(err)});
             return err;
         };
-        defer parsed.deinit(allocator);
+        defer parsed.deinit();
 
-        return try fromYamlValue(allocator, parsed);
+        var vmspec = VmSpec{
+            .arena = std.heap.ArenaAllocator.init(allocator),
+        };
+        errdefer vmspec.deinit();
+
+        try fromYamlValue(&vmspec, parsed.value);
+        return vmspec;
     }
 
-    fn fromYamlValue(allocator: Allocator, value: yaml.Value) !VmSpec {
-        var vmspec = VmSpec{};
+    fn fromYamlValue(vmspec: *VmSpec, value: yaml.Value) !void {
+        const arena_alloc = vmspec.arena.?.allocator();
 
         const map = value.getMap() orelse {
             std.log.err("user data is not a valid YAML map", .{});
@@ -254,21 +268,21 @@ pub const VmSpec = struct {
 
         for (map) |entry| {
             if (std.mem.eql(u8, entry.key, "args")) {
-                vmspec.args = try parseStringList(allocator, entry.value);
+                vmspec.args = try parseStringList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "command")) {
-                vmspec.command = try parseStringList(allocator, entry.value);
+                vmspec.command = try parseStringList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "debug")) {
                 if (entry.value.getString()) |s| {
                     vmspec.debug = std.mem.eql(u8, s, "true");
                 }
             } else if (std.mem.eql(u8, entry.key, "disable-services")) {
-                vmspec.@"disable-services" = try parseStringList(allocator, entry.value);
+                vmspec.@"disable-services" = try parseStringList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "env")) {
-                vmspec.env = try parseNameValueList(allocator, entry.value);
+                vmspec.env = try parseNameValueList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "init-scripts")) {
-                vmspec.@"init-scripts" = try parseStringList(allocator, entry.value);
+                vmspec.@"init-scripts" = try parseStringList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "modules")) {
-                vmspec.modules = try parseStringList(allocator, entry.value);
+                vmspec.modules = try parseStringList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "replace-init")) {
                 if (entry.value.getString()) |s| {
                     vmspec.@"replace-init" = std.mem.eql(u8, s, "true");
@@ -280,14 +294,14 @@ pub const VmSpec = struct {
                     vmspec.@"shutdown-grace-period" = std.fmt.parseInt(u64, s, 10) catch 10;
                 }
             } else if (std.mem.eql(u8, entry.key, "sysctls")) {
-                vmspec.sysctls = try parseNameValueList(allocator, entry.value);
+                vmspec.sysctls = try parseNameValueList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "working-dir")) {
-                vmspec.@"working-dir" = entry.value.getString();
+                if (entry.value.getString()) |s| {
+                    vmspec.@"working-dir" = try arena_alloc.dupe(u8, s);
+                }
             }
             // Note: env-from and volumes require more complex parsing
         }
-
-        return vmspec;
     }
 
     fn parseStringList(allocator: Allocator, value: yaml.Value) !?[][]const u8 {
@@ -364,12 +378,15 @@ pub const VmSpec = struct {
 
     /// Merge user data into this VmSpec.
     /// Fields from `other` override fields in `self` when present.
-    pub fn merge(self: *VmSpec, allocator: Allocator, other: VmSpec) !void {
-        if (other.args != null) {
-            self.args = other.args;
+    /// Strings are duped into self's arena.
+    pub fn merge(self: *VmSpec, other: VmSpec) !void {
+        const arena_alloc = self.arena.?.allocator();
+
+        if (other.args) |args| {
+            self.args = try dupeStringSlice(arena_alloc, args);
         }
-        if (other.command != null) {
-            self.command = other.command;
+        if (other.command) |command| {
+            self.command = try dupeStringSlice(arena_alloc, command);
             // If command is overridden but args is not in other, clear args
             if (other.args == null) {
                 self.args = null;
@@ -378,27 +395,20 @@ pub const VmSpec = struct {
         if (other.debug != null and other.debug.?) {
             self.debug = other.debug;
         }
-        if (other.@"disable-services" != null) {
-            self.@"disable-services" = other.@"disable-services";
+        if (other.@"disable-services") |ds| {
+            self.@"disable-services" = try dupeStringSlice(arena_alloc, ds);
         }
-        if (other.env != null) {
-            const old_env = self.env;
-            self.env = try mergeNameValues(allocator, self.env, other.env.?);
-            // Free old env (note: base items are now in the merged result, so we only free the slice itself)
-            if (old_env) |oe| {
-                // Don't free individual items - they're referenced in the new merged result
-                // or will be freed via the merged result
-                allocator.free(oe);
-            }
+        if (other.env) |env| {
+            self.env = try mergeNameValues(arena_alloc, self.env, env);
         }
         if (other.@"env-from" != null) {
             self.@"env-from" = other.@"env-from";
         }
-        if (other.@"init-scripts" != null) {
-            self.@"init-scripts" = other.@"init-scripts";
+        if (other.@"init-scripts") |scripts| {
+            self.@"init-scripts" = try dupeStringSlice(arena_alloc, scripts);
         }
-        if (other.modules != null) {
-            self.modules = other.modules;
+        if (other.modules) |modules| {
+            self.modules = try dupeStringSlice(arena_alloc, modules);
         }
         if (other.@"replace-init" != null and other.@"replace-init".?) {
             self.@"replace-init" = other.@"replace-init";
@@ -407,15 +417,14 @@ pub const VmSpec = struct {
         if (other.@"shutdown-grace-period" != null) {
             self.@"shutdown-grace-period" = other.@"shutdown-grace-period";
         }
-        if (other.sysctls != null) {
-            self.sysctls = try mergeNameValues(allocator, self.sysctls, other.sysctls.?);
-            self.owns_sysctls = true;
+        if (other.sysctls) |sysctls| {
+            self.sysctls = try mergeNameValues(arena_alloc, self.sysctls, sysctls);
         }
         if (other.volumes != null) {
             self.volumes = other.volumes;
         }
-        if (other.@"working-dir" != null) {
-            self.@"working-dir" = other.@"working-dir";
+        if (other.@"working-dir") |wd| {
+            self.@"working-dir" = try arena_alloc.dupe(u8, wd);
         }
     }
 };

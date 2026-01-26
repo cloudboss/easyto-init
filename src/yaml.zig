@@ -18,6 +18,23 @@ pub const ParseError = error{
     OutOfMemory,
 };
 
+/// Result of parsing YAML, including ownership tracking.
+pub const ParseResult = struct {
+    value: Value,
+    owned_strings: std.ArrayListUnmanaged([]const u8),
+    allocator: Allocator,
+
+    pub fn deinit(self: *ParseResult) void {
+        // Free owned strings (from block scalars)
+        for (self.owned_strings.items) |s| {
+            self.allocator.free(s);
+        }
+        self.owned_strings.deinit(self.allocator);
+        // Free Value structure
+        self.value.deinit(self.allocator);
+    }
+};
+
 pub const Value = union(enum) {
     string: []const u8,
     list: []const Value,
@@ -89,9 +106,19 @@ const Line = struct {
     is_block_scalar: bool,
 };
 
-pub fn parse(allocator: Allocator, content: []const u8) !Value {
+pub fn parse(allocator: Allocator, content: []const u8) !ParseResult {
+    var owned_strings: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (owned_strings.items) |s| allocator.free(s);
+        owned_strings.deinit(allocator);
+    }
+
     if (content.len == 0) {
-        return Value{ .map = &.{} };
+        return ParseResult{
+            .value = Value{ .map = &.{} },
+            .owned_strings = owned_strings,
+            .allocator = allocator,
+        };
     }
 
     var lines = ArrayList(Line){};
@@ -100,13 +127,18 @@ pub fn parse(allocator: Allocator, content: []const u8) !Value {
     // Parse lines
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |line| {
-        const parsed = parseLine(line);
-        if (parsed.content.len > 0 or parsed.is_block_scalar) {
-            try lines.append(allocator, parsed);
+        const parsed_line = parseLine(line);
+        if (parsed_line.content.len > 0 or parsed_line.is_block_scalar) {
+            try lines.append(allocator, parsed_line);
         }
     }
 
-    return parseValue(allocator, lines.items, 0, 0);
+    const value = try parseValue(allocator, lines.items, 0, 0, &owned_strings);
+    return ParseResult{
+        .value = value,
+        .owned_strings = owned_strings,
+        .allocator = allocator,
+    };
 }
 
 fn parseLine(line: []const u8) Line {
@@ -159,7 +191,7 @@ fn parseLine(line: []const u8) Line {
     };
 }
 
-fn parseValue(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize) ParseError!Value {
+fn parseValue(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
     if (start >= lines.len) {
         return Value{ .string = "" };
     }
@@ -168,24 +200,24 @@ fn parseValue(allocator: Allocator, lines: []const Line, start: usize, base_inde
 
     // Check if this is a list
     if (first.is_list_item) {
-        return parseList(allocator, lines, start, base_indent);
+        return parseList(allocator, lines, start, base_indent, owned_strings);
     }
 
     // Check if this is a map
     if (first.key != null) {
-        return parseMap(allocator, lines, start, base_indent);
+        return parseMap(allocator, lines, start, base_indent, owned_strings);
     }
 
     // Check for block scalar
     if (first.is_block_scalar) {
-        return parseBlockScalar(allocator, lines, start, base_indent);
+        return parseBlockScalar(allocator, lines, start, base_indent, owned_strings);
     }
 
     // Simple string value
     return Value{ .string = std.mem.trim(u8, first.content, " \t\r\"'") };
 }
 
-fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize) ParseError!Value {
+fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
     var items = ArrayList(Value){};
     errdefer items.deinit(allocator);
 
@@ -208,7 +240,7 @@ fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_inden
                     .value = if (line.value) |v|
                         Value{ .string = std.mem.trim(u8, v, " \t\r\"'") }
                     else
-                        try parseValue(allocator, lines, i + 1, line.indent + 2),
+                        try parseValue(allocator, lines, i + 1, line.indent + 2, owned_strings),
                 });
 
                 // Check for more keys at deeper indent
@@ -220,7 +252,7 @@ fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_inden
                             .value = if (lines[j].value) |v|
                                 Value{ .string = std.mem.trim(u8, v, " \t\r\"'") }
                             else
-                                try parseValue(allocator, lines, j + 1, lines[j].indent + 2),
+                                try parseValue(allocator, lines, j + 1, lines[j].indent + 2, owned_strings),
                         });
                     }
                     j += 1;
@@ -233,7 +265,7 @@ fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_inden
                 const trimmed_content = std.mem.trim(u8, line.content, " \t\r");
                 if (std.mem.eql(u8, trimmed_content, "|")) {
                     // Block scalar in list item: - |
-                    const block_value = try parseBlockScalarFromList(allocator, lines, i, base_indent);
+                    const block_value = try parseBlockScalarFromList(allocator, lines, i, base_indent, owned_strings);
                     try items.append(allocator, block_value.value);
                     i = block_value.next_index;
                 } else {
@@ -252,7 +284,7 @@ fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_inden
     return Value{ .list = try items.toOwnedSlice(allocator) };
 }
 
-fn parseMap(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize) ParseError!Value {
+fn parseMap(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
     var entries = ArrayList(MapEntry){};
     errdefer entries.deinit(allocator);
 
@@ -266,12 +298,12 @@ fn parseMap(allocator: Allocator, lines: []const Line, start: usize, base_indent
                 const val = if (line.value) |v| blk: {
                     // Check for block scalar indicator
                     if (std.mem.eql(u8, std.mem.trim(u8, v, " \t\r"), "|")) {
-                        break :blk try parseBlockScalar(allocator, lines, i, base_indent);
+                        break :blk try parseBlockScalar(allocator, lines, i, base_indent, owned_strings);
                     }
                     break :blk Value{ .string = std.mem.trim(u8, v, " \t\r\"'") };
                 } else blk: {
                     // Value is on subsequent lines
-                    break :blk try parseValue(allocator, lines, i + 1, line.indent + 2);
+                    break :blk try parseValue(allocator, lines, i + 1, line.indent + 2, owned_strings);
                 };
 
                 try entries.append(allocator, .{ .key = key, .value = val });
@@ -299,7 +331,7 @@ const BlockScalarResult = struct {
     next_index: usize,
 };
 
-fn parseBlockScalarFromList(allocator: Allocator, lines: []const Line, start: usize, list_indent: usize) ParseError!BlockScalarResult {
+fn parseBlockScalarFromList(allocator: Allocator, lines: []const Line, start: usize, list_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!BlockScalarResult {
     var content = ArrayList(u8){};
     errdefer content.deinit(allocator);
 
@@ -353,13 +385,17 @@ fn parseBlockScalarFromList(allocator: Allocator, lines: []const Line, start: us
         i += 1;
     }
 
+    // Register the allocated string for cleanup
+    const str = try content.toOwnedSlice(allocator);
+    try owned_strings.append(allocator, str);
+
     return BlockScalarResult{
-        .value = Value{ .string = try content.toOwnedSlice(allocator) },
+        .value = Value{ .string = str },
         .next_index = i,
     };
 }
 
-fn parseBlockScalar(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize) ParseError!Value {
+fn parseBlockScalar(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
     _ = base_indent;
     var content = ArrayList(u8){};
     errdefer content.deinit(allocator);
@@ -396,14 +432,18 @@ fn parseBlockScalar(allocator: Allocator, lines: []const Line, start: usize, bas
         i += 1;
     }
 
-    return Value{ .string = try content.toOwnedSlice(allocator) };
+    // Register the allocated string for cleanup
+    const str = try content.toOwnedSlice(allocator);
+    try owned_strings.append(allocator, str);
+
+    return Value{ .string = str };
 }
 
 test "parse simple key-value" {
     const input = "name: hello";
-    const result = try parse(std.testing.allocator, input);
-    defer result.deinit(std.testing.allocator);
-    const name = result.get("name").?.getString().?;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const name = result.value.get("name").?.getString().?;
     try std.testing.expectEqualStrings("hello", name);
 }
 
@@ -414,15 +454,15 @@ test "parse list of strings" {
         \\  - two
         \\  - three
     ;
-    const result = try parse(std.testing.allocator, input);
-    defer result.deinit(std.testing.allocator);
-    const items = result.get("items").?.getList().?;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("items").?.getList().?;
     try std.testing.expectEqual(@as(usize, 3), items.len);
     try std.testing.expectEqualStrings("one", items[0].getString().?);
 }
 
 test "parse empty input" {
-    const result = try parse(std.testing.allocator, "");
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expect(result.getMap() != null);
+    var result = try parse(std.testing.allocator, "");
+    defer result.deinit();
+    try std.testing.expect(result.value.getMap() != null);
 }
