@@ -109,6 +109,9 @@ pub fn run(allocator: Allocator) !void {
         }
     }
 
+    std.log.info("loading kernel modules", .{});
+    try system.loadModules(vmspec.modules);
+
     std.log.info("applying sysctls", .{});
     try system.setSysctls(vmspec.sysctls);
 

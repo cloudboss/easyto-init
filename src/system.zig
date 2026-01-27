@@ -99,6 +99,42 @@ pub fn poweroff() void {
     }
 }
 
+/// Load a kernel module using modprobe.
+pub fn loadModule(name: []const u8) !void {
+    const modprobe_path = constants.DIR_ET_SBIN ++ "/modprobe";
+
+    var child = std.process.Child.init(
+        &[_][]const u8{ modprobe_path, name },
+        std.heap.page_allocator,
+    );
+    child.stderr_behavior = .Pipe;
+
+    child.spawn() catch |err| {
+        std.log.err("failed to run modprobe for {s}: {s}", .{ name, @errorName(err) });
+        return err;
+    };
+
+    const result = child.wait() catch |err| {
+        std.log.err("failed to wait for modprobe {s}: {s}", .{ name, @errorName(err) });
+        return err;
+    };
+
+    if (result.Exited != 0) {
+        std.log.err("modprobe {s} failed with exit code {d}", .{ name, result.Exited });
+        return error.ModuleLoadFailed;
+    }
+
+    std.log.debug("loaded module {s}", .{name});
+}
+
+/// Load all kernel modules from the given slice.
+pub fn loadModules(modules: ?[]const []const u8) !void {
+    const items = modules orelse return;
+    for (items) |module| {
+        try loadModule(module);
+    }
+}
+
 /// Write a sysctl value to /proc/sys.
 /// Converts dotted key (e.g., "net.ipv4.ip_forward") to path (/proc/sys/net/ipv4/ip_forward).
 pub fn sysctl(key: []const u8, value: []const u8) !void {
