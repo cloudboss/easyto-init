@@ -141,6 +141,14 @@ pub fn parse(allocator: Allocator, content: []const u8) !ParseResult {
     };
 }
 
+fn stripInlineComment(s: []const u8) []const u8 {
+    // Strip inline comments: " #" followed by comment text
+    if (std.mem.indexOf(u8, s, " #")) |pos| {
+        return std.mem.trim(u8, s[0..pos], " \t\r");
+    }
+    return s;
+}
+
 fn parseLine(line: []const u8) Line {
     var indent: usize = 0;
     while (indent < line.len and line[indent] == ' ') {
@@ -148,18 +156,6 @@ fn parseLine(line: []const u8) Line {
     }
 
     const rest = if (indent < line.len) line[indent..] else "";
-
-    // Check for comment
-    if (rest.len > 0 and rest[0] == '#') {
-        return Line{
-            .indent = indent,
-            .content = "",
-            .is_list_item = false,
-            .key = null,
-            .value = null,
-            .is_block_scalar = false,
-        };
-    }
 
     // Check for list item
     const is_list_item = rest.len >= 2 and rest[0] == '-' and rest[1] == ' ';
@@ -172,8 +168,13 @@ fn parseLine(line: []const u8) Line {
 
     if (std.mem.indexOf(u8, content, ": ")) |colon_pos| {
         key = content[0..colon_pos];
-        value = std.mem.trim(u8, content[colon_pos + 2 ..], " \t\r");
-        if (value.?.len == 0) value = null;
+        const raw_value = std.mem.trim(u8, content[colon_pos + 2 ..], " \t\r");
+        if (raw_value.len == 0) {
+            value = null;
+        } else {
+            value = stripInlineComment(raw_value);
+            if (value.?.len == 0) value = null;
+        }
     } else if (content.len > 0 and content[content.len - 1] == ':') {
         key = content[0 .. content.len - 1];
         value = null;
@@ -191,26 +192,46 @@ fn parseLine(line: []const u8) Line {
     };
 }
 
+fn isCommentLine(line: Line) bool {
+    return line.key == null and
+        !line.is_list_item and
+        !line.is_block_scalar and
+        line.content.len > 0 and
+        line.content[0] == '#';
+}
+
 fn parseValue(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
-    if (start >= lines.len) {
+    // Skip comment lines at the structural level
+    var actual_start = start;
+    while (actual_start < lines.len) {
+        const line = lines[actual_start];
+        if (line.indent < base_indent) break;
+        if (isCommentLine(line)) {
+            actual_start += 1;
+            continue;
+        }
+        break;
+    }
+
+    if (actual_start >= lines.len) {
         return Value{ .string = "" };
     }
 
-    const first = lines[start];
+    const first = lines[actual_start];
 
     // Check if this is a list
     if (first.is_list_item) {
-        return parseList(allocator, lines, start, base_indent, owned_strings);
+        return parseList(allocator, lines, actual_start, base_indent, owned_strings);
     }
 
     // Check if this is a map
     if (first.key != null) {
-        return parseMap(allocator, lines, start, base_indent, owned_strings);
+        return parseMap(allocator, lines, actual_start, base_indent, owned_strings);
     }
 
     // Check for block scalar
     if (first.is_block_scalar) {
-        return parseBlockScalar(allocator, lines, start, base_indent, owned_strings);
+        return parseBlockScalar(allocator, lines, actual_start, base_indent, owned_strings);
     }
 
     // Simple string value
@@ -225,6 +246,11 @@ fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_inden
     while (i < lines.len) {
         const line = lines[i];
         if (line.indent < base_indent) break;
+        // Skip comment lines
+        if (isCommentLine(line)) {
+            i += 1;
+            continue;
+        }
         if (line.indent == base_indent and !line.is_list_item) break;
 
         if (line.is_list_item and line.indent == base_indent) {
@@ -465,4 +491,39 @@ test "parse empty input" {
     var result = try parse(std.testing.allocator, "");
     defer result.deinit();
     try std.testing.expect(result.value.getMap() != null);
+}
+
+test "parse block scalar with shebang" {
+    const input =
+        \\init-scripts:
+        \\  - |
+        \\    #!/bin/sh
+        \\    echo hello
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const scripts = result.value.get("init-scripts").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 1), scripts.len);
+    const script = scripts[0].getString().?;
+    try std.testing.expect(std.mem.startsWith(u8, script, "#!/bin/sh"));
+}
+
+test "comments are ignored" {
+    const input =
+        \\# This is a comment
+        \\name: hello
+        \\# Another comment
+        \\value: world
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("hello", result.value.get("name").?.getString().?);
+    try std.testing.expectEqualStrings("world", result.value.get("value").?.getString().?);
+}
+
+test "inline comments are stripped" {
+    const input = "name: hello  # this is a comment";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("hello", result.value.get("name").?.getString().?);
 }
