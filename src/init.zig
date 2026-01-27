@@ -6,6 +6,7 @@ const Mode = std.fs.File.Mode;
 const Allocator = std.mem.Allocator;
 
 const aws_sdk = @import("aws_sdk");
+const k8s_expand = @import("k8s_expand");
 
 const constants = @import("constants.zig");
 const container = @import("container.zig");
@@ -13,7 +14,10 @@ const mkdir_p = @import("fs.zig").mkdir_p;
 const network = @import("network.zig");
 const Supervisor = @import("service.zig").Supervisor;
 const system = @import("system.zig");
-const VmSpec = @import("vmspec.zig").VmSpec;
+const vmspec_mod = @import("vmspec.zig");
+const VmSpec = vmspec_mod.VmSpec;
+const EnvFromSource = vmspec_mod.EnvFromSource;
+const NameValue = vmspec_mod.NameValue;
 
 const Error = error{
     MountError,
@@ -109,6 +113,12 @@ pub fn run(allocator: Allocator) !void {
         }
     }
 
+    // Resolve env-from sources
+    if (vmspec.@"env-from") |env_from| {
+        std.log.info("resolving env-from sources", .{});
+        try resolveEnvFrom(allocator, &vmspec, env_from);
+    }
+
     std.log.info("loading kernel modules", .{});
     try system.loadModules(vmspec.modules);
 
@@ -118,8 +128,10 @@ pub fn run(allocator: Allocator) !void {
     std.log.info("running init scripts", .{});
     try system.runInitScripts(vmspec.@"init-scripts", vmspec.env);
 
-    const command = vmspec.full_command();
-    const args = vmspec.command_args();
+    // Expand variables in command and args
+    const expanded = try expandCommandAndArgs(allocator, vmspec.full_command(), vmspec.command_args(), vmspec.env);
+    const command = expanded.command;
+    const args = expanded.args;
     const uid = vmspec.security.@"run-as-user-id" orelse 0;
     const gid = vmspec.security.@"run-as-group-id" orelse 0;
     const working_dir = vmspec.@"working-dir" orelse "/";
@@ -337,7 +349,6 @@ fn fetchUserData(allocator: Allocator) !?[]const u8 {
     return user_data;
 }
 
-const NameValue = @import("vmspec.zig").NameValue;
 const linux = std.os.linux;
 const posix = std.posix;
 
@@ -465,4 +476,133 @@ fn replaceInit(
     const exec_err = posix.errno(exec_result);
     std.log.err("execve failed: {s}", .{@tagName(exec_err)});
     return error.ExecveFailed;
+}
+
+fn resolveEnvFrom(allocator: Allocator, vmspec: *VmSpec, env_from: []const EnvFromSource) !void {
+    var imds_client: ?aws_sdk.imds.ImdsClient = null;
+    defer if (imds_client) |*c| c.deinit();
+
+    const arena_alloc = vmspec.arena.?.allocator();
+
+    for (env_from) |source| {
+        if (source.imds) |imds| {
+            // Initialize IMDS client lazily
+            if (imds_client == null) {
+                imds_client = aws_sdk.imds.ImdsClient.init(allocator, .{}) catch |err| {
+                    std.log.err("failed to initialize IMDS client: {s}", .{@errorName(err)});
+                    if (imds.optional orelse false) continue;
+                    return err;
+                };
+            }
+
+            // Fetch value from IMDS
+            const imds_path = try std.fmt.allocPrint(allocator, "/latest/meta-data/{s}", .{imds.path});
+            defer allocator.free(imds_path);
+
+            const value = imds_client.?.get(imds_path) catch |err| {
+                if (imds.optional orelse false) {
+                    std.log.info("optional IMDS path {s} not found, skipping", .{imds.path});
+                    continue;
+                }
+                std.log.err("failed to fetch IMDS path {s}: {s}", .{ imds.path, @errorName(err) });
+                return err;
+            };
+            defer allocator.free(value);
+
+            // Trim whitespace from the value
+            const trimmed = std.mem.trim(u8, value, " \t\r\n");
+
+            // Add to environment
+            try addEnvVar(arena_alloc, vmspec, imds.name, trimmed);
+            std.log.info("resolved env {s} from IMDS path {s}", .{ imds.name, imds.path });
+        }
+
+        // S3, SSM, and Secrets Manager will be implemented in Phase 4
+        if (source.s3 != null) {
+            std.log.warn("S3 env-from not yet implemented", .{});
+        }
+        if (source.ssm != null) {
+            std.log.warn("SSM env-from not yet implemented", .{});
+        }
+        if (source.@"secrets-manager" != null) {
+            std.log.warn("Secrets Manager env-from not yet implemented", .{});
+        }
+    }
+}
+
+fn addEnvVar(allocator: Allocator, vmspec: *VmSpec, name: []const u8, value: []const u8) !void {
+    const new_nv = NameValue{
+        .name = try allocator.dupe(u8, name),
+        .value = try allocator.dupe(u8, value),
+    };
+
+    if (vmspec.env) |existing_env| {
+        // Check if the variable already exists
+        for (existing_env, 0..) |nv, i| {
+            if (std.mem.eql(u8, nv.name, name)) {
+                // Replace existing value
+                var env_copy = try allocator.alloc(NameValue, existing_env.len);
+                @memcpy(env_copy, existing_env);
+                env_copy[i] = new_nv;
+                vmspec.env = env_copy;
+                return;
+            }
+        }
+        // Append new variable
+        var new_env = try allocator.alloc(NameValue, existing_env.len + 1);
+        @memcpy(new_env[0..existing_env.len], existing_env);
+        new_env[existing_env.len] = new_nv;
+        vmspec.env = new_env;
+    } else {
+        // Create new env array
+        var new_env = try allocator.alloc(NameValue, 1);
+        new_env[0] = new_nv;
+        vmspec.env = new_env;
+    }
+}
+
+const ExpandedCommand = struct {
+    command: []const []const u8,
+    args: ?[]const []const u8,
+};
+
+fn expandCommandAndArgs(
+    allocator: Allocator,
+    command: []const []const u8,
+    args: ?[]const []const u8,
+    env: ?[]const NameValue,
+) !ExpandedCommand {
+    // Build mapping from env
+    var mapping = std.StringHashMap([]const u8).init(allocator);
+    defer mapping.deinit();
+
+    if (env) |env_slice| {
+        for (env_slice) |nv| {
+            try mapping.put(nv.name, nv.value);
+        }
+    }
+
+    // Create context as array of pointers to hash maps
+    const context = [_]*const std.StringHashMap([]const u8){&mapping};
+
+    // Expand command
+    var expanded_command = try allocator.alloc([]const u8, command.len);
+    for (command, 0..) |arg, i| {
+        expanded_command[i] = try k8s_expand.expand(allocator, arg, &context);
+    }
+
+    // Expand args if present
+    var expanded_args: ?[]const []const u8 = null;
+    if (args) |args_slice| {
+        var exp_args = try allocator.alloc([]const u8, args_slice.len);
+        for (args_slice, 0..) |arg, i| {
+            exp_args[i] = try k8s_expand.expand(allocator, arg, &context);
+        }
+        expanded_args = exp_args;
+    }
+
+    return ExpandedCommand{
+        .command = expanded_command,
+        .args = expanded_args,
+    };
 }

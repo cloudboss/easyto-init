@@ -8,6 +8,10 @@
         .dhcpz = .{
             .path = "../dhcpz",
         },
+        .k8s_expand = .{
+            .url = "git+https://github.com/cloudboss/k8s-expandz#6e2d98d06810aa348aa50e4d89905babbbda7ca0",
+            .hash = "k8s_expand-0.1.0-rv03TFp5AAD_p-llgyd3zv70VBNeahFuy47auNhFsh7h",
+        },
         .nlz = .{
             .path = "../nlz",
         },

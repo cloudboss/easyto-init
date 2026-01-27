@@ -279,6 +279,8 @@ pub const VmSpec = struct {
                 vmspec.@"disable-services" = try parseStringList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "env")) {
                 vmspec.env = try parseNameValueList(arena_alloc, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "env-from")) {
+                vmspec.@"env-from" = try parseEnvFromList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "init-scripts")) {
                 vmspec.@"init-scripts" = try parseStringList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "modules")) {
@@ -374,6 +376,163 @@ pub const VmSpec = struct {
         }
 
         return security;
+    }
+
+    fn parseEnvFromList(allocator: Allocator, value: yaml.Value) !?[]EnvFromSource {
+        const list = value.getList() orelse return null;
+        var result = try ArrayList(EnvFromSource).initCapacity(allocator, list.len);
+        errdefer result.deinit(allocator);
+
+        for (list) |item| {
+            const item_map = item.getMap() orelse continue;
+            var source = EnvFromSource{};
+
+            for (item_map) |entry| {
+                if (std.mem.eql(u8, entry.key, "imds")) {
+                    source.imds = try parseImdsEnvSource(allocator, entry.value);
+                } else if (std.mem.eql(u8, entry.key, "s3")) {
+                    source.s3 = try parseS3EnvSource(allocator, entry.value);
+                } else if (std.mem.eql(u8, entry.key, "secrets-manager")) {
+                    source.@"secrets-manager" = try parseSecretsManagerEnvSource(allocator, entry.value);
+                } else if (std.mem.eql(u8, entry.key, "ssm")) {
+                    source.ssm = try parseSsmEnvSource(allocator, entry.value);
+                }
+            }
+
+            try result.append(allocator, source);
+        }
+
+        return try result.toOwnedSlice(allocator);
+    }
+
+    fn parseImdsEnvSource(allocator: Allocator, value: yaml.Value) !?ImdsEnvSource {
+        const map = value.getMap() orelse return null;
+        var name: ?[]const u8 = null;
+        var path: ?[]const u8 = null;
+        var optional: ?bool = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "name")) {
+                name = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "path")) {
+                path = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "optional")) {
+                if (entry.value.getString()) |s| {
+                    optional = std.mem.eql(u8, s, "true");
+                }
+            }
+        }
+
+        if (name == null or path == null) return null;
+
+        return ImdsEnvSource{
+            .name = try allocator.dupe(u8, name.?),
+            .path = try allocator.dupe(u8, path.?),
+            .optional = optional,
+        };
+    }
+
+    fn parseS3EnvSource(allocator: Allocator, value: yaml.Value) !?S3EnvSource {
+        const map = value.getMap() orelse return null;
+        var bucket: ?[]const u8 = null;
+        var key: ?[]const u8 = null;
+        var name: ?[]const u8 = null;
+        var optional: ?bool = null;
+        var base64_encode: ?bool = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "bucket")) {
+                bucket = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "key")) {
+                key = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "name")) {
+                name = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "optional")) {
+                if (entry.value.getString()) |s| {
+                    optional = std.mem.eql(u8, s, "true");
+                }
+            } else if (std.mem.eql(u8, entry.key, "base64-encode")) {
+                if (entry.value.getString()) |s| {
+                    base64_encode = std.mem.eql(u8, s, "true");
+                }
+            }
+        }
+
+        if (bucket == null or key == null) return null;
+
+        return S3EnvSource{
+            .bucket = try allocator.dupe(u8, bucket.?),
+            .key = try allocator.dupe(u8, key.?),
+            .name = if (name) |n| try allocator.dupe(u8, n) else null,
+            .optional = optional,
+            .@"base64-encode" = base64_encode,
+        };
+    }
+
+    fn parseSecretsManagerEnvSource(allocator: Allocator, value: yaml.Value) !?SecretsManagerEnvSource {
+        const map = value.getMap() orelse return null;
+        var name: ?[]const u8 = null;
+        var secret_id: ?[]const u8 = null;
+        var optional: ?bool = null;
+        var base64_encode: ?bool = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "name")) {
+                name = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "secret-id")) {
+                secret_id = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "optional")) {
+                if (entry.value.getString()) |s| {
+                    optional = std.mem.eql(u8, s, "true");
+                }
+            } else if (std.mem.eql(u8, entry.key, "base64-encode")) {
+                if (entry.value.getString()) |s| {
+                    base64_encode = std.mem.eql(u8, s, "true");
+                }
+            }
+        }
+
+        if (name == null or secret_id == null) return null;
+
+        return SecretsManagerEnvSource{
+            .name = try allocator.dupe(u8, name.?),
+            .@"secret-id" = try allocator.dupe(u8, secret_id.?),
+            .optional = optional,
+            .@"base64-encode" = base64_encode,
+        };
+    }
+
+    fn parseSsmEnvSource(allocator: Allocator, value: yaml.Value) !?SsmEnvSource {
+        const map = value.getMap() orelse return null;
+        var name: ?[]const u8 = null;
+        var path: ?[]const u8 = null;
+        var optional: ?bool = null;
+        var base64_encode: ?bool = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "name")) {
+                name = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "path")) {
+                path = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "optional")) {
+                if (entry.value.getString()) |s| {
+                    optional = std.mem.eql(u8, s, "true");
+                }
+            } else if (std.mem.eql(u8, entry.key, "base64-encode")) {
+                if (entry.value.getString()) |s| {
+                    base64_encode = std.mem.eql(u8, s, "true");
+                }
+            }
+        }
+
+        if (path == null) return null;
+
+        return SsmEnvSource{
+            .path = try allocator.dupe(u8, path.?),
+            .name = if (name) |n| try allocator.dupe(u8, n) else null,
+            .optional = optional,
+            .@"base64-encode" = base64_encode,
+        };
     }
 
     /// Merge user data into this VmSpec.

@@ -12,6 +12,7 @@ pub fn build(b: *std.Build) void {
     // Dependencies
     const aws_sdk_dep = b.dependency("aws_sdk", .{ .target = target, .optimize = optimize });
     const dhcpz_dep = b.dependency("dhcpz", .{ .target = target });
+    const k8s_expand_dep = b.dependency("k8s_expand", .{ .target = target, .optimize = optimize });
     const nlz_dep = b.dependency("nlz", .{ .target = target, .optimize = optimize });
 
     const mod = b.addModule("easyto_init", .{
@@ -20,6 +21,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "aws_sdk", .module = aws_sdk_dep.module("aws_sdk") },
             .{ .name = "dhcpz", .module = dhcpz_dep.module("dhcpz") },
+            .{ .name = "k8s_expand", .module = k8s_expand_dep.module("k8s_expand") },
             .{ .name = "nlz", .module = nlz_dep.module("nlz") },
         },
     });
@@ -34,6 +36,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "aws_sdk", .module = aws_sdk_dep.module("aws_sdk") },
                 .{ .name = "dhcpz", .module = dhcpz_dep.module("dhcpz") },
                 .{ .name = "easyto_init", .module = mod },
+                .{ .name = "k8s_expand", .module = k8s_expand_dep.module("k8s_expand") },
                 .{ .name = "nlz", .module = nlz_dep.module("nlz") },
             },
         }),

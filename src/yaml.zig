@@ -261,27 +261,38 @@ fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_inden
                 errdefer map_items.deinit(allocator);
 
                 // Add the inline key-value
+                const nested_value = if (line.value) |v|
+                    Value{ .string = std.mem.trim(u8, v, " \t\r\"'") }
+                else
+                    try parseValue(allocator, lines, i + 1, line.indent + 2, owned_strings);
+
                 try map_items.append(allocator, .{
                     .key = line.key.?,
-                    .value = if (line.value) |v|
-                        Value{ .string = std.mem.trim(u8, v, " \t\r\"'") }
-                    else
-                        try parseValue(allocator, lines, i + 1, line.indent + 2, owned_strings),
+                    .value = nested_value,
                 });
 
-                // Check for more keys at deeper indent
+                // Only check for sibling keys at same level when we had an inline value.
+                // When line.value is null, parseValue already consumed the nested content.
                 var j = i + 1;
-                while (j < lines.len and lines[j].indent > base_indent and !lines[j].is_list_item) {
-                    if (lines[j].key) |k| {
-                        try map_items.append(allocator, .{
-                            .key = k,
-                            .value = if (lines[j].value) |v|
-                                Value{ .string = std.mem.trim(u8, v, " \t\r\"'") }
-                            else
-                                try parseValue(allocator, lines, j + 1, lines[j].indent + 2, owned_strings),
-                        });
+                if (line.value != null) {
+                    // Check for more keys at deeper indent (same level as the inline value)
+                    while (j < lines.len and lines[j].indent > base_indent and !lines[j].is_list_item) {
+                        if (lines[j].key) |k| {
+                            try map_items.append(allocator, .{
+                                .key = k,
+                                .value = if (lines[j].value) |v|
+                                    Value{ .string = std.mem.trim(u8, v, " \t\r\"'") }
+                                else
+                                    try parseValue(allocator, lines, j + 1, lines[j].indent + 2, owned_strings),
+                            });
+                        }
+                        j += 1;
                     }
-                    j += 1;
+                } else {
+                    // Skip past all nested content (parseValue consumed it)
+                    while (j < lines.len and lines[j].indent > base_indent and !lines[j].is_list_item) {
+                        j += 1;
+                    }
                 }
                 i = j;
 
@@ -314,17 +325,21 @@ fn parseMap(allocator: Allocator, lines: []const Line, start: usize, base_indent
     var entries = ArrayList(MapEntry){};
     errdefer entries.deinit(allocator);
 
+    // Use the actual indent of the first line as the map's working indent.
+    // This handles cases where the map is more deeply indented than base_indent.
+    const map_indent = if (start < lines.len) lines[start].indent else base_indent;
+
     var i = start;
     while (i < lines.len) {
         const line = lines[i];
         if (line.indent < base_indent) break;
 
         if (line.key) |key| {
-            if (line.indent == base_indent) {
+            if (line.indent == map_indent) {
                 const val = if (line.value) |v| blk: {
                     // Check for block scalar indicator
                     if (std.mem.eql(u8, std.mem.trim(u8, v, " \t\r"), "|")) {
-                        break :blk try parseBlockScalar(allocator, lines, i, base_indent, owned_strings);
+                        break :blk try parseBlockScalar(allocator, lines, i, map_indent, owned_strings);
                     }
                     break :blk Value{ .string = std.mem.trim(u8, v, " \t\r\"'") };
                 } else blk: {
@@ -337,7 +352,7 @@ fn parseMap(allocator: Allocator, lines: []const Line, start: usize, base_indent
                 // Skip to next key at same indent
                 i += 1;
                 if (line.value == null or std.mem.eql(u8, std.mem.trim(u8, line.value.?, " \t\r"), "|")) {
-                    while (i < lines.len and lines[i].indent > base_indent) {
+                    while (i < lines.len and lines[i].indent > map_indent) {
                         i += 1;
                     }
                 }

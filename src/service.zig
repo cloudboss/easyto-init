@@ -178,26 +178,8 @@ pub const Supervisor = struct {
         }
         argv[total_len] = null;
 
-        const env_len = if (self.env) |e| e.len else 0;
-        var envp = try self.allocator.alloc(?[*:0]const u8, env_len + 1);
-        defer self.allocator.free(envp);
-
-        var env_strings = try self.allocator.alloc([:0]const u8, env_len);
-        defer {
-            for (env_strings) |s| self.allocator.free(s);
-            self.allocator.free(env_strings);
-        }
-
-        if (self.env) |env| {
-            for (env, 0..) |nv, i| {
-                const env_str = try std.fmt.allocPrint(self.allocator, "{s}={s}", .{ nv.name, nv.value });
-                const env_str_z = try self.allocator.dupeZ(u8, env_str);
-                self.allocator.free(env_str);
-                env_strings[i] = env_str_z;
-                envp[i] = env_str_z.ptr;
-            }
-        }
-        envp[env_len] = null;
+        // Build environment: inherit from parent (kernel cmdline vars) + vmspec.env
+        const envp = try self.buildEnvironment();
 
         const pid_result = linux.fork();
         const pid_err = posix.errno(pid_result);
@@ -246,6 +228,50 @@ pub const Supervisor = struct {
         const exec_err = posix.errno(exec_result);
         std.log.err("execve failed: {s}", .{@tagName(exec_err)});
         linux.exit(1);
+    }
+
+    /// Build environment by merging parent environment with vmspec.env.
+    /// vmspec.env values take precedence over parent environment.
+    fn buildEnvironment(self: *Supervisor) ![]?[*:0]const u8 {
+        // Use a map to merge environments (vmspec.env overrides parent)
+        var env_map = std.StringHashMap([]const u8).init(self.allocator);
+        defer env_map.deinit();
+
+        // First, add all parent environment variables
+        const parent_env = std.os.environ;
+        for (parent_env) |env_ptr| {
+            const env_str = std.mem.span(env_ptr);
+            if (std.mem.indexOf(u8, env_str, "=")) |eq_pos| {
+                const name = env_str[0..eq_pos];
+                const value = env_str[eq_pos + 1 ..];
+                try env_map.put(name, value);
+            }
+        }
+
+        // Override with vmspec.env values
+        if (self.env) |env| {
+            for (env) |nv| {
+                try env_map.put(nv.name, nv.value);
+            }
+        }
+
+        // Build the envp array
+        const env_count = env_map.count();
+        var envp = try self.allocator.alloc(?[*:0]const u8, env_count + 1);
+        var env_strings = try self.allocator.alloc([:0]const u8, env_count);
+
+        var idx: usize = 0;
+        var iter = env_map.iterator();
+        while (iter.next()) |entry| {
+            const env_str = try std.fmt.allocPrint(self.allocator, "{s}={s}", .{ entry.key_ptr.*, entry.value_ptr.* });
+            env_strings[idx] = try self.allocator.dupeZ(u8, env_str);
+            self.allocator.free(env_str);
+            envp[idx] = env_strings[idx].ptr;
+            idx += 1;
+        }
+        envp[env_count] = null;
+
+        return envp;
     }
 };
 
