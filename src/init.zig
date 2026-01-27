@@ -121,23 +121,29 @@ pub fn run(allocator: Allocator) !void {
     const gid = vmspec.security.@"run-as-group-id" orelse 0;
     const working_dir = vmspec.@"working-dir" orelse "/";
     const shutdown_grace_period = vmspec.@"shutdown-grace-period" orelse 10;
+    const replace_init = vmspec.@"replace-init" orelse false;
 
-    std.log.info("starting supervisor", .{});
-    var supervisor = Supervisor.init(
-        allocator,
-        command,
-        args,
-        vmspec.env,
-        working_dir,
-        uid,
-        gid,
-        shutdown_grace_period,
-    );
+    if (replace_init) {
+        std.log.info("replacing init with command", .{});
+        try replaceInit(command, args, vmspec.env, working_dir, uid, gid);
+    } else {
+        std.log.info("starting supervisor", .{});
+        var supervisor = Supervisor.init(
+            allocator,
+            command,
+            args,
+            vmspec.env,
+            working_dir,
+            uid,
+            gid,
+            shutdown_grace_period,
+        );
 
-    try supervisor.start();
-    supervisor.wait();
+        try supervisor.start();
+        supervisor.wait();
 
-    std.log.info("supervisor finished, shutting down", .{});
+        std.log.info("supervisor finished, shutting down", .{});
+    }
 }
 
 fn base_mounts() !void {
@@ -326,4 +332,134 @@ fn fetchUserData(allocator: Allocator) !?[]const u8 {
     };
 
     return user_data;
+}
+
+const NameValue = @import("vmspec.zig").NameValue;
+const linux = std.os.linux;
+const posix = std.posix;
+
+fn replaceInit(
+    command: []const []const u8,
+    args: ?[]const []const u8,
+    env: ?[]const NameValue,
+    working_dir: []const u8,
+    uid: u32,
+    gid: u32,
+) !void {
+    if (command.len == 0) {
+        std.log.err("command is empty", .{});
+        return error.EmptyCommand;
+    }
+
+    // Change to working directory
+    posix.chdir(working_dir) catch |err| {
+        std.log.err("chdir to {s} failed: {s}", .{ working_dir, @errorName(err) });
+        return err;
+    };
+
+    // Set group ID first (must be done before setuid)
+    if (gid != 0) {
+        const ret = linux.setgid(gid);
+        const e = posix.errno(ret);
+        if (e != .SUCCESS) {
+            std.log.err("setgid to {d} failed: {s}", .{ gid, @tagName(e) });
+            return error.SetgidFailed;
+        }
+    }
+
+    // Set user ID
+    if (uid != 0) {
+        const ret = linux.setuid(uid);
+        const e = posix.errno(ret);
+        if (e != .SUCCESS) {
+            std.log.err("setuid to {d} failed: {s}", .{ uid, @tagName(e) });
+            return error.SetuidFailed;
+        }
+    }
+
+    // Build argv with null-terminated strings
+    // Using static storage since we're about to execve
+    const args_slice = args orelse &[_][]const u8{};
+    const total_len = command.len + args_slice.len;
+
+    var argv_buf: [64]?[*:0]const u8 = undefined;
+    if (total_len + 1 > argv_buf.len) {
+        std.log.err("too many arguments", .{});
+        return error.TooManyArguments;
+    }
+
+    // Storage for null-terminated argument strings
+    var arg_storage: [8192]u8 = undefined;
+    var arg_pos: usize = 0;
+
+    var i: usize = 0;
+    for (command) |arg| {
+        if (arg_pos + arg.len + 1 > arg_storage.len) {
+            std.log.err("arguments too large", .{});
+            return error.ArgumentsTooLarge;
+        }
+        @memcpy(arg_storage[arg_pos..][0..arg.len], arg);
+        arg_storage[arg_pos + arg.len] = 0;
+        argv_buf[i] = @ptrCast(&arg_storage[arg_pos]);
+        arg_pos += arg.len + 1;
+        i += 1;
+    }
+    for (args_slice) |arg| {
+        if (arg_pos + arg.len + 1 > arg_storage.len) {
+            std.log.err("arguments too large", .{});
+            return error.ArgumentsTooLarge;
+        }
+        @memcpy(arg_storage[arg_pos..][0..arg.len], arg);
+        arg_storage[arg_pos + arg.len] = 0;
+        argv_buf[i] = @ptrCast(&arg_storage[arg_pos]);
+        arg_pos += arg.len + 1;
+        i += 1;
+    }
+    argv_buf[i] = null;
+    const argv = argv_buf[0 .. total_len + 1];
+
+    // Build envp with null-terminated strings
+    const env_slice = env orelse &[_]NameValue{};
+    var envp_buf: [256]?[*:0]const u8 = undefined;
+
+    if (env_slice.len + 1 > envp_buf.len) {
+        std.log.err("too many environment variables", .{});
+        return error.TooManyEnvVars;
+    }
+
+    var env_storage: [16384]u8 = undefined;
+    var env_pos: usize = 0;
+
+    for (env_slice, 0..) |nv, idx| {
+        const needed = nv.name.len + 1 + nv.value.len + 1; // name + '=' + value + '\0'
+        if (env_pos + needed > env_storage.len) {
+            std.log.err("environment too large", .{});
+            return error.EnvironmentTooLarge;
+        }
+
+        const start = env_pos;
+        @memcpy(env_storage[env_pos..][0..nv.name.len], nv.name);
+        env_pos += nv.name.len;
+        env_storage[env_pos] = '=';
+        env_pos += 1;
+        @memcpy(env_storage[env_pos..][0..nv.value.len], nv.value);
+        env_pos += nv.value.len;
+        env_storage[env_pos] = 0;
+        env_pos += 1;
+
+        envp_buf[idx] = @ptrCast(&env_storage[start]);
+    }
+    envp_buf[env_slice.len] = null;
+    const envp = envp_buf[0 .. env_slice.len + 1];
+
+    std.log.info("execve: {s}", .{command[0]});
+
+    const exec_result = linux.execve(
+        argv[0].?,
+        @ptrCast(argv.ptr),
+        @ptrCast(envp.ptr),
+    );
+    const exec_err = posix.errno(exec_result);
+    std.log.err("execve failed: {s}", .{@tagName(exec_err)});
+    return error.ExecveFailed;
 }
