@@ -214,8 +214,14 @@ pub const VmSpec = struct {
 
     fn dupeStringSlice(allocator: Allocator, slice: []const []const u8) ![][]const u8 {
         var result = try allocator.alloc([]const u8, slice.len);
-        for (slice, 0..) |s, i| {
+        var i: usize = 0;
+        errdefer {
+            for (result[0..i]) |s| allocator.free(s);
+            allocator.free(result);
+        }
+        for (slice) |s| {
             result[i] = try allocator.dupe(u8, s);
+            i += 1;
         }
         return result;
     }
@@ -825,4 +831,532 @@ test "VmSpec.full_command with command and args" {
     const cmd_args = vmspec.command_args();
     try testing.expect(cmd_args != null);
     try testing.expectEqual(@as(usize, 2), cmd_args.?.len);
+}
+
+test "VmSpec.command_args returns null when command is null" {
+    const vmspec = VmSpec{};
+    try testing.expect(vmspec.command_args() == null);
+}
+
+test "VmSpec.command_args returns null when command is empty" {
+    var empty_command = [_][]const u8{};
+    const vmspec = VmSpec{
+        .command = &empty_command,
+    };
+    try testing.expect(vmspec.command_args() == null);
+}
+
+test "UserGroupNames.from_string user only" {
+    const ug = try UserGroupNames.from_string("postgres");
+    try testing.expectEqualStrings("postgres", ug.user);
+    try testing.expect(ug.group == null);
+}
+
+test "UserGroupNames.from_string user and group" {
+    const ug = try UserGroupNames.from_string("postgres:postgres");
+    try testing.expectEqualStrings("postgres", ug.user);
+    try testing.expectEqualStrings("postgres", ug.group.?);
+}
+
+test "UserGroupNames.from_string user and different group" {
+    const ug = try UserGroupNames.from_string("www-data:nginx");
+    try testing.expectEqualStrings("www-data", ug.user);
+    try testing.expectEqualStrings("nginx", ug.group.?);
+}
+
+test "UserGroupNames.from_string numeric user" {
+    const ug = try UserGroupNames.from_string("1000:1000");
+    try testing.expectEqualStrings("1000", ug.user);
+    try testing.expectEqualStrings("1000", ug.group.?);
+}
+
+test "mergeNameValues empty other with null base" {
+    const allocator = testing.allocator;
+    const other = [_]NameValue{};
+    const result = try mergeNameValues(allocator, null, &other);
+    defer allocator.free(result);
+    try testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "mergeNameValues empty other with populated base" {
+    const allocator = testing.allocator;
+    // Note: base items are not owned by the function, so we use static strings
+    const base = [_]NameValue{
+        .{ .name = "PATH", .value = "/bin" },
+        .{ .name = "HOME", .value = "/root" },
+    };
+    const other = [_]NameValue{};
+    const result = try mergeNameValues(allocator, &base, &other);
+    // When other is empty, function shallow-copies base (pointers only), so don't free strings
+    defer allocator.free(result);
+    try testing.expectEqual(@as(usize, 2), result.len);
+    try testing.expectEqualStrings("PATH", result[0].name);
+    try testing.expectEqualStrings("HOME", result[1].name);
+}
+
+test "mergeNameValues populated other with null base" {
+    const allocator = testing.allocator;
+    const other = [_]NameValue{
+        .{ .name = "FOO", .value = "bar" },
+    };
+    const result = try mergeNameValues(allocator, null, &other);
+    defer {
+        for (result) |*nv| {
+            var nv_mut = nv.*;
+            nv_mut.deinit(allocator);
+        }
+        allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings("FOO", result[0].name);
+    try testing.expectEqualStrings("bar", result[0].value);
+}
+
+test "mergeNameValues override same name" {
+    const allocator = testing.allocator;
+    const base = [_]NameValue{
+        .{ .name = "PATH", .value = "/bin" },
+    };
+    const other = [_]NameValue{
+        .{ .name = "PATH", .value = "/usr/bin" },
+    };
+    const result = try mergeNameValues(allocator, &base, &other);
+    defer {
+        for (result) |*nv| {
+            var nv_mut = nv.*;
+            nv_mut.deinit(allocator);
+        }
+        allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings("PATH", result[0].name);
+    try testing.expectEqualStrings("/usr/bin", result[0].value);
+}
+
+test "mergeNameValues non-overlapping merge" {
+    const allocator = testing.allocator;
+    // Base items are borrowed (not duped), other items are duped
+    const base = [_]NameValue{
+        .{ .name = "PATH", .value = "/bin" },
+    };
+    const other = [_]NameValue{
+        .{ .name = "HOME", .value = "/root" },
+    };
+    const result = try mergeNameValues(allocator, &base, &other);
+    defer {
+        // Only free items that came from other (they were duped)
+        // Base items are shallow-copied pointers, don't free those
+        // In this case, result[0] is from base (shallow copy), result[1] is from other (duped)
+        allocator.free(result[1].name);
+        allocator.free(result[1].value);
+        allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 2), result.len);
+    // Base items kept come first
+    try testing.expectEqualStrings("PATH", result[0].name);
+    // Other items come second
+    try testing.expectEqualStrings("HOME", result[1].name);
+}
+
+test "Security.merge with empty other" {
+    var security = Security{
+        .@"run-as-user-id" = 1000,
+        .@"run-as-group-id" = 1000,
+    };
+    const other = Security{};
+    security.merge(other);
+    try testing.expectEqual(@as(?u32, 1000), security.@"run-as-user-id");
+    try testing.expectEqual(@as(?u32, 1000), security.@"run-as-group-id");
+}
+
+test "Security.merge overrides individual fields" {
+    var security = Security{
+        .@"run-as-user-id" = 1000,
+        .@"run-as-group-id" = 1000,
+    };
+    const other = Security{
+        .@"run-as-user-id" = 0,
+    };
+    security.merge(other);
+    try testing.expectEqual(@as(?u32, 0), security.@"run-as-user-id");
+    try testing.expectEqual(@as(?u32, 1000), security.@"run-as-group-id");
+}
+
+test "Security.merge overrides all fields" {
+    var security = Security{};
+    const other = Security{
+        .@"run-as-user-id" = 1000,
+        .@"run-as-group-id" = 1000,
+        .@"readonly-root-fs" = true,
+        .sshd = Sshd{ .enable = true },
+    };
+    security.merge(other);
+    try testing.expectEqual(@as(?u32, 1000), security.@"run-as-user-id");
+    try testing.expectEqual(@as(?u32, 1000), security.@"run-as-group-id");
+    try testing.expectEqual(@as(?bool, true), security.@"readonly-root-fs");
+    try testing.expectEqual(@as(?bool, true), security.sshd.enable);
+}
+
+test "VmSpec.from_yaml returns null for empty input" {
+    const result = try VmSpec.from_yaml(testing.allocator, "");
+    try testing.expect(result == null);
+}
+
+test "VmSpec.from_yaml returns null for whitespace-only input" {
+    const result = try VmSpec.from_yaml(testing.allocator, "   \n\t\r\n  ");
+    try testing.expect(result == null);
+}
+
+test "VmSpec.from_yaml parses command" {
+    const yaml_content =
+        \\command:
+        \\  - /bin/echo
+        \\  - hello
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.command != null);
+    try testing.expectEqual(@as(usize, 2), vmspec.command.?.len);
+    try testing.expectEqualStrings("/bin/echo", vmspec.command.?[0]);
+    try testing.expectEqualStrings("hello", vmspec.command.?[1]);
+}
+
+test "VmSpec.from_yaml parses env" {
+    const yaml_content =
+        \\env:
+        \\  - name: FOO
+        \\    value: bar
+        \\  - name: BAZ
+        \\    value: qux
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.env != null);
+    try testing.expectEqual(@as(usize, 2), vmspec.env.?.len);
+    try testing.expectEqualStrings("FOO", vmspec.env.?[0].name);
+    try testing.expectEqualStrings("bar", vmspec.env.?[0].value);
+}
+
+test "VmSpec.from_yaml parses security" {
+    const yaml_content =
+        \\security:
+        \\  run-as-user-id: 1000
+        \\  run-as-group-id: 1000
+        \\  readonly-root-fs: true
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expectEqual(@as(?u32, 1000), vmspec.security.@"run-as-user-id");
+    try testing.expectEqual(@as(?u32, 1000), vmspec.security.@"run-as-group-id");
+    try testing.expectEqual(@as(?bool, true), vmspec.security.@"readonly-root-fs");
+}
+
+test "VmSpec.from_yaml parses debug flag" {
+    const yaml_content = "debug: true";
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expectEqual(@as(?bool, true), vmspec.debug);
+}
+
+test "VmSpec.from_yaml parses replace-init flag" {
+    const yaml_content = "replace-init: true";
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expectEqual(@as(?bool, true), vmspec.@"replace-init");
+}
+
+test "VmSpec.from_yaml parses working-dir" {
+    const yaml_content = "working-dir: /app";
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expectEqualStrings("/app", vmspec.@"working-dir".?);
+}
+
+test "VmSpec.from_yaml parses shutdown-grace-period" {
+    const yaml_content = "shutdown-grace-period: 30";
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expectEqual(@as(?u64, 30), vmspec.@"shutdown-grace-period");
+}
+
+test "VmSpec.from_yaml parses modules" {
+    const yaml_content =
+        \\modules:
+        \\  - nvme
+        \\  - xfs
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.modules != null);
+    try testing.expectEqual(@as(usize, 2), vmspec.modules.?.len);
+    try testing.expectEqualStrings("nvme", vmspec.modules.?[0]);
+    try testing.expectEqualStrings("xfs", vmspec.modules.?[1]);
+}
+
+test "VmSpec.from_yaml parses sysctls" {
+    const yaml_content =
+        \\sysctls:
+        \\  - name: net.ipv4.ip_forward
+        \\    value: 1
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.sysctls != null);
+    try testing.expectEqual(@as(usize, 1), vmspec.sysctls.?.len);
+    try testing.expectEqualStrings("net.ipv4.ip_forward", vmspec.sysctls.?[0].name);
+    try testing.expectEqualStrings("1", vmspec.sysctls.?[0].value);
+}
+
+test "VmSpec.from_yaml parses init-scripts" {
+    const yaml_content =
+        \\init-scripts:
+        \\  - /etc/init.d/script1
+        \\  - /etc/init.d/script2
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.@"init-scripts" != null);
+    try testing.expectEqual(@as(usize, 2), vmspec.@"init-scripts".?.len);
+    try testing.expectEqualStrings("/etc/init.d/script1", vmspec.@"init-scripts".?[0]);
+}
+
+test "VmSpec.from_yaml parses disable-services" {
+    const yaml_content =
+        \\disable-services:
+        \\  - sshd
+        \\  - network
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.@"disable-services" != null);
+    try testing.expectEqual(@as(usize, 2), vmspec.@"disable-services".?.len);
+    try testing.expectEqualStrings("sshd", vmspec.@"disable-services".?[0]);
+}
+
+test "VmSpec.from_yaml parses env-from with imds" {
+    const yaml_content =
+        \\env-from:
+        \\  - imds:
+        \\      name: INSTANCE_ID
+        \\      path: /latest/meta-data/instance-id
+        \\      optional: true
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.@"env-from" != null);
+    try testing.expectEqual(@as(usize, 1), vmspec.@"env-from".?.len);
+    const imds = vmspec.@"env-from".?[0].imds.?;
+    try testing.expectEqualStrings("INSTANCE_ID", imds.name);
+    try testing.expectEqualStrings("/latest/meta-data/instance-id", imds.path);
+    try testing.expectEqual(@as(?bool, true), imds.optional);
+}
+
+test "VmSpec.from_yaml parses env-from with s3" {
+    const yaml_content =
+        \\env-from:
+        \\  - s3:
+        \\      bucket: my-bucket
+        \\      key: config/env.json
+        \\      name: S3_CONFIG
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.@"env-from" != null);
+    const s3 = vmspec.@"env-from".?[0].s3.?;
+    try testing.expectEqualStrings("my-bucket", s3.bucket);
+    try testing.expectEqualStrings("config/env.json", s3.key);
+    try testing.expectEqualStrings("S3_CONFIG", s3.name.?);
+}
+
+test "VmSpec.from_yaml parses env-from with secrets-manager" {
+    const yaml_content =
+        \\env-from:
+        \\  - secrets-manager:
+        \\      name: DB_PASSWORD
+        \\      secret-id: prod/db/password
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.@"env-from" != null);
+    const sm = vmspec.@"env-from".?[0].@"secrets-manager".?;
+    try testing.expectEqualStrings("DB_PASSWORD", sm.name);
+    try testing.expectEqualStrings("prod/db/password", sm.@"secret-id");
+}
+
+test "VmSpec.from_yaml parses env-from with ssm" {
+    const yaml_content =
+        \\env-from:
+        \\  - ssm:
+        \\      path: /prod/config/api-key
+        \\      name: API_KEY
+        \\      base64-encode: true
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.@"env-from" != null);
+    const ssm = vmspec.@"env-from".?[0].ssm.?;
+    try testing.expectEqualStrings("/prod/config/api-key", ssm.path);
+    try testing.expectEqualStrings("API_KEY", ssm.name.?);
+    try testing.expectEqual(@as(?bool, true), ssm.@"base64-encode");
+}
+
+test "VmSpec.merge empty other into populated self" {
+    var base_command = [_][]const u8{"/bin/echo"};
+    var vmspec = VmSpec{
+        .command = &base_command,
+        .debug = true,
+        .arena = std.heap.ArenaAllocator.init(testing.allocator),
+    };
+    defer vmspec.deinit();
+
+    const other = VmSpec{};
+    try vmspec.merge(other);
+
+    // Original values preserved
+    try testing.expect(vmspec.command != null);
+    try testing.expectEqual(@as(?bool, true), vmspec.debug);
+}
+
+test "VmSpec.merge overrides command and clears args" {
+    var base_command = [_][]const u8{"/bin/sh"};
+    var base_args = [_][]const u8{ "-c", "echo hello" };
+    var vmspec = VmSpec{
+        .command = &base_command,
+        .args = &base_args,
+        .arena = std.heap.ArenaAllocator.init(testing.allocator),
+    };
+    defer vmspec.deinit();
+
+    var other_command = [_][]const u8{"/bin/bash"};
+    const other = VmSpec{
+        .command = &other_command,
+    };
+    try vmspec.merge(other);
+
+    try testing.expectEqualStrings("/bin/bash", vmspec.command.?[0]);
+    try testing.expect(vmspec.args == null);
+}
+
+test "VmSpec.merge preserves args when other provides args" {
+    var base_command = [_][]const u8{"/bin/sh"};
+    var vmspec = VmSpec{
+        .command = &base_command,
+        .arena = std.heap.ArenaAllocator.init(testing.allocator),
+    };
+    defer vmspec.deinit();
+
+    var other_command = [_][]const u8{"/bin/bash"};
+    var other_args = [_][]const u8{ "-c", "echo test" };
+    const other = VmSpec{
+        .command = &other_command,
+        .args = &other_args,
+    };
+    try vmspec.merge(other);
+
+    try testing.expectEqualStrings("/bin/bash", vmspec.command.?[0]);
+    try testing.expect(vmspec.args != null);
+    try testing.expectEqualStrings("-c", vmspec.args.?[0]);
+}
+
+test "VmSpec.merge env combines and overrides" {
+    var vmspec = VmSpec{
+        .arena = std.heap.ArenaAllocator.init(testing.allocator),
+    };
+    defer vmspec.deinit();
+
+    const arena_alloc = vmspec.arena.?.allocator();
+    var base_env = try ArrayList(NameValue).initCapacity(arena_alloc, 2);
+    try base_env.append(arena_alloc, .{
+        .name = try arena_alloc.dupe(u8, "PATH"),
+        .value = try arena_alloc.dupe(u8, "/bin"),
+    });
+    try base_env.append(arena_alloc, .{
+        .name = try arena_alloc.dupe(u8, "HOME"),
+        .value = try arena_alloc.dupe(u8, "/root"),
+    });
+    vmspec.env = try base_env.toOwnedSlice(arena_alloc);
+
+    var other_env = [_]NameValue{
+        .{ .name = "PATH", .value = "/usr/bin" },
+        .{ .name = "SHELL", .value = "/bin/bash" },
+    };
+    const other = VmSpec{
+        .env = &other_env,
+    };
+    try vmspec.merge(other);
+
+    // Should have 3 items: HOME from base (not overridden), PATH and SHELL from other
+    try testing.expectEqual(@as(usize, 3), vmspec.env.?.len);
+
+    // Find each expected value
+    var found_home = false;
+    var found_path = false;
+    var found_shell = false;
+    for (vmspec.env.?) |nv| {
+        if (std.mem.eql(u8, nv.name, "HOME")) {
+            try testing.expectEqualStrings("/root", nv.value);
+            found_home = true;
+        } else if (std.mem.eql(u8, nv.name, "PATH")) {
+            try testing.expectEqualStrings("/usr/bin", nv.value);
+            found_path = true;
+        } else if (std.mem.eql(u8, nv.name, "SHELL")) {
+            try testing.expectEqualStrings("/bin/bash", nv.value);
+            found_shell = true;
+        }
+    }
+    try testing.expect(found_home);
+    try testing.expect(found_path);
+    try testing.expect(found_shell);
+}
+
+test "VmSpec.merge security" {
+    var vmspec = VmSpec{
+        .security = Security{
+            .@"run-as-user-id" = 1000,
+        },
+        .arena = std.heap.ArenaAllocator.init(testing.allocator),
+    };
+    defer vmspec.deinit();
+
+    const other = VmSpec{
+        .security = Security{
+            .@"run-as-group-id" = 1000,
+            .@"readonly-root-fs" = true,
+        },
+    };
+    try vmspec.merge(other);
+
+    try testing.expectEqual(@as(?u32, 1000), vmspec.security.@"run-as-user-id");
+    try testing.expectEqual(@as(?u32, 1000), vmspec.security.@"run-as-group-id");
+    try testing.expectEqual(@as(?bool, true), vmspec.security.@"readonly-root-fs");
+}
+
+test "VmSpec.merge working-dir" {
+    var vmspec = VmSpec{
+        .@"working-dir" = "/",
+        .arena = std.heap.ArenaAllocator.init(testing.allocator),
+    };
+    defer vmspec.deinit();
+
+    const other = VmSpec{
+        .@"working-dir" = "/app",
+    };
+    try vmspec.merge(other);
+
+    try testing.expectEqualStrings("/app", vmspec.@"working-dir".?);
 }
