@@ -240,7 +240,12 @@ fn parseValue(allocator: Allocator, lines: []const Line, start: usize, base_inde
 
 fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
     var items = ArrayList(Value){};
-    errdefer items.deinit(allocator);
+    errdefer {
+        for (items.items) |item| {
+            item.deinit(allocator);
+        }
+        items.deinit(allocator);
+    }
 
     var i = start;
     while (i < lines.len) {
@@ -258,7 +263,12 @@ fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_inden
             if (line.key != null) {
                 // Inline map: - key: value
                 var map_items = ArrayList(MapEntry){};
-                errdefer map_items.deinit(allocator);
+                errdefer {
+                    for (map_items.items) |entry| {
+                        entry.value.deinit(allocator);
+                    }
+                    map_items.deinit(allocator);
+                }
 
                 // Add the inline key-value
                 const nested_value = if (line.value) |v|
@@ -323,7 +333,12 @@ fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_inden
 
 fn parseMap(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
     var entries = ArrayList(MapEntry){};
-    errdefer entries.deinit(allocator);
+    errdefer {
+        for (entries.items) |entry| {
+            entry.value.deinit(allocator);
+        }
+        entries.deinit(allocator);
+    }
 
     // Use the actual indent of the first line as the map's working indent.
     // This handles cases where the map is more deeply indented than base_indent.
@@ -541,4 +556,297 @@ test "inline comments are stripped" {
     var result = try parse(std.testing.allocator, input);
     defer result.deinit();
     try std.testing.expectEqualStrings("hello", result.value.get("name").?.getString().?);
+}
+
+test "Value.getString returns null for non-string" {
+    const input = "items:\n  - one\n  - two";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("items").?;
+    try std.testing.expect(items.getString() == null);
+    try std.testing.expect(items.getList() != null);
+}
+
+test "Value.getList returns null for string" {
+    const input = "name: hello";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const name = result.value.get("name").?;
+    try std.testing.expect(name.getList() == null);
+    try std.testing.expect(name.getString() != null);
+}
+
+test "Value.getMap returns null for string" {
+    const input = "name: hello";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const name = result.value.get("name").?;
+    try std.testing.expect(name.getMap() == null);
+}
+
+test "Value.getMap returns null for list" {
+    const input = "items:\n  - one";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("items").?;
+    try std.testing.expect(items.getMap() == null);
+}
+
+test "Value.get returns null for non-existent key" {
+    const input = "name: hello";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expect(result.value.get("missing") == null);
+}
+
+test "Value.get returns null on non-map value" {
+    const input = "items:\n  - one";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("items").?;
+    try std.testing.expect(items.get("key") == null);
+}
+
+test "parse content with only comments" {
+    const input =
+        \\# This is a comment
+        \\# Another comment
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    // Comment-only content is parsed as empty string value
+    const str = result.value.getString();
+    try std.testing.expect(str != null);
+    try std.testing.expectEqualStrings("", str.?);
+}
+
+test "parse nested maps" {
+    const input =
+        \\outer:
+        \\  middle:
+        \\    inner: value
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const outer = result.value.get("outer").?;
+    const middle = outer.get("middle").?;
+    const inner = middle.get("inner").?.getString().?;
+    try std.testing.expectEqualStrings("value", inner);
+}
+
+test "parse deeply nested maps" {
+    const input =
+        \\level1:
+        \\  level2:
+        \\    level3:
+        \\      level4: deep
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const l1 = result.value.get("level1").?;
+    const l2 = l1.get("level2").?;
+    const l3 = l2.get("level3").?;
+    const l4 = l3.get("level4").?.getString().?;
+    try std.testing.expectEqualStrings("deep", l4);
+}
+
+test "parse value containing hash without space" {
+    const input = "color: #ff0000";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("#ff0000", result.value.get("color").?.getString().?);
+}
+
+test "parse empty list item skipped" {
+    const input =
+        \\items:
+        \\  - one
+        \\  - two
+        \\  - three
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("items").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 3), items.len);
+    try std.testing.expectEqualStrings("one", items[0].getString().?);
+    try std.testing.expectEqualStrings("two", items[1].getString().?);
+    try std.testing.expectEqualStrings("three", items[2].getString().?);
+}
+
+test "parse key with trailing colon only" {
+    const input =
+        \\parent:
+        \\  child: value
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const parent = result.value.get("parent").?;
+    const child = parent.get("child").?.getString().?;
+    try std.testing.expectEqualStrings("value", child);
+}
+
+test "parse block scalar preserves internal indentation" {
+    const input =
+        \\script: |
+        \\  line1
+        \\    indented
+        \\  line2
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const script = result.value.get("script").?.getString().?;
+    try std.testing.expect(std.mem.indexOf(u8, script, "line1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "indented") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "line2") != null);
+}
+
+test "parse empty block scalar" {
+    const input =
+        \\scripts:
+        \\  - |
+        \\next: value
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const scripts = result.value.get("scripts").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 1), scripts.len);
+    try std.testing.expectEqualStrings("", scripts[0].getString().?);
+    try std.testing.expectEqualStrings("value", result.value.get("next").?.getString().?);
+}
+
+test "parse quoted strings with double quotes" {
+    const input = "name: \"hello world\"";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("hello world", result.value.get("name").?.getString().?);
+}
+
+test "parse quoted strings with single quotes" {
+    const input = "name: 'hello world'";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("hello world", result.value.get("name").?.getString().?);
+}
+
+test "parse multiple keys at same level" {
+    const input =
+        \\first: one
+        \\second: two
+        \\third: three
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("one", result.value.get("first").?.getString().?);
+    try std.testing.expectEqualStrings("two", result.value.get("second").?.getString().?);
+    try std.testing.expectEqualStrings("three", result.value.get("third").?.getString().?);
+}
+
+test "parse list of maps" {
+    const input =
+        \\items:
+        \\  - name: foo
+        \\    value: bar
+        \\  - name: baz
+        \\    value: qux
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("items").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqualStrings("foo", items[0].get("name").?.getString().?);
+    try std.testing.expectEqualStrings("bar", items[0].get("value").?.getString().?);
+    try std.testing.expectEqualStrings("baz", items[1].get("name").?.getString().?);
+    try std.testing.expectEqualStrings("qux", items[1].get("value").?.getString().?);
+}
+
+test "parse block scalar multiple lines" {
+    const input =
+        \\script: |
+        \\  #!/bin/bash
+        \\  echo "hello"
+        \\  echo "world"
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const script = result.value.get("script").?.getString().?;
+    try std.testing.expect(std.mem.startsWith(u8, script, "#!/bin/bash"));
+    try std.testing.expect(std.mem.indexOf(u8, script, "echo \"hello\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "echo \"world\"") != null);
+}
+
+test "parse whitespace-only lines returns empty string" {
+    const input = "   \n   \n   ";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    // Whitespace-only lines (with no keys/values) result in empty string
+    const str = result.value.getString();
+    try std.testing.expect(str != null);
+    try std.testing.expectEqualStrings("", str.?);
+}
+
+test "Value.deinit handles nested structures" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\outer:
+        \\  inner:
+        \\    items:
+        \\      - one
+        \\      - two
+    ;
+    var result = try parse(allocator, input);
+    result.deinit();
+}
+
+test "parse handles tabs in content" {
+    // Tab after colon doesn't count as `: ` separator, so it's parsed as string
+    const input = "name:\thello";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    // This gets treated as a plain string, not a key-value pair
+    const str = result.value.getString();
+    try std.testing.expect(str != null);
+}
+
+test "parse list in list item with nested map" {
+    const input =
+        \\envs:
+        \\  - name: FOO
+        \\    value: bar
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const envs = result.value.get("envs").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 1), envs.len);
+    const first = envs[0];
+    try std.testing.expectEqualStrings("FOO", first.get("name").?.getString().?);
+    try std.testing.expectEqualStrings("bar", first.get("value").?.getString().?);
+}
+
+test "parse map after list" {
+    const input =
+        \\items:
+        \\  - one
+        \\  - two
+        \\next: value
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("items").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqualStrings("value", result.value.get("next").?.getString().?);
+}
+
+test "parse comment between list items" {
+    const input =
+        \\items:
+        \\  - one
+        \\  # comment
+        \\  - two
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("items").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqualStrings("one", items[0].getString().?);
+    try std.testing.expectEqualStrings("two", items[1].getString().?);
 }
