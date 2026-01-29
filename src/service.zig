@@ -12,7 +12,7 @@ const SIGPOWEROFF: u6 = 38;
 const PF_KTHREAD: u32 = 0x00200000;
 const FLAGS_FIELD_INDEX: usize = 8;
 
-var shutdown_requested: bool = false;
+var shutdown_requested = std.atomic.Value(bool).init(false);
 
 pub const Supervisor = struct {
     allocator: Allocator,
@@ -61,7 +61,7 @@ pub const Supervisor = struct {
         var main_exited = false;
 
         while (true) {
-            if (shutdown_requested and !main_exited) {
+            if (shutdown_requested.load(.acquire) and !main_exited) {
                 std.log.info("shutdown requested, terminating processes", .{});
                 self.graceful_shutdown();
                 return;
@@ -90,7 +90,7 @@ pub const Supervisor = struct {
                 std.Thread.sleep(10 * std.time.ns_per_ms);
             }
 
-            if (shutdown_requested and !main_exited) {
+            if (shutdown_requested.load(.acquire) and !main_exited) {
                 std.log.info("shutdown requested, terminating processes", .{});
                 self.graceful_shutdown();
                 return;
@@ -161,6 +161,11 @@ pub const Supervisor = struct {
         defer self.allocator.free(argv);
 
         var arg_strings = try self.allocator.alloc([:0]const u8, total_len);
+        var arg_strings_count: usize = 0;
+        errdefer {
+            for (arg_strings[0..arg_strings_count]) |s| self.allocator.free(s);
+            self.allocator.free(arg_strings);
+        }
         defer {
             for (arg_strings) |s| self.allocator.free(s);
             self.allocator.free(arg_strings);
@@ -168,11 +173,13 @@ pub const Supervisor = struct {
 
         for (self.command, 0..) |arg, i| {
             arg_strings[i] = try self.allocator.dupeZ(u8, arg);
+            arg_strings_count += 1;
             argv[i] = arg_strings[i].ptr;
         }
         if (self.args) |args| {
             for (args, 0..) |arg, i| {
                 arg_strings[command_len + i] = try self.allocator.dupeZ(u8, arg);
+                arg_strings_count += 1;
                 argv[command_len + i] = arg_strings[command_len + i].ptr;
             }
         }
@@ -278,14 +285,47 @@ pub const Supervisor = struct {
         var iter = env_map.iterator();
         while (iter.next()) |entry| {
             const env_str = try std.fmt.allocPrint(self.allocator, "{s}={s}", .{ entry.key_ptr.*, entry.value_ptr.* });
+            defer self.allocator.free(env_str);
             env_strings[idx] = try self.allocator.dupeZ(u8, env_str);
-            self.allocator.free(env_str);
             envp[idx] = env_strings[idx].ptr;
             idx += 1;
         }
         envp[env_count] = null;
 
         return .{ .envp = envp, .env_strings = env_strings };
+    }
+
+    /// Build argv array from command and args slices. Exported for testing.
+    pub fn buildArgv(self: *const Supervisor) !struct { argv: []?[*:0]const u8, arg_strings: [][:0]const u8 } {
+        const command_len = self.command.len;
+        const args_len = if (self.args) |a| a.len else 0;
+        const total_len = command_len + args_len;
+
+        var argv = try self.allocator.alloc(?[*:0]const u8, total_len + 1);
+        errdefer self.allocator.free(argv);
+
+        var arg_strings = try self.allocator.alloc([:0]const u8, total_len);
+        var arg_strings_count: usize = 0;
+        errdefer {
+            for (arg_strings[0..arg_strings_count]) |s| self.allocator.free(s);
+            self.allocator.free(arg_strings);
+        }
+
+        for (self.command, 0..) |arg, i| {
+            arg_strings[i] = try self.allocator.dupeZ(u8, arg);
+            arg_strings_count += 1;
+            argv[i] = arg_strings[i].ptr;
+        }
+        if (self.args) |args| {
+            for (args, 0..) |arg, i| {
+                arg_strings[command_len + i] = try self.allocator.dupeZ(u8, arg);
+                arg_strings_count += 1;
+                argv[command_len + i] = arg_strings[command_len + i].ptr;
+            }
+        }
+        argv[total_len] = null;
+
+        return .{ .argv = argv, .arg_strings = arg_strings };
     }
 };
 
@@ -303,7 +343,7 @@ fn setup_signal_handlers() void {
 
 fn signal_handler(sig: c_int) callconv(.c) void {
     _ = sig;
-    shutdown_requested = true;
+    shutdown_requested.store(true, .release);
 }
 
 fn get_all_pids() ![]posix.pid_t {
@@ -332,6 +372,26 @@ fn get_all_pids() ![]posix.pid_t {
     return try pids.toOwnedSlice(std.heap.page_allocator);
 }
 
+/// Parse /proc/[pid]/stat content and determine if the process is a kernel thread.
+/// Returns error if the content is malformed, otherwise returns true if kernel thread.
+fn parseKernelThreadStatus(content: []const u8) !bool {
+    const paren_end = std.mem.lastIndexOf(u8, content, ")") orelse return error.InvalidFormat;
+    const after_comm = content[paren_end + 1 ..];
+
+    var iter = std.mem.tokenizeScalar(u8, after_comm, ' ');
+    var field_index: usize = 2;
+
+    while (iter.next()) |field| {
+        if (field_index == FLAGS_FIELD_INDEX) {
+            const flags = std.fmt.parseInt(u32, field, 10) catch return error.InvalidFlags;
+            return (flags & PF_KTHREAD) != 0;
+        }
+        field_index += 1;
+    }
+
+    return error.FieldNotFound;
+}
+
 fn is_kernel_thread(pid: posix.pid_t) bool {
     var path_buf: [64]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/stat", .{pid}) catch return true;
@@ -343,24 +403,10 @@ fn is_kernel_thread(pid: posix.pid_t) bool {
     const bytes_read = file.read(&buf) catch return true;
     const content = buf[0..bytes_read];
 
-    const paren_end = std.mem.lastIndexOf(u8, content, ")") orelse return true;
-    const after_comm = content[paren_end + 1 ..];
-
-    var iter = std.mem.tokenizeScalar(u8, after_comm, ' ');
-    var field_index: usize = 2;
-
-    while (iter.next()) |field| {
-        if (field_index == FLAGS_FIELD_INDEX) {
-            const flags = std.fmt.parseInt(u32, field, 10) catch return true;
-            return (flags & PF_KTHREAD) != 0;
-        }
-        field_index += 1;
-    }
-
-    return true;
+    return parseKernelThreadStatus(content) catch true;
 }
 
-test "is_kernel_thread" {
+test "is_kernel_thread returns false for init process" {
     try testing.expect(!is_kernel_thread(1));
 }
 
@@ -371,4 +417,191 @@ test "get_all_pids does not include pid 1" {
     for (pids) |pid| {
         try testing.expect(pid != 1);
     }
+}
+
+// Test parseKernelThreadStatus with realistic /proc/[pid]/stat content
+test "parseKernelThreadStatus with normal process" {
+    // Real example from /proc/1/stat - init is not a kernel thread (flags don't have PF_KTHREAD)
+    const content = "1 (init) S 0 1 1 0 -1 4194560 1234 0 0 0 10 5 0 0 20 0 1 0 1 12345678 1024 18446744073709551615 0 0 0 0 0 0 0 0 65536 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+    const is_kthread = try parseKernelThreadStatus(content);
+    try testing.expect(!is_kthread);
+}
+
+test "parseKernelThreadStatus with kernel thread" {
+    // Kernel thread has PF_KTHREAD (0x00200000 = 2097152) set in flags field
+    const content = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 18446744073709551615 0 0 0 0 0 0 0 2147483647 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+    const is_kthread = try parseKernelThreadStatus(content);
+    try testing.expect(is_kthread);
+}
+
+test "parseKernelThreadStatus with process name containing parentheses" {
+    // Process names can contain parentheses which makes parsing tricky
+    const content = "123 (my (weird) app) S 0 1 1 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+    const is_kthread = try parseKernelThreadStatus(content);
+    try testing.expect(!is_kthread);
+}
+
+test "parseKernelThreadStatus error on missing closing paren" {
+    const content = "123 (myapp S 0 1 1 0 -1 4194560";
+    try testing.expectError(error.InvalidFormat, parseKernelThreadStatus(content));
+}
+
+test "parseKernelThreadStatus error on missing fields" {
+    const content = "123 (myapp) S 0 1";
+    try testing.expectError(error.FieldNotFound, parseKernelThreadStatus(content));
+}
+
+test "parseKernelThreadStatus error on non-numeric flags" {
+    const content = "123 (myapp) S 0 1 1 0 -1 notanumber 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+    try testing.expectError(error.InvalidFlags, parseKernelThreadStatus(content));
+}
+
+test "Supervisor.init creates supervisor with correct fields" {
+    const allocator = testing.allocator;
+    var command = [_][]const u8{"/bin/echo"};
+    var args = [_][]const u8{ "hello", "world" };
+    var env = [_]NameValue{
+        .{ .name = "FOO", .value = "bar" },
+    };
+
+    const supervisor = Supervisor.init(
+        allocator,
+        &command,
+        &args,
+        &env,
+        "/tmp",
+        1000,
+        1000,
+        30,
+    );
+
+    try testing.expectEqual(allocator, supervisor.allocator);
+    try testing.expectEqual(@as(usize, 1), supervisor.command.len);
+    try testing.expectEqualStrings("/bin/echo", supervisor.command[0]);
+    try testing.expect(supervisor.args != null);
+    try testing.expectEqual(@as(usize, 2), supervisor.args.?.len);
+    try testing.expect(supervisor.env != null);
+    try testing.expectEqual(@as(usize, 1), supervisor.env.?.len);
+    try testing.expectEqualStrings("/tmp", supervisor.working_dir);
+    try testing.expectEqual(@as(u32, 1000), supervisor.uid);
+    try testing.expectEqual(@as(u32, 1000), supervisor.gid);
+    try testing.expectEqual(@as(u64, 30), supervisor.shutdown_grace_period);
+    try testing.expect(supervisor.main_pid == null);
+}
+
+test "Supervisor.init with null args" {
+    const allocator = testing.allocator;
+    var command = [_][]const u8{"/bin/sh"};
+
+    const supervisor = Supervisor.init(
+        allocator,
+        &command,
+        null,
+        null,
+        "/",
+        0,
+        0,
+        10,
+    );
+
+    try testing.expect(supervisor.args == null);
+    try testing.expect(supervisor.env == null);
+}
+
+test "Supervisor.buildArgv with command only" {
+    const allocator = testing.allocator;
+    var command = [_][]const u8{ "/bin/echo", "hello" };
+
+    var supervisor = Supervisor.init(
+        allocator,
+        &command,
+        null,
+        null,
+        "/",
+        0,
+        0,
+        10,
+    );
+
+    const result = try supervisor.buildArgv();
+    defer {
+        for (result.arg_strings) |s| allocator.free(s);
+        allocator.free(result.arg_strings);
+        allocator.free(result.argv);
+    }
+
+    try testing.expectEqual(@as(usize, 3), result.argv.len);
+    try testing.expectEqualStrings("/bin/echo", std.mem.span(result.argv[0].?));
+    try testing.expectEqualStrings("hello", std.mem.span(result.argv[1].?));
+    try testing.expect(result.argv[2] == null);
+}
+
+test "Supervisor.buildArgv with command and args" {
+    const allocator = testing.allocator;
+    var command = [_][]const u8{"/bin/sh"};
+    var args = [_][]const u8{ "-c", "echo test" };
+
+    var supervisor = Supervisor.init(
+        allocator,
+        &command,
+        &args,
+        null,
+        "/",
+        0,
+        0,
+        10,
+    );
+
+    const result = try supervisor.buildArgv();
+    defer {
+        for (result.arg_strings) |s| allocator.free(s);
+        allocator.free(result.arg_strings);
+        allocator.free(result.argv);
+    }
+
+    try testing.expectEqual(@as(usize, 4), result.argv.len);
+    try testing.expectEqualStrings("/bin/sh", std.mem.span(result.argv[0].?));
+    try testing.expectEqualStrings("-c", std.mem.span(result.argv[1].?));
+    try testing.expectEqualStrings("echo test", std.mem.span(result.argv[2].?));
+    try testing.expect(result.argv[3] == null);
+}
+
+test "Supervisor.buildArgv with empty args" {
+    const allocator = testing.allocator;
+    var command = [_][]const u8{"/bin/ls"};
+    var args = [_][]const u8{};
+
+    var supervisor = Supervisor.init(
+        allocator,
+        &command,
+        &args,
+        null,
+        "/",
+        0,
+        0,
+        10,
+    );
+
+    const result = try supervisor.buildArgv();
+    defer {
+        for (result.arg_strings) |s| allocator.free(s);
+        allocator.free(result.arg_strings);
+        allocator.free(result.argv);
+    }
+
+    try testing.expectEqual(@as(usize, 2), result.argv.len);
+    try testing.expectEqualStrings("/bin/ls", std.mem.span(result.argv[0].?));
+    try testing.expect(result.argv[1] == null);
+}
+
+test "shutdown_requested atomic operations" {
+    // Reset state
+    shutdown_requested.store(false, .release);
+    try testing.expect(!shutdown_requested.load(.acquire));
+
+    shutdown_requested.store(true, .release);
+    try testing.expect(shutdown_requested.load(.acquire));
+
+    // Reset for other tests
+    shutdown_requested.store(false, .release);
 }
