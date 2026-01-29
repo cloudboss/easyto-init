@@ -138,6 +138,7 @@ test-integration: \
 		-v $(DIR_ROOT):/code \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
+		--security-opt label=type:container_runtime_t \
 		-e INIT_BINARY=$(DIR_OUT)/zig-out-debug/bin/init \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
@@ -156,6 +157,7 @@ test-integration-kvm: \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		--group-add $(KVM_GID) \
+		--security-opt label=type:container_runtime_t \
 		--device=/dev/kvm \
 		-e INIT_BINARY=$(DIR_OUT)/zig-out-debug/bin/init \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
