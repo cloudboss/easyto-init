@@ -37,7 +37,7 @@ $(HAS_IMAGE_LOCAL): $(HAS_COMMAND_DOCKER) | $(DIR_OUT)/dockerbuild/
 DIR_RELEASE = $(DIR_OUT)/release
 
 EASYTO_ASSETS_RELEASES = https://github.com/cloudboss/easyto-assets/releases/download
-EASYTO_ASSETS_VERSION = v0.3.0
+EASYTO_ASSETS_VERSION = v0.5.1
 EASYTO_ASSETS_BUILD = easyto-assets-build-$(EASYTO_ASSETS_VERSION)
 EASYTO_ASSETS_BUILD_ARCHIVE = $(EASYTO_ASSETS_BUILD).tar.gz
 EASYTO_ASSETS_BUILD_URL = $(EASYTO_ASSETS_RELEASES)/$(EASYTO_ASSETS_VERSION)/$(EASYTO_ASSETS_BUILD_ARCHIVE)
@@ -139,6 +139,7 @@ test-integration: \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		-e INIT_BINARY=$(DIR_OUT)/zig-out-debug/bin/init \
+		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
 		-e KEEP_LOGS=$(KEEP_LOGS) \
@@ -157,6 +158,7 @@ test-integration-kvm: \
 		--group-add $(KVM_GID) \
 		--device=/dev/kvm \
 		-e INIT_BINARY=$(DIR_OUT)/zig-out-debug/bin/init \
+		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
 		-e KEEP_LOGS=$(KEEP_LOGS) \
