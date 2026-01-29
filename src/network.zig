@@ -1157,6 +1157,31 @@ fn setHostname(imds_client: *aws_sdk.imds.ImdsClient, allocator: Allocator) !voi
     }
 }
 
+/// Intermediate structure for building persisted entries with owned string buffers.
+const PersistedEntryBuilder = struct {
+    ip_buf: [16]u8 = undefined,
+    ip_len: u8 = 0,
+    gw_buf: [16]u8 = undefined,
+    gw_len: u8 = 0,
+    mac_buf: [17]u8 = undefined,
+    has_mac: bool = false,
+
+    fn getIpStr(self: *const PersistedEntryBuilder) ?[]const u8 {
+        if (self.ip_len == 0) return null;
+        return self.ip_buf[0..self.ip_len];
+    }
+
+    fn getGwStr(self: *const PersistedEntryBuilder) ?[]const u8 {
+        if (self.gw_len == 0) return null;
+        return self.gw_buf[0..self.gw_len];
+    }
+
+    fn getMacStr(self: *const PersistedEntryBuilder) ?[]const u8 {
+        if (!self.has_mac) return null;
+        return &self.mac_buf;
+    }
+};
+
 fn persistInterfaces(
     allocator: Allocator,
     interfaces: []const InterfaceInfo,
@@ -1168,75 +1193,83 @@ fn persistInterfaces(
     const now = std.time.timestamp();
     const timestamp = std.fmt.bufPrint(&timestamp_buf, "{}", .{now}) catch "0";
 
-    // Build entries
+    // Build entries with owned buffers to avoid lifetime issues
+    var builders = try allocator.alloc(PersistedEntryBuilder, interfaces.len);
+    defer allocator.free(builders);
+
+    // Initialize all builders to default values (alloc returns uninitialized memory)
+    for (builders) |*builder| {
+        builder.* = PersistedEntryBuilder{};
+    }
+
     var entries: std.ArrayListUnmanaged(InterfaceEntry) = .empty;
     defer entries.deinit(allocator);
 
-    for (interfaces) |iface| {
+    for (interfaces, 0..) |iface, idx| {
         const family_info_result = familyInfo(iface.name);
         const is_primary = std.mem.eql(u8, iface.name, primary_name);
-
-        var ip_str: ?[]const u8 = null;
-        var gw_str: ?[]const u8 = null;
-        var prefix: ?u8 = null;
+        var builder = &builders[idx];
 
         if (is_primary) {
-            var ip_buf: [16]u8 = undefined;
-            var gw_buf: [16]u8 = undefined;
-
-            ip_str = std.fmt.bufPrint(&ip_buf, "{}.{}.{}.{}", .{
+            const ip_result = std.fmt.bufPrint(&builder.ip_buf, "{}.{}.{}.{}", .{
                 dhcp_lease.address.address[0],
                 dhcp_lease.address.address[1],
                 dhcp_lease.address.address[2],
                 dhcp_lease.address.address[3],
-            }) catch null;
+            });
+            if (ip_result) |ip_slice| {
+                builder.ip_len = @intCast(ip_slice.len);
+            } else |_| {}
 
-            gw_str = std.fmt.bufPrint(&gw_buf, "{}.{}.{}.{}", .{
+            const gw_result = std.fmt.bufPrint(&builder.gw_buf, "{}.{}.{}.{}", .{
                 dhcp_lease.address.gateway[0],
                 dhcp_lease.address.gateway[1],
                 dhcp_lease.address.gateway[2],
                 dhcp_lease.address.gateway[3],
-            }) catch null;
-
-            prefix = dhcp_lease.address.prefix_len;
+            });
+            if (gw_result) |gw_slice| {
+                builder.gw_len = @intCast(gw_slice.len);
+            } else |_| {}
         }
 
-        var mac_str: ?[]const u8 = null;
         if (iface.mac) |mac| {
-            var mac_buf: [17]u8 = undefined;
             const mac_formatted = macToString(mac);
-            @memcpy(&mac_buf, &mac_formatted);
-            mac_str = &mac_buf;
+            @memcpy(&builder.mac_buf, &mac_formatted);
+            builder.has_mac = true;
         }
 
         try entries.append(allocator, .{
             .iface = iface.name,
-            .mac = mac_str,
+            .mac = builder.getMacStr(),
             .family = family_info_result.family,
             .index = family_info_result.index,
             .primary = is_primary,
             .present = true,
             .last_seen = timestamp,
-            .ip_address = ip_str,
-            .prefix_len = prefix,
-            .gateway = gw_str,
+            .ip_address = builder.getIpStr(),
+            .prefix_len = if (is_primary) dhcp_lease.address.prefix_len else null,
+            .gateway = builder.getGwStr(),
         });
     }
 
-    // Build resolver config
-    var dns_strs: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer dns_strs.deinit(allocator);
+    // Build resolver config - use fixed buffers for DNS server strings
+    var dns_bufs: [8][16]u8 = undefined;
+    var dns_strs: [8][]const u8 = undefined;
+    var dns_count: usize = 0;
 
     for (dhcp_lease.resolver.dns_servers) |server| {
-        var buf: [16]u8 = undefined;
-        const s = std.fmt.bufPrint(&buf, "{}.{}.{}.{}", .{
+        if (dns_count >= 8) break;
+        const result = std.fmt.bufPrint(&dns_bufs[dns_count], "{}.{}.{}.{}", .{
             server[0], server[1], server[2], server[3],
-        }) catch continue;
-        try dns_strs.append(allocator, s);
+        });
+        if (result) |s| {
+            dns_strs[dns_count] = s;
+            dns_count += 1;
+        } else |_| {}
     }
 
     const resolver_config = PersistedResolverConfig{
-        .dns_servers = dns_strs.items,
+        .dns_servers = dns_strs[0..dns_count],
         .domain_name = dhcp_lease.resolver.domain_name,
         .search_list = dhcp_lease.resolver.search_list,
     };
@@ -1260,13 +1293,18 @@ fn persistInterfaces(
     };
     defer file.close();
 
-    var buf: [8192]u8 = undefined;
-    var writer: std.io.Writer = .fixed(&buf);
-    std.json.Stringify.value(state, .{ .whitespace = .indent_2 }, &writer) catch |err| {
+    // Write JSON to fixed buffer then to file
+    var buf: [16384]u8 = undefined;
+    var writer = std.io.Writer.fixed(&buf);
+    var json_stream = std.json.Stringify{
+        .writer = &writer,
+        .options = .{ .whitespace = .indent_2 },
+    };
+    json_stream.write(state) catch |err| {
         std.log.err("failed to serialize network state: {s}", .{@errorName(err)});
         return err;
     };
-    file.writeAll(writer.buffered()) catch |err| {
+    file.writeAll(buf[0..writer.end]) catch |err| {
         std.log.err("failed to write {s}: {s}", .{ path, @errorName(err) });
         return err;
     };
@@ -1476,4 +1514,452 @@ test "familyInfo lo" {
     const info = familyInfo("lo");
     try std.testing.expectEqualStrings("protected", info.family);
     try std.testing.expect(info.index == null);
+}
+
+// Additional tests for parseIpv4Address
+test "parseIpv4Address valid" {
+    const addr = try parseIpv4Address("192.168.1.1");
+    try std.testing.expectEqual([4]u8{ 192, 168, 1, 1 }, addr);
+}
+
+test "parseIpv4Address zeros" {
+    const addr = try parseIpv4Address("0.0.0.0");
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 0 }, addr);
+}
+
+test "parseIpv4Address max values" {
+    const addr = try parseIpv4Address("255.255.255.255");
+    try std.testing.expectEqual([4]u8{ 255, 255, 255, 255 }, addr);
+}
+
+test "parseIpv4Address too few octets" {
+    try std.testing.expectError(error.InvalidAddress, parseIpv4Address("192.168.1"));
+}
+
+test "parseIpv4Address too many octets" {
+    try std.testing.expectError(error.InvalidAddress, parseIpv4Address("192.168.1.1.1"));
+}
+
+test "parseIpv4Address non-numeric" {
+    try std.testing.expectError(error.InvalidAddress, parseIpv4Address("192.168.a.1"));
+}
+
+test "parseIpv4Address out of range" {
+    try std.testing.expectError(error.InvalidAddress, parseIpv4Address("192.168.256.1"));
+}
+
+test "parseIpv4Address empty" {
+    try std.testing.expectError(error.InvalidAddress, parseIpv4Address(""));
+}
+
+test "parseIpv4Address single octet" {
+    try std.testing.expectError(error.InvalidAddress, parseIpv4Address("192"));
+}
+
+// Additional tests for macToString
+test "macToString all zeros" {
+    const mac = [6]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const result = macToString(mac);
+    try std.testing.expectEqualStrings("00:00:00:00:00:00", &result);
+}
+
+test "macToString mixed case hex" {
+    const mac = [6]u8{ 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
+    const result = macToString(mac);
+    try std.testing.expectEqualStrings("0a:0b:0c:0d:0e:0f", &result);
+}
+
+// Additional tests for subnetMaskToPrefix
+test "subnetMaskToPrefix zero" {
+    try std.testing.expectEqual(@as(u8, 0), subnetMaskToPrefix(.{ 0, 0, 0, 0 }));
+}
+
+test "subnetMaskToPrefix 28" {
+    try std.testing.expectEqual(@as(u8, 28), subnetMaskToPrefix(.{ 255, 255, 255, 240 }));
+}
+
+test "subnetMaskToPrefix 20" {
+    try std.testing.expectEqual(@as(u8, 20), subnetMaskToPrefix(.{ 255, 255, 240, 0 }));
+}
+
+// Tests for InterfaceInfo.getMacString
+test "InterfaceInfo.getMacString with valid MAC" {
+    const info = InterfaceInfo{
+        .name = "eth0",
+        .mac = [6]u8{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55 },
+        .ifindex = 1,
+        .is_virtual = false,
+    };
+    const result = info.getMacString();
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("00:11:22:33:44:55", &result.?);
+}
+
+test "InterfaceInfo.getMacString with null MAC" {
+    const info = InterfaceInfo{
+        .name = "lo",
+        .mac = null,
+        .ifindex = 1,
+        .is_virtual = false,
+    };
+    const result = info.getMacString();
+    try std.testing.expect(result == null);
+}
+
+// Tests for ResolverConfig.deinit
+test "ResolverConfig.deinit frees memory" {
+    const allocator = std.testing.allocator;
+
+    var dns_servers = try allocator.alloc([4]u8, 2);
+    dns_servers[0] = [4]u8{ 8, 8, 8, 8 };
+    dns_servers[1] = [4]u8{ 8, 8, 4, 4 };
+
+    const domain = try allocator.dupe(u8, "example.com");
+
+    var search_list = try allocator.alloc([]const u8, 2);
+    search_list[0] = try allocator.dupe(u8, "example.com");
+    search_list[1] = try allocator.dupe(u8, "test.com");
+
+    var config = ResolverConfig{
+        .dns_servers = dns_servers,
+        .domain_name = domain,
+        .search_list = search_list,
+    };
+
+    config.deinit(allocator);
+}
+
+test "ResolverConfig.deinit with empty fields" {
+    const allocator = std.testing.allocator;
+
+    var config = ResolverConfig{
+        .dns_servers = &.{},
+        .domain_name = null,
+        .search_list = &.{},
+    };
+
+    config.deinit(allocator);
+}
+
+// Tests for DhcpLease.deinit
+test "DhcpLease.deinit frees resolver" {
+    const allocator = std.testing.allocator;
+
+    var dns_servers = try allocator.alloc([4]u8, 1);
+    dns_servers[0] = [4]u8{ 8, 8, 8, 8 };
+
+    var lease = DhcpLease{
+        .address = AddressConfig{
+            .address = [4]u8{ 10, 0, 0, 1 },
+            .prefix_len = 24,
+            .gateway = [4]u8{ 10, 0, 0, 254 },
+        },
+        .resolver = ResolverConfig{
+            .dns_servers = dns_servers,
+            .domain_name = null,
+            .search_list = &.{},
+        },
+    };
+
+    lease.deinit(allocator);
+}
+
+// Tests for getPersistedPrimaryMac
+test "getPersistedPrimaryMac with primary" {
+    const state = PersistedNetworkState{
+        .interfaces = &.{
+            InterfaceEntry{
+                .iface = "eth0",
+                .mac = "00:11:22:33:44:55",
+                .family = "eth",
+                .index = 0,
+                .primary = true,
+                .present = true,
+                .last_seen = "0",
+            },
+        },
+        .resolver = null,
+    };
+    const mac = getPersistedPrimaryMac(&state);
+    try std.testing.expect(mac != null);
+    try std.testing.expectEqualStrings("00:11:22:33:44:55", mac.?);
+}
+
+test "getPersistedPrimaryMac without primary" {
+    const state = PersistedNetworkState{
+        .interfaces = &.{
+            InterfaceEntry{
+                .iface = "eth0",
+                .mac = "00:11:22:33:44:55",
+                .family = "eth",
+                .index = 0,
+                .primary = false,
+                .present = true,
+                .last_seen = "0",
+            },
+        },
+        .resolver = null,
+    };
+    const mac = getPersistedPrimaryMac(&state);
+    try std.testing.expect(mac == null);
+}
+
+test "getPersistedPrimaryMac with primary but null MAC" {
+    const state = PersistedNetworkState{
+        .interfaces = &.{
+            InterfaceEntry{
+                .iface = "lo",
+                .mac = null,
+                .family = "protected",
+                .index = null,
+                .primary = true,
+                .present = true,
+                .last_seen = "0",
+            },
+        },
+        .resolver = null,
+    };
+    const mac = getPersistedPrimaryMac(&state);
+    try std.testing.expect(mac == null);
+}
+
+test "getPersistedPrimaryMac with empty interfaces" {
+    const state = PersistedNetworkState{
+        .interfaces = &.{},
+        .resolver = null,
+    };
+    const mac = getPersistedPrimaryMac(&state);
+    try std.testing.expect(mac == null);
+}
+
+// Tests for getPersistedPrimaryConfig
+test "getPersistedPrimaryConfig with complete config" {
+    const state = PersistedNetworkState{
+        .interfaces = &.{
+            InterfaceEntry{
+                .iface = "eth0",
+                .mac = "00:11:22:33:44:55",
+                .family = "eth",
+                .index = 0,
+                .primary = true,
+                .present = true,
+                .last_seen = "0",
+                .ip_address = "10.0.0.1",
+                .prefix_len = 24,
+                .gateway = "10.0.0.254",
+            },
+        },
+        .resolver = null,
+    };
+    const config = getPersistedPrimaryConfig(&state);
+    try std.testing.expect(config != null);
+    try std.testing.expectEqualStrings("10.0.0.1", config.?.ip_address.?);
+    try std.testing.expectEqual(@as(u8, 24), config.?.prefix_len.?);
+    try std.testing.expectEqualStrings("10.0.0.254", config.?.gateway.?);
+}
+
+test "getPersistedPrimaryConfig with missing ip_address" {
+    const state = PersistedNetworkState{
+        .interfaces = &.{
+            InterfaceEntry{
+                .iface = "eth0",
+                .mac = "00:11:22:33:44:55",
+                .family = "eth",
+                .index = 0,
+                .primary = true,
+                .present = true,
+                .last_seen = "0",
+                .ip_address = null,
+                .prefix_len = 24,
+                .gateway = "10.0.0.254",
+            },
+        },
+        .resolver = null,
+    };
+    const config = getPersistedPrimaryConfig(&state);
+    try std.testing.expect(config == null);
+}
+
+test "getPersistedPrimaryConfig with missing prefix_len" {
+    const state = PersistedNetworkState{
+        .interfaces = &.{
+            InterfaceEntry{
+                .iface = "eth0",
+                .mac = "00:11:22:33:44:55",
+                .family = "eth",
+                .index = 0,
+                .primary = true,
+                .present = true,
+                .last_seen = "0",
+                .ip_address = "10.0.0.1",
+                .prefix_len = null,
+                .gateway = "10.0.0.254",
+            },
+        },
+        .resolver = null,
+    };
+    const config = getPersistedPrimaryConfig(&state);
+    try std.testing.expect(config == null);
+}
+
+test "getPersistedPrimaryConfig with no primary" {
+    const state = PersistedNetworkState{
+        .interfaces = &.{
+            InterfaceEntry{
+                .iface = "eth0",
+                .mac = "00:11:22:33:44:55",
+                .family = "eth",
+                .index = 0,
+                .primary = false,
+                .present = true,
+                .last_seen = "0",
+                .ip_address = "10.0.0.1",
+                .prefix_len = 24,
+                .gateway = "10.0.0.254",
+            },
+        },
+        .resolver = null,
+    };
+    const config = getPersistedPrimaryConfig(&state);
+    try std.testing.expect(config == null);
+}
+
+// Tests for nextFamilyIndex
+test "nextFamilyIndex with empty interfaces" {
+    var map = std.StringHashMap(u32).init(std.testing.allocator);
+    defer map.deinit();
+    const interfaces: []const InterfaceInfo = &.{};
+    const next = nextFamilyIndex(interfaces, "eth", &map);
+    try std.testing.expectEqual(@as(u32, 1), next);
+}
+
+test "nextFamilyIndex with existing interfaces" {
+    var map = std.StringHashMap(u32).init(std.testing.allocator);
+    defer map.deinit();
+    const interfaces: []const InterfaceInfo = &.{
+        InterfaceInfo{ .name = "eth0", .mac = null, .ifindex = 1, .is_virtual = false },
+        InterfaceInfo{ .name = "eth2", .mac = null, .ifindex = 3, .is_virtual = false },
+    };
+    const next = nextFamilyIndex(interfaces, "eth", &map);
+    try std.testing.expectEqual(@as(u32, 3), next);
+}
+
+test "nextFamilyIndex with persisted max higher" {
+    var map = std.StringHashMap(u32).init(std.testing.allocator);
+    defer map.deinit();
+    try map.put("eth", 5);
+    const interfaces: []const InterfaceInfo = &.{
+        InterfaceInfo{ .name = "eth0", .mac = null, .ifindex = 1, .is_virtual = false },
+    };
+    const next = nextFamilyIndex(interfaces, "eth", &map);
+    try std.testing.expectEqual(@as(u32, 6), next);
+}
+
+test "nextFamilyIndex with persisted max lower" {
+    var map = std.StringHashMap(u32).init(std.testing.allocator);
+    defer map.deinit();
+    try map.put("eth", 1);
+    const interfaces: []const InterfaceInfo = &.{
+        InterfaceInfo{ .name = "eth5", .mac = null, .ifindex = 6, .is_virtual = false },
+    };
+    const next = nextFamilyIndex(interfaces, "eth", &map);
+    try std.testing.expectEqual(@as(u32, 6), next);
+}
+
+test "nextFamilyIndex ignores interfaces with different prefix" {
+    var map = std.StringHashMap(u32).init(std.testing.allocator);
+    defer map.deinit();
+    const interfaces: []const InterfaceInfo = &.{
+        InterfaceInfo{ .name = "eth5", .mac = null, .ifindex = 6, .is_virtual = false },
+    };
+    // eth5 should not affect ens family; with no ens interfaces, max is 0
+    const next = nextFamilyIndex(interfaces, "ens", &map);
+    const max: u32 = 0;
+    try std.testing.expectEqual(max + 1, next);
+}
+
+// Tests for parseFamily edge cases
+test "parseFamily ens5" {
+    const family = parseFamily("ens5");
+    switch (family) {
+        .simple => |s| {
+            try std.testing.expectEqualStrings("ens", s.prefix);
+            try std.testing.expectEqual(@as(u32, 5), s.index);
+        },
+        .protected => try std.testing.expect(false),
+    }
+}
+
+test "parseFamily empty string" {
+    const family = parseFamily("");
+    switch (family) {
+        .simple => try std.testing.expect(false),
+        .protected => {},
+    }
+}
+
+test "parseFamily digits only" {
+    const family = parseFamily("123");
+    switch (family) {
+        .simple => |s| {
+            try std.testing.expectEqualStrings("", s.prefix);
+            try std.testing.expectEqual(@as(u32, 123), s.index);
+        },
+        .protected => try std.testing.expect(false),
+    }
+}
+
+// Tests for desiredNameForPrimary edge cases
+test "desiredNameForPrimary ens5" {
+    const desired = desiredNameForPrimary("ens5");
+    try std.testing.expect(desired == null);
+}
+
+// Tests for familyInfo edge cases
+test "familyInfo ens5" {
+    const info = familyInfo("ens5");
+    try std.testing.expectEqualStrings("ens", info.family);
+    try std.testing.expectEqual(@as(?u32, 5), info.index);
+}
+
+test "familyInfo empty string" {
+    const info = familyInfo("");
+    try std.testing.expectEqualStrings("protected", info.family);
+    try std.testing.expect(info.index == null);
+}
+
+// Tests for ParsedNetworkState
+test "ParsedNetworkState.value with null parsed" {
+    const state = ParsedNetworkState{
+        .parsed = null,
+        .contents = null,
+        .allocator = std.testing.allocator,
+    };
+    const value = state.value();
+    try std.testing.expectEqual(@as(usize, 0), value.interfaces.len);
+    try std.testing.expect(value.resolver == null);
+}
+
+test "ParsedNetworkState.deinit with null" {
+    var state = ParsedNetworkState{
+        .parsed = null,
+        .contents = null,
+        .allocator = std.testing.allocator,
+    };
+    state.deinit();
+    try std.testing.expect(state.parsed == null);
+    try std.testing.expect(state.contents == null);
+}
+
+test "ParsedNetworkState.deinit with contents only" {
+    const allocator = std.testing.allocator;
+    const contents = try allocator.dupe(u8, "test contents");
+
+    var state = ParsedNetworkState{
+        .parsed = null,
+        .contents = contents,
+        .allocator = allocator,
+    };
+    state.deinit();
+    try std.testing.expect(state.contents == null);
 }
