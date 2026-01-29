@@ -84,9 +84,9 @@ $(DIR_OUT)/zig-out/bin/init: \
 		$(shell find src -type f -name '*.zig') \
 		| $(DIR_OUT)/zig-cache/
 	@docker run --rm -t \
-		-v $(DIR_ROOT)/..:/projects \
-		-v $(CURDIR)/$(DIR_OUT)/zig-cache:/projects/$(PROJECT)/.zig-cache \
-		-w /projects/$(PROJECT) \
+		-v $(DIR_ROOT):/code \
+		-v $(CURDIR)/$(DIR_OUT)/zig-cache:/code/.zig-cache \
+		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "zig build -Doptimize=ReleaseSafe --prefix $(DIR_OUT)/zig-out"
 
 $(DIR_OUT)/zig-out-debug/bin/init: \
@@ -95,9 +95,9 @@ $(DIR_OUT)/zig-out-debug/bin/init: \
 		$(shell find src -type f -name '*.zig') \
 		| $(DIR_OUT)/zig-cache/
 	@docker run --rm -t \
-		-v $(DIR_ROOT)/..:/projects \
-		-v $(CURDIR)/$(DIR_OUT)/zig-cache:/projects/$(PROJECT)/.zig-cache \
-		-w /projects/$(PROJECT) \
+		-v $(DIR_ROOT):/code \
+		-v $(CURDIR)/$(DIR_OUT)/zig-cache:/code/.zig-cache \
+		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "zig build --prefix $(DIR_OUT)/zig-out-debug"
 
 build: $(DIR_OUT)/zig-out/bin/init
@@ -121,9 +121,9 @@ $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz: \
 
 test: $(HAS_IMAGE_LOCAL) | $(DIR_OUT)/zig-cache/
 	@docker run --rm -t \
-		-v $(DIR_ROOT)/..:/projects \
-		-v $(CURDIR)/$(DIR_OUT)/zig-cache:/projects/$(PROJECT)/.zig-cache \
-		-w /projects/$(PROJECT) \
+		-v $(DIR_ROOT):/code \
+		-v $(CURDIR)/$(DIR_OUT)/zig-cache:/code/.zig-cache \
+		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "zig build test"
 
 DOCKER_GID = $(shell getent group docker | cut -d: -f3)
@@ -135,14 +135,14 @@ test-integration: \
 		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
 		$(DIR_OUT)/vmlinuz
 	@docker run --rm -t \
-		-v $(DIR_ROOT)/..:/projects \
+		-v $(DIR_ROOT):/code \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		-e INIT_BINARY=$(DIR_OUT)/zig-out-debug/bin/init \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
 		-e KEEP_LOGS=$(KEEP_LOGS) \
-		-w /projects/$(PROJECT) \
+		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "./tests/integration/run.sh"
 
 test-integration-kvm: \
@@ -151,7 +151,7 @@ test-integration-kvm: \
 		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
 		$(DIR_OUT)/vmlinuz
 	@docker run --rm -t \
-		-v $(DIR_ROOT)/..:/projects \
+		-v $(DIR_ROOT):/code \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		--group-add $(KVM_GID) \
@@ -160,7 +160,7 @@ test-integration-kvm: \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
 		-e KEEP_LOGS=$(KEEP_LOGS) \
-		-w /projects/$(PROJECT) \
+		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "./tests/integration/run.sh"
 
 release: $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz

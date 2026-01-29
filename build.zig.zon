@@ -3,17 +3,20 @@
     .version = "0.0.0",
     .dependencies = .{
         .aws_sdk = .{
-            .path = "../aws-sdk-for-zig",
+            .url = "git+https://github.com/cloudboss/aws-sdk-for-zig#32ed43d7c1ec41a16dd9704eb0271c4db77eae1c",
+            .hash = "aws_sdk-0.0.1-UTo_Elg9CgBl19OlmoECWzEAIoU0RVD1SEkogvRkP9w8",
         },
         .dhcpz = .{
-            .path = "../dhcpz",
+            .url = "git+https://github.com/cloudboss/dhcpz#01c0d2bb98427c77dc8c0cac2efe0553bf97fca7",
+            .hash = "dhcpz-0.1.0-bVngA2F3AACD-8NjwKzcwX4qSwRnp7gr6EU5eKTvYazG",
         },
         .k8s_expand = .{
             .url = "git+https://github.com/cloudboss/k8s-expandz#6e2d98d06810aa348aa50e4d89905babbbda7ca0",
             .hash = "k8s_expand-0.1.0-rv03TFp5AAD_p-llgyd3zv70VBNeahFuy47auNhFsh7h",
         },
         .nlz = .{
-            .path = "../nlz",
+            .url = "git+https://github.com/cloudboss/nlz#1726940b7627dad3386dde519bd725264f7adede",
+            .hash = "nlz-0.1.0-mbEQKzyQAQBVNb8u-R1Bs5A2bKtlp2_KML_ofCPI86NB",
         },
     },
     .fingerprint = 0xb2e6bbb659318356,

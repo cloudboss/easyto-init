@@ -179,7 +179,14 @@ pub const Supervisor = struct {
         argv[total_len] = null;
 
         // Build environment: inherit from parent (kernel cmdline vars) + vmspec.env
-        const envp = try self.buildEnvironment();
+        const env_result = try self.buildEnvironment();
+        const envp = env_result.envp;
+        const env_strings = env_result.env_strings;
+        defer {
+            for (env_strings) |s| self.allocator.free(s);
+            self.allocator.free(env_strings);
+            self.allocator.free(envp);
+        }
 
         const pid_result = linux.fork();
         const pid_err = posix.errno(pid_result);
@@ -230,9 +237,14 @@ pub const Supervisor = struct {
         linux.exit(1);
     }
 
+    const EnvResult = struct {
+        envp: []?[*:0]const u8,
+        env_strings: [][:0]const u8,
+    };
+
     /// Build environment by merging parent environment with vmspec.env.
     /// vmspec.env values take precedence over parent environment.
-    fn buildEnvironment(self: *Supervisor) ![]?[*:0]const u8 {
+    fn buildEnvironment(self: *Supervisor) !EnvResult {
         // Use a map to merge environments (vmspec.env overrides parent)
         var env_map = std.StringHashMap([]const u8).init(self.allocator);
         defer env_map.deinit();
@@ -258,7 +270,9 @@ pub const Supervisor = struct {
         // Build the envp array
         const env_count = env_map.count();
         var envp = try self.allocator.alloc(?[*:0]const u8, env_count + 1);
+        errdefer self.allocator.free(envp);
         var env_strings = try self.allocator.alloc([:0]const u8, env_count);
+        errdefer self.allocator.free(env_strings);
 
         var idx: usize = 0;
         var iter = env_map.iterator();
@@ -271,7 +285,7 @@ pub const Supervisor = struct {
         }
         envp[env_count] = null;
 
-        return envp;
+        return .{ .envp = envp, .env_strings = env_strings };
     }
 };
 

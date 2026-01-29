@@ -130,6 +130,7 @@ pub fn run(allocator: Allocator) !void {
 
     // Expand variables in command and args
     const expanded = try expandCommandAndArgs(allocator, vmspec.full_command(), vmspec.command_args(), vmspec.env);
+    defer expanded.deinit(allocator);
     const command = expanded.command;
     const args = expanded.args;
     const uid = vmspec.security.@"run-as-user-id" orelse 0;
@@ -564,6 +565,15 @@ fn addEnvVar(allocator: Allocator, vmspec: *VmSpec, name: []const u8, value: []c
 const ExpandedCommand = struct {
     command: []const []const u8,
     args: ?[]const []const u8,
+
+    fn deinit(self: ExpandedCommand, allocator: Allocator) void {
+        for (self.command) |s| allocator.free(s);
+        allocator.free(self.command);
+        if (self.args) |args| {
+            for (args) |s| allocator.free(s);
+            allocator.free(args);
+        }
+    }
 };
 
 fn expandCommandAndArgs(
