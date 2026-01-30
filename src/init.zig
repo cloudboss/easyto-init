@@ -4,10 +4,13 @@ const mount = std.os.linux.mount;
 const ms = std.os.linux.MS;
 const Mode = std.fs.File.Mode;
 const Allocator = std.mem.Allocator;
+const linux = std.os.linux;
+const posix = std.posix;
 
 const aws_sdk = @import("aws_sdk");
 const k8s_expand = @import("k8s_expand");
 
+const AwsContext = @import("aws/context.zig").AwsContext;
 const constants = @import("constants.zig");
 const container = @import("container.zig");
 const mkdir_p = @import("fs.zig").mkdir_p;
@@ -116,7 +119,10 @@ pub fn run(allocator: Allocator) !void {
     // Resolve env-from sources
     if (vmspec.@"env-from") |env_from| {
         std.log.info("resolving env-from sources", .{});
-        try resolveEnvFrom(allocator, &vmspec, env_from);
+        resolveEnvFrom(allocator, &vmspec, env_from) catch |err| {
+            std.log.err("unable to resolve environment variables from external sources", .{});
+            return err;
+        };
     }
 
     std.log.info("loading kernel modules", .{});
@@ -350,9 +356,6 @@ fn fetchUserData(allocator: Allocator) !?[]const u8 {
     return user_data;
 }
 
-const linux = std.os.linux;
-const posix = std.posix;
-
 fn replaceInit(
     command: []const []const u8,
     args: ?[]const []const u8,
@@ -483,6 +486,9 @@ fn resolveEnvFrom(allocator: Allocator, vmspec: *VmSpec, env_from: []const EnvFr
     var imds_client: ?aws_sdk.imds.ImdsClient = null;
     defer if (imds_client) |*c| c.deinit();
 
+    var aws_ctx = AwsContext.init(allocator);
+    defer aws_ctx.deinit();
+
     const arena_alloc = vmspec.arena.?.allocator();
 
     for (env_from) |source| {
@@ -518,10 +524,57 @@ fn resolveEnvFrom(allocator: Allocator, vmspec: *VmSpec, env_from: []const EnvFr
             std.log.info("resolved env {s} from IMDS path {s}", .{ imds.name, imds.path });
         }
 
-        // S3, SSM, and Secrets Manager will be implemented in Phase 4
-        if (source.s3 != null) {
-            std.log.warn("S3 env-from not yet implemented", .{});
+        if (source.s3) |s3| {
+            const s3_client = aws_ctx.getS3() catch |err| {
+                std.log.err("failed to initialize S3 client: {s}", .{@errorName(err)});
+                if (s3.optional orelse false) continue;
+                return err;
+            };
+
+            if (s3.name) |name| {
+                // Single value with explicit name
+                const value = s3_client.getObject(s3.bucket, s3.key) catch |err| {
+                    if (s3.optional orelse false) {
+                        std.log.info("optional S3 object s3://{s}/{s} not found, skipping", .{ s3.bucket, s3.key });
+                        continue;
+                    }
+                    std.log.err("failed to fetch S3 object s3://{s}/{s}: {s}", .{ s3.bucket, s3.key, @errorName(err) });
+                    return err;
+                };
+                defer allocator.free(value);
+
+                // Trim whitespace from the value
+                const trimmed = std.mem.trim(u8, value, " \t\r\n");
+
+                try addEnvVar(arena_alloc, vmspec, name, trimmed);
+                std.log.info("resolved env {s} from S3 s3://{s}/{s}", .{ name, s3.bucket, s3.key });
+            } else {
+                // JSON map expanded to multiple env vars
+                var env_map = s3_client.getObjectMap(s3.bucket, s3.key) catch |err| {
+                    if (s3.optional orelse false) {
+                        std.log.info("optional S3 object s3://{s}/{s} not found, skipping", .{ s3.bucket, s3.key });
+                        continue;
+                    }
+                    std.log.err("failed to fetch S3 object map s3://{s}/{s}: {s}", .{ s3.bucket, s3.key, @errorName(err) });
+                    return err;
+                };
+                defer {
+                    var it = env_map.iterator();
+                    while (it.next()) |entry| {
+                        allocator.free(entry.key_ptr.*);
+                        allocator.free(entry.value_ptr.*);
+                    }
+                    env_map.deinit();
+                }
+
+                var map_it = env_map.iterator();
+                while (map_it.next()) |entry| {
+                    try addEnvVar(arena_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
+                    std.log.info("resolved env {s} from S3 s3://{s}/{s}", .{ entry.key_ptr.*, s3.bucket, s3.key });
+                }
+            }
         }
+
         if (source.ssm != null) {
             std.log.warn("SSM env-from not yet implemented", .{});
         }

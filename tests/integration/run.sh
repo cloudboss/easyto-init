@@ -262,7 +262,7 @@ run_scenario()
         timeout "${TIMEOUT}" qemu-system-x86_64 \
             -accel kvm -accel tcg \
             -cpu max \
-            -m 512 \
+            -m 1024 \
             -kernel "${KERNEL}" \
             -initrd "${INITRAMFS}" \
             -append "${kernel_cmdline}" \
@@ -281,7 +281,7 @@ run_scenario()
         timeout "${TIMEOUT}" qemu-system-x86_64 \
             -accel kvm -accel tcg \
             -cpu max \
-            -m 512 \
+            -m 1024 \
             -kernel "${KERNEL}" \
             -initrd "${INITRAMFS}" \
             -append "${kernel_cmdline}" \
