@@ -80,8 +80,8 @@ $(DIR_OUT)/target/$(RUST_TARGET)/release/init: \
 		$(shell find src -type f -path '*.rs') \
 		| $(DIR_OUT)/cargo-home/registry/
 	@docker run --rm -t \
-		-v $(DIR_ROOT):/code \
-		-v $(CURDIR)/$(DIR_OUT)/cargo-home/registry:/usr/local/cargo/registry \
+		-v $(DIR_ROOT):/code:z \
+		-v $(CURDIR)/$(DIR_OUT)/cargo-home/registry:/usr/local/cargo/registry:z \
 		-e CARGO_TARGET_DIR=$(DIR_OUT)/target \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -ec "cargo clippy --release --target $(RUST_TARGET) -- -Dwarnings && cargo build -v --target $(RUST_TARGET) --release"
@@ -103,8 +103,8 @@ $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz: \
 
 test: $(HAS_IMAGE_LOCAL) | $(DIR_OUT)/cargo-home/registry/
 	@docker run --rm -t \
-		-v $(DIR_ROOT):/code \
-		-v $(CURDIR)/$(DIR_OUT)/cargo-home/registry:/usr/local/cargo/registry \
+		-v $(DIR_ROOT):/code:z \
+		-v $(CURDIR)/$(DIR_OUT)/cargo-home/registry:/usr/local/cargo/registry:z \
 		-e CARGO_TARGET_DIR=$(DIR_OUT)/target \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -ec "cargo clippy --release --target $(RUST_TARGET) -- -Dwarnings; cargo test -v --release --target $(RUST_TARGET)"
@@ -117,7 +117,7 @@ test-integration: \
 		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
 		$(DIR_OUT)/vmlinuz
 	@docker run --rm -t \
-		-v $(DIR_ROOT):/code \
+		-v $(DIR_ROOT):/code:z \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
@@ -133,7 +133,7 @@ test-integration-kvm: \
 		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
 		$(DIR_OUT)/vmlinuz
 	@docker run --rm -t \
-		-v $(DIR_ROOT):/code \
+		-v $(DIR_ROOT):/code:z \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		--device=/dev/kvm \
