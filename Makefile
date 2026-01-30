@@ -84,7 +84,10 @@ $(DIR_OUT)/target/$(RUST_TARGET)/release/init: \
 		-v $(CURDIR)/$(DIR_OUT)/cargo-home/registry:/usr/local/cargo/registry \
 		-e CARGO_TARGET_DIR=$(DIR_OUT)/target \
 		-w /code \
-		$(CTR_IMAGE_LOCAL) /bin/sh -c "cargo build --target $(RUST_TARGET) --release"
+		$(CTR_IMAGE_LOCAL) /bin/sh -ec " \
+			cargo clippy --release --target $(RUST_TARGET) -- -Dwarnings && \
+			cargo build --release --target $(RUST_TARGET) \
+		"
 
 $(DIR_OUT)/init.tar: \
 		$(DIR_STG_INIT)/$(DIR_ET)/sbin/init \
@@ -107,7 +110,10 @@ test: $(HAS_IMAGE_LOCAL) | $(DIR_OUT)/cargo-home/registry/
 		-v $(CURDIR)/$(DIR_OUT)/cargo-home/registry:/usr/local/cargo/registry \
 		-e CARGO_TARGET_DIR=$(DIR_OUT)/target \
 		-w /code \
-		$(CTR_IMAGE_LOCAL) /bin/sh -ec "cargo clippy -- -Dwarnings; cargo test"
+		$(CTR_IMAGE_LOCAL) /bin/sh -ec " \
+			cargo clippy --release --target $(RUST_TARGET) -- -Dwarnings && \
+			cargo test --release --target $(RUST_TARGET) \
+		"
 
 DOCKER_GID = $(shell getent group docker | cut -d: -f3)
 
