@@ -78,31 +78,18 @@ $(DIR_STG_INIT)/$(DIR_ET)/sbin/init: \
 		$(DIR_OUT)/zig-out/bin/init | $(DIR_STG_INIT)/$(DIR_ET)/sbin/
 	@install -m 0755 $(DIR_OUT)/zig-out/bin/init $(DIR_STG_INIT)/$(DIR_ET)/sbin/init
 
+ZIG_BUILD_FLAGS = --cache-dir $(DIR_OUT)/zig-cache --global-cache-dir $(DIR_OUT)/zig-cache --prefix $(DIR_OUT)/zig-out
+
 $(DIR_OUT)/zig-out/bin/init: \
 		$(HAS_IMAGE_LOCAL) \
 		build.zig \
-		$(shell find src -type f -name '*.zig') \
-		| $(DIR_OUT)/zig-cache/
+		$(shell find src -type f -name '*.zig')
 	@docker run --rm -t \
 		-v $(DIR_ROOT):/code \
-		-v $(CURDIR)/$(DIR_OUT)/zig-cache:/code/.zig-cache \
 		-w /code \
-		$(CTR_IMAGE_LOCAL) /bin/sh -c "zig build -Doptimize=ReleaseSafe --prefix $(DIR_OUT)/zig-out"
-
-$(DIR_OUT)/zig-out-debug/bin/init: \
-		$(HAS_IMAGE_LOCAL) \
-		build.zig \
-		$(shell find src -type f -name '*.zig') \
-		| $(DIR_OUT)/zig-cache/
-	@docker run --rm -t \
-		-v $(DIR_ROOT):/code \
-		-v $(CURDIR)/$(DIR_OUT)/zig-cache:/code/.zig-cache \
-		-w /code \
-		$(CTR_IMAGE_LOCAL) /bin/sh -c "zig build --prefix $(DIR_OUT)/zig-out-debug"
+		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build -Doptimize=ReleaseSafe $(ZIG_BUILD_FLAGS)"
 
 build: $(DIR_OUT)/zig-out/bin/init
-
-build-debug: $(DIR_OUT)/zig-out-debug/bin/init
 
 $(DIR_OUT)/init.tar: \
 		$(DIR_STG_INIT)/$(DIR_ET)/sbin/init \
@@ -119,19 +106,18 @@ $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz: \
 		--xform "s|^|easyto-init-$(VERSION)/|" \
 		-f $(DIR_ROOT)/$(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz init.tar
 
-test: $(HAS_IMAGE_LOCAL) | $(DIR_OUT)/zig-cache/
+test: $(HAS_IMAGE_LOCAL)
 	@docker run --rm -t \
 		-v $(DIR_ROOT):/code \
-		-v $(CURDIR)/$(DIR_OUT)/zig-cache:/code/.zig-cache \
 		-w /code \
-		$(CTR_IMAGE_LOCAL) /bin/sh -c "zig build test"
+		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build test $(ZIG_BUILD_FLAGS)"
 
 DOCKER_GID = $(shell getent group docker | cut -d: -f3)
 KVM_GID = $(shell getent group kvm | cut -d: -f3)
 
 test-integration: \
 		$(HAS_IMAGE_LOCAL) \
-		$(DIR_OUT)/zig-out-debug/bin/init \
+		$(DIR_OUT)/zig-out/bin/init \
 		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
 		$(DIR_OUT)/vmlinuz
 	@docker run --rm -t \
@@ -139,7 +125,7 @@ test-integration: \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		--security-opt label=type:container_runtime_t \
-		-e INIT_BINARY=$(DIR_OUT)/zig-out-debug/bin/init \
+		-e INIT_BINARY=$(DIR_OUT)/zig-out/bin/init \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
@@ -149,7 +135,7 @@ test-integration: \
 
 test-integration-kvm: \
 		$(HAS_IMAGE_LOCAL) \
-		$(DIR_OUT)/zig-out-debug/bin/init \
+		$(DIR_OUT)/zig-out/bin/init \
 		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
 		$(DIR_OUT)/vmlinuz
 	@docker run --rm -t \
@@ -159,7 +145,7 @@ test-integration-kvm: \
 		--group-add $(KVM_GID) \
 		--security-opt label=type:container_runtime_t \
 		--device=/dev/kvm \
-		-e INIT_BINARY=$(DIR_OUT)/zig-out-debug/bin/init \
+		-e INIT_BINARY=$(DIR_OUT)/zig-out/bin/init \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
@@ -172,4 +158,4 @@ release: $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz
 clean:
 	@rm -rf $(DIR_OUT)
 
-.PHONY: build build-debug test test-integration test-integration-kvm release clean
+.PHONY: build test test-integration test-integration-kvm release clean
