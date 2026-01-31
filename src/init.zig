@@ -24,10 +24,15 @@ const EnvFromSource = vmspec_mod.EnvFromSource;
 const NameValue = vmspec_mod.NameValue;
 const Volume = vmspec_mod.Volume;
 const S3VolumeSource = vmspec_mod.S3VolumeSource;
+const SsmVolumeSource = vmspec_mod.SsmVolumeSource;
+
+const s3_mod = @import("aws/s3.zig");
+const ssm_mod = @import("aws/ssm.zig");
 
 const Error = error{
     MountError,
     S3VolumeEmpty,
+    ParameterNotFound,
 };
 
 pub const Mount = struct {
@@ -585,9 +590,57 @@ fn resolveEnvFrom(allocator: Allocator, vmspec: *VmSpec, env_from: []const EnvFr
             }
         }
 
-        if (source.ssm != null) {
-            std.log.warn("SSM env-from not yet implemented", .{});
+        if (source.ssm) |ssm| {
+            const ssm_client = aws_ctx.getSsm() catch |err| {
+                std.log.err("failed to initialize SSM client: {s}", .{@errorName(err)});
+                if (ssm.optional orelse false) continue;
+                return err;
+            };
+
+            if (ssm.name) |name| {
+                // Single value with explicit name
+                const value = ssm_client.getParameter(ssm.path) catch |err| {
+                    if (ssm.optional orelse false) {
+                        std.log.info("optional SSM parameter {s} not found, skipping", .{ssm.path});
+                        continue;
+                    }
+                    std.log.err("failed to fetch SSM parameter {s}: {s}", .{ ssm.path, @errorName(err) });
+                    return err;
+                };
+                defer allocator.free(value);
+
+                // Trim whitespace from the value
+                const trimmed = std.mem.trim(u8, value, " \t\r\n");
+
+                try addEnvVar(arena_alloc, vmspec, name, trimmed);
+                std.log.info("resolved env {s} from SSM parameter {s}", .{ name, ssm.path });
+            } else {
+                // JSON map expanded to multiple env vars
+                var env_map = ssm_client.getParameterMap(ssm.path) catch |err| {
+                    if (ssm.optional orelse false) {
+                        std.log.info("optional SSM parameter {s} not found, skipping", .{ssm.path});
+                        continue;
+                    }
+                    std.log.err("failed to fetch SSM parameter map {s}: {s}", .{ ssm.path, @errorName(err) });
+                    return err;
+                };
+                defer {
+                    var it = env_map.iterator();
+                    while (it.next()) |entry| {
+                        allocator.free(entry.key_ptr.*);
+                        allocator.free(entry.value_ptr.*);
+                    }
+                    env_map.deinit();
+                }
+
+                var map_it = env_map.iterator();
+                while (map_it.next()) |entry| {
+                    try addEnvVar(arena_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
+                    std.log.info("resolved env {s} from SSM parameter {s}", .{ entry.key_ptr.*, ssm.path });
+                }
+            }
         }
+
         if (source.@"secrets-manager" != null) {
             std.log.warn("Secrets Manager env-from not yet implemented", .{});
         }
@@ -647,8 +700,8 @@ fn processVolumes(allocator: Allocator, volumes: []const Volume) !void {
         if (volume.s3) |s3| {
             try handleS3Volume(&aws_ctx, &s3);
         }
-        if (volume.ssm != null) {
-            std.log.warn("SSM volumes not yet implemented", .{});
+        if (volume.ssm) |ssm| {
+            try handleSsmVolume(&aws_ctx, &ssm);
         }
         if (volume.@"secrets-manager" != null) {
             std.log.warn("Secrets Manager volumes not yet implemented", .{});
@@ -657,6 +710,46 @@ fn processVolumes(allocator: Allocator, volumes: []const Volume) !void {
             std.log.warn("EBS volumes not yet implemented", .{});
         }
     }
+}
+
+fn handleSsmVolume(aws_ctx: *AwsContext, volume: *const SsmVolumeSource) !void {
+    const path = volume.path;
+    const destination = volume.mount.destination;
+    const optional = volume.optional orelse false;
+
+    std.log.info("processing SSM volume {s} -> {s}", .{ path, destination });
+
+    const ssm_client = aws_ctx.getSsm() catch |err| {
+        std.log.err("failed to initialize SSM client: {s}", .{@errorName(err)});
+        if (optional) {
+            std.log.info("SSM volume is optional, skipping", .{});
+            return;
+        }
+        return err;
+    };
+
+    const result = ssm_client.downloadPathToDir(path, destination, .{
+        .uid = volume.mount.@"user-id",
+        .gid = volume.mount.@"group-id",
+    }) catch |err| {
+        if (optional) {
+            std.log.info("optional SSM volume {s} failed, skipping: {s}", .{ path, @errorName(err) });
+            return;
+        }
+        std.log.err("failed to download SSM volume {s}: {s}", .{ path, @errorName(err) });
+        return err;
+    };
+
+    if (result.files_written == 0) {
+        if (optional) {
+            std.log.info("no parameters found at {s}, skipping (optional)", .{path});
+            return;
+        }
+        std.log.err("no SSM parameters found at {s}", .{path});
+        return error.ParameterNotFound;
+    }
+
+    std.log.info("SSM volume {s} mounted to {s} ({d} files)", .{ path, destination, result.files_written });
 }
 
 fn handleS3Volume(aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
