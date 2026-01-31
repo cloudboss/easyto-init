@@ -776,3 +776,154 @@ fn expandCommandAndArgs(
         .args = expanded_args,
     };
 }
+
+const testing = std.testing;
+
+test "addEnvVar adds to empty env" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var vmspec = VmSpec{
+        .arena = arena,
+    };
+
+    try addEnvVar(arena.allocator(), &vmspec, "FOO", "bar");
+
+    try testing.expect(vmspec.env != null);
+    try testing.expectEqual(@as(usize, 1), vmspec.env.?.len);
+    try testing.expectEqualStrings("FOO", vmspec.env.?[0].name);
+    try testing.expectEqualStrings("bar", vmspec.env.?[0].value);
+}
+
+test "addEnvVar appends new variable" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var vmspec = VmSpec{
+        .arena = arena,
+    };
+
+    try addEnvVar(arena.allocator(), &vmspec, "FOO", "bar");
+    try addEnvVar(arena.allocator(), &vmspec, "BAZ", "qux");
+
+    try testing.expect(vmspec.env != null);
+    try testing.expectEqual(@as(usize, 2), vmspec.env.?.len);
+    try testing.expectEqualStrings("FOO", vmspec.env.?[0].name);
+    try testing.expectEqualStrings("BAZ", vmspec.env.?[1].name);
+}
+
+test "addEnvVar replaces existing variable" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var vmspec = VmSpec{
+        .arena = arena,
+    };
+
+    try addEnvVar(arena.allocator(), &vmspec, "FOO", "bar");
+    try addEnvVar(arena.allocator(), &vmspec, "FOO", "updated");
+
+    try testing.expect(vmspec.env != null);
+    try testing.expectEqual(@as(usize, 1), vmspec.env.?.len);
+    try testing.expectEqualStrings("FOO", vmspec.env.?[0].name);
+    try testing.expectEqualStrings("updated", vmspec.env.?[0].value);
+}
+
+test "expandCommandAndArgs with no env" {
+    const allocator = testing.allocator;
+
+    var command = [_][]const u8{ "/bin/echo", "hello" };
+    const expanded = try expandCommandAndArgs(allocator, &command, null, null);
+    defer expanded.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 2), expanded.command.len);
+    try testing.expectEqualStrings("/bin/echo", expanded.command[0]);
+    try testing.expectEqualStrings("hello", expanded.command[1]);
+    try testing.expect(expanded.args == null);
+}
+
+test "expandCommandAndArgs expands variables in command" {
+    const allocator = testing.allocator;
+
+    var command = [_][]const u8{ "/bin/echo", "$(MSG)" };
+    var env = [_]NameValue{
+        .{ .name = "MSG", .value = "hello world" },
+    };
+    const expanded = try expandCommandAndArgs(allocator, &command, null, &env);
+    defer expanded.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 2), expanded.command.len);
+    try testing.expectEqualStrings("/bin/echo", expanded.command[0]);
+    try testing.expectEqualStrings("hello world", expanded.command[1]);
+}
+
+test "expandCommandAndArgs expands variables in args" {
+    const allocator = testing.allocator;
+
+    var command = [_][]const u8{"/bin/sh"};
+    var args = [_][]const u8{ "-c", "echo $(MSG)" };
+    var env = [_]NameValue{
+        .{ .name = "MSG", .value = "test" },
+    };
+    const expanded = try expandCommandAndArgs(allocator, &command, &args, &env);
+    defer expanded.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), expanded.command.len);
+    try testing.expectEqualStrings("/bin/sh", expanded.command[0]);
+
+    try testing.expect(expanded.args != null);
+    try testing.expectEqual(@as(usize, 2), expanded.args.?.len);
+    try testing.expectEqualStrings("-c", expanded.args.?[0]);
+    try testing.expectEqualStrings("echo test", expanded.args.?[1]);
+}
+
+test "expandCommandAndArgs with multiple env vars" {
+    const allocator = testing.allocator;
+
+    var command = [_][]const u8{ "$(CMD)", "$(ARG1)", "$(ARG2)" };
+    var env = [_]NameValue{
+        .{ .name = "CMD", .value = "/usr/bin/test" },
+        .{ .name = "ARG1", .value = "first" },
+        .{ .name = "ARG2", .value = "second" },
+    };
+    const expanded = try expandCommandAndArgs(allocator, &command, null, &env);
+    defer expanded.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 3), expanded.command.len);
+    try testing.expectEqualStrings("/usr/bin/test", expanded.command[0]);
+    try testing.expectEqualStrings("first", expanded.command[1]);
+    try testing.expectEqualStrings("second", expanded.command[2]);
+}
+
+test "expandCommandAndArgs preserves literal strings" {
+    const allocator = testing.allocator;
+
+    var command = [_][]const u8{ "/bin/echo", "no variables here" };
+    var env = [_]NameValue{
+        .{ .name = "UNUSED", .value = "value" },
+    };
+    const expanded = try expandCommandAndArgs(allocator, &command, null, &env);
+    defer expanded.deinit(allocator);
+
+    try testing.expectEqualStrings("no variables here", expanded.command[1]);
+}
+
+test "ExpandedCommand.deinit frees command" {
+    const allocator = testing.allocator;
+
+    var command = [_][]const u8{"/bin/echo"};
+    const expanded = try expandCommandAndArgs(allocator, &command, null, null);
+    expanded.deinit(allocator);
+}
+
+test "ExpandedCommand.deinit frees args" {
+    const allocator = testing.allocator;
+
+    var command = [_][]const u8{"/bin/sh"};
+    var args = [_][]const u8{ "-c", "echo hello" };
+    const expanded = try expandCommandAndArgs(allocator, &command, &args, null);
+    expanded.deinit(allocator);
+}
