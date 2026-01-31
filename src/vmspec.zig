@@ -303,12 +303,13 @@ pub const VmSpec = struct {
                 }
             } else if (std.mem.eql(u8, entry.key, "sysctls")) {
                 vmspec.sysctls = try parseNameValueList(arena_alloc, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "volumes")) {
+                vmspec.volumes = try parseVolumesList(arena_alloc, entry.value);
             } else if (std.mem.eql(u8, entry.key, "working-dir")) {
                 if (entry.value.getString()) |s| {
                     vmspec.@"working-dir" = try arena_alloc.dupe(u8, s);
                 }
             }
-            // Note: env-from and volumes require more complex parsing
         }
     }
 
@@ -541,6 +542,296 @@ pub const VmSpec = struct {
         };
     }
 
+    fn parseVolumesList(allocator: Allocator, value: yaml.Value) !?[]Volume {
+        const list = value.getList() orelse return null;
+        var result = try ArrayList(Volume).initCapacity(allocator, list.len);
+        errdefer result.deinit(allocator);
+
+        for (list) |item| {
+            const item_map = item.getMap() orelse continue;
+            var volume = Volume{};
+
+            for (item_map) |entry| {
+                if (std.mem.eql(u8, entry.key, "s3")) {
+                    volume.s3 = try parseS3VolumeSource(allocator, entry.value);
+                } else if (std.mem.eql(u8, entry.key, "ssm")) {
+                    volume.ssm = try parseSsmVolumeSource(allocator, entry.value);
+                } else if (std.mem.eql(u8, entry.key, "secrets-manager")) {
+                    volume.@"secrets-manager" = try parseSecretsManagerVolumeSource(allocator, entry.value);
+                } else if (std.mem.eql(u8, entry.key, "ebs")) {
+                    volume.ebs = try parseEbsVolumeSource(allocator, entry.value);
+                }
+            }
+
+            try result.append(allocator, volume);
+        }
+
+        return try result.toOwnedSlice(allocator);
+    }
+
+    fn parseS3VolumeSource(allocator: Allocator, value: yaml.Value) !?S3VolumeSource {
+        const map = value.getMap() orelse return null;
+        var bucket: ?[]const u8 = null;
+        var key_prefix: ?[]const u8 = null;
+        var optional: ?bool = null;
+        var mount_val: ?Mount = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "bucket")) {
+                bucket = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "key-prefix")) {
+                key_prefix = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "optional")) {
+                if (entry.value.getString()) |s| {
+                    optional = std.mem.eql(u8, s, "true");
+                }
+            } else if (std.mem.eql(u8, entry.key, "mount")) {
+                mount_val = try parseMount(allocator, entry.value);
+            }
+        }
+
+        if (bucket == null or key_prefix == null or mount_val == null) return null;
+
+        return S3VolumeSource{
+            .bucket = try allocator.dupe(u8, bucket.?),
+            .@"key-prefix" = try allocator.dupe(u8, key_prefix.?),
+            .optional = optional,
+            .mount = mount_val.?,
+        };
+    }
+
+    fn parseSsmVolumeSource(allocator: Allocator, value: yaml.Value) !?SsmVolumeSource {
+        const map = value.getMap() orelse return null;
+        var path: ?[]const u8 = null;
+        var optional: ?bool = null;
+        var mount_val: ?Mount = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "path")) {
+                path = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "optional")) {
+                if (entry.value.getString()) |s| {
+                    optional = std.mem.eql(u8, s, "true");
+                }
+            } else if (std.mem.eql(u8, entry.key, "mount")) {
+                mount_val = try parseMount(allocator, entry.value);
+            }
+        }
+
+        if (path == null or mount_val == null) return null;
+
+        return SsmVolumeSource{
+            .path = try allocator.dupe(u8, path.?),
+            .optional = optional,
+            .mount = mount_val.?,
+        };
+    }
+
+    fn parseSecretsManagerVolumeSource(allocator: Allocator, value: yaml.Value) !?SecretsManagerVolumeSource {
+        const map = value.getMap() orelse return null;
+        var secret_id: ?[]const u8 = null;
+        var optional: ?bool = null;
+        var mount_val: ?Mount = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "secret-id")) {
+                secret_id = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "optional")) {
+                if (entry.value.getString()) |s| {
+                    optional = std.mem.eql(u8, s, "true");
+                }
+            } else if (std.mem.eql(u8, entry.key, "mount")) {
+                mount_val = try parseMount(allocator, entry.value);
+            }
+        }
+
+        if (secret_id == null or mount_val == null) return null;
+
+        return SecretsManagerVolumeSource{
+            .@"secret-id" = try allocator.dupe(u8, secret_id.?),
+            .optional = optional,
+            .mount = mount_val.?,
+        };
+    }
+
+    fn parseEbsVolumeSource(allocator: Allocator, value: yaml.Value) !?EbsVolumeSource {
+        const map = value.getMap() orelse return null;
+        var device: ?[]const u8 = null;
+        var fs_type: ?[]const u8 = null;
+        var make_fs: ?bool = null;
+        var mount_val: ?Mount = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "device")) {
+                device = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "fs-type")) {
+                fs_type = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "make-fs")) {
+                if (entry.value.getString()) |s| {
+                    make_fs = std.mem.eql(u8, s, "true");
+                }
+            } else if (std.mem.eql(u8, entry.key, "mount")) {
+                mount_val = try parseMount(allocator, entry.value);
+            }
+        }
+
+        if (device == null or mount_val == null) return null;
+
+        return EbsVolumeSource{
+            .device = try allocator.dupe(u8, device.?),
+            .@"fs-type" = if (fs_type) |f| try allocator.dupe(u8, f) else null,
+            .@"make-fs" = make_fs,
+            .mount = mount_val.?,
+        };
+    }
+
+    fn parseMount(allocator: Allocator, value: yaml.Value) !?Mount {
+        const map = value.getMap() orelse return null;
+        var destination: ?[]const u8 = null;
+        var user_id: ?u32 = null;
+        var group_id: ?u32 = null;
+        var mode: ?[]const u8 = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "destination")) {
+                destination = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "user-id")) {
+                if (entry.value.getString()) |s| {
+                    user_id = std.fmt.parseInt(u32, s, 10) catch null;
+                }
+            } else if (std.mem.eql(u8, entry.key, "group-id")) {
+                if (entry.value.getString()) |s| {
+                    group_id = std.fmt.parseInt(u32, s, 10) catch null;
+                }
+            } else if (std.mem.eql(u8, entry.key, "mode")) {
+                mode = entry.value.getString();
+            }
+        }
+
+        if (destination == null) return null;
+
+        return Mount{
+            .destination = try allocator.dupe(u8, destination.?),
+            .@"user-id" = user_id,
+            .@"group-id" = group_id,
+            .mode = if (mode) |m| try allocator.dupe(u8, m) else null,
+        };
+    }
+
+    fn dupeVolumes(allocator: Allocator, volumes: []const Volume) ![]Volume {
+        var result = try allocator.alloc(Volume, volumes.len);
+        for (volumes, 0..) |vol, i| {
+            result[i] = try dupeVolume(allocator, vol);
+        }
+        return result;
+    }
+
+    fn dupeVolume(allocator: Allocator, vol: Volume) !Volume {
+        return Volume{
+            .s3 = if (vol.s3) |s3| try dupeS3VolumeSource(allocator, s3) else null,
+            .ssm = if (vol.ssm) |ssm| try dupeSsmVolumeSource(allocator, ssm) else null,
+            .@"secrets-manager" = if (vol.@"secrets-manager") |sm| try dupeSecretsManagerVolumeSource(allocator, sm) else null,
+            .ebs = if (vol.ebs) |ebs| try dupeEbsVolumeSource(allocator, ebs) else null,
+        };
+    }
+
+    fn dupeS3VolumeSource(allocator: Allocator, src: S3VolumeSource) !S3VolumeSource {
+        return S3VolumeSource{
+            .bucket = try allocator.dupe(u8, src.bucket),
+            .@"key-prefix" = try allocator.dupe(u8, src.@"key-prefix"),
+            .optional = src.optional,
+            .mount = try dupeMount(allocator, src.mount),
+        };
+    }
+
+    fn dupeSsmVolumeSource(allocator: Allocator, src: SsmVolumeSource) !SsmVolumeSource {
+        return SsmVolumeSource{
+            .path = try allocator.dupe(u8, src.path),
+            .optional = src.optional,
+            .mount = try dupeMount(allocator, src.mount),
+        };
+    }
+
+    fn dupeSecretsManagerVolumeSource(allocator: Allocator, src: SecretsManagerVolumeSource) !SecretsManagerVolumeSource {
+        return SecretsManagerVolumeSource{
+            .@"secret-id" = try allocator.dupe(u8, src.@"secret-id"),
+            .optional = src.optional,
+            .mount = try dupeMount(allocator, src.mount),
+        };
+    }
+
+    fn dupeEbsVolumeSource(allocator: Allocator, src: EbsVolumeSource) !EbsVolumeSource {
+        return EbsVolumeSource{
+            .device = try allocator.dupe(u8, src.device),
+            .@"fs-type" = if (src.@"fs-type") |f| try allocator.dupe(u8, f) else null,
+            .@"make-fs" = src.@"make-fs",
+            .mount = try dupeMount(allocator, src.mount),
+        };
+    }
+
+    fn dupeMount(allocator: Allocator, src: Mount) !Mount {
+        return Mount{
+            .destination = try allocator.dupe(u8, src.destination),
+            .@"user-id" = src.@"user-id",
+            .@"group-id" = src.@"group-id",
+            .mode = if (src.mode) |m| try allocator.dupe(u8, m) else null,
+            .options = if (src.options) |opts| try dupeStringSlice(allocator, opts) else null,
+        };
+    }
+
+    fn dupeEnvFromSources(allocator: Allocator, sources: []const EnvFromSource) ![]EnvFromSource {
+        var result = try allocator.alloc(EnvFromSource, sources.len);
+        for (sources, 0..) |src, i| {
+            result[i] = try dupeEnvFromSource(allocator, src);
+        }
+        return result;
+    }
+
+    fn dupeEnvFromSource(allocator: Allocator, src: EnvFromSource) !EnvFromSource {
+        return EnvFromSource{
+            .imds = if (src.imds) |imds| try dupeImdsEnvSource(allocator, imds) else null,
+            .s3 = if (src.s3) |s3| try dupeS3EnvSource(allocator, s3) else null,
+            .@"secrets-manager" = if (src.@"secrets-manager") |sm| try dupeSecretsManagerEnvSource(allocator, sm) else null,
+            .ssm = if (src.ssm) |ssm| try dupeSsmEnvSource(allocator, ssm) else null,
+        };
+    }
+
+    fn dupeImdsEnvSource(allocator: Allocator, src: ImdsEnvSource) !ImdsEnvSource {
+        return ImdsEnvSource{
+            .name = try allocator.dupe(u8, src.name),
+            .path = try allocator.dupe(u8, src.path),
+            .optional = src.optional,
+        };
+    }
+
+    fn dupeS3EnvSource(allocator: Allocator, src: S3EnvSource) !S3EnvSource {
+        return S3EnvSource{
+            .bucket = try allocator.dupe(u8, src.bucket),
+            .key = try allocator.dupe(u8, src.key),
+            .name = if (src.name) |n| try allocator.dupe(u8, n) else null,
+            .optional = src.optional,
+            .@"base64-encode" = src.@"base64-encode",
+        };
+    }
+
+    fn dupeSecretsManagerEnvSource(allocator: Allocator, src: SecretsManagerEnvSource) !SecretsManagerEnvSource {
+        return SecretsManagerEnvSource{
+            .name = try allocator.dupe(u8, src.name),
+            .@"secret-id" = try allocator.dupe(u8, src.@"secret-id"),
+            .optional = src.optional,
+            .@"base64-encode" = src.@"base64-encode",
+        };
+    }
+
+    fn dupeSsmEnvSource(allocator: Allocator, src: SsmEnvSource) !SsmEnvSource {
+        return SsmEnvSource{
+            .path = try allocator.dupe(u8, src.path),
+            .name = if (src.name) |n| try allocator.dupe(u8, n) else null,
+            .optional = src.optional,
+            .@"base64-encode" = src.@"base64-encode",
+        };
+    }
+
     /// Merge user data into this VmSpec.
     /// Fields from `other` override fields in `self` when present.
     /// Strings are duped into self's arena.
@@ -566,8 +857,8 @@ pub const VmSpec = struct {
         if (other.env) |env| {
             self.env = try mergeNameValues(arena_alloc, self.env, env);
         }
-        if (other.@"env-from" != null) {
-            self.@"env-from" = other.@"env-from";
+        if (other.@"env-from") |env_from| {
+            self.@"env-from" = try dupeEnvFromSources(arena_alloc, env_from);
         }
         if (other.@"init-scripts") |scripts| {
             self.@"init-scripts" = try dupeStringSlice(arena_alloc, scripts);
@@ -585,8 +876,8 @@ pub const VmSpec = struct {
         if (other.sysctls) |sysctls| {
             self.sysctls = try mergeNameValues(arena_alloc, self.sysctls, sysctls);
         }
-        if (other.volumes != null) {
-            self.volumes = other.volumes;
+        if (other.volumes) |volumes| {
+            self.volumes = try dupeVolumes(arena_alloc, volumes);
         }
         if (other.@"working-dir") |wd| {
             self.@"working-dir" = try arena_alloc.dupe(u8, wd);

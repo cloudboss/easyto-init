@@ -13,7 +13,8 @@ const k8s_expand = @import("k8s_expand");
 const AwsContext = @import("aws/context.zig").AwsContext;
 const constants = @import("constants.zig");
 const container = @import("container.zig");
-const mkdir_p = @import("fs.zig").mkdir_p;
+const fs_utils = @import("fs.zig");
+const mkdir_p = fs_utils.mkdir_p;
 const network = @import("network.zig");
 const Supervisor = @import("service.zig").Supervisor;
 const system = @import("system.zig");
@@ -21,9 +22,12 @@ const vmspec_mod = @import("vmspec.zig");
 const VmSpec = vmspec_mod.VmSpec;
 const EnvFromSource = vmspec_mod.EnvFromSource;
 const NameValue = vmspec_mod.NameValue;
+const Volume = vmspec_mod.Volume;
+const S3VolumeSource = vmspec_mod.S3VolumeSource;
 
 const Error = error{
     MountError,
+    S3VolumeEmpty,
 };
 
 pub const Mount = struct {
@@ -130,6 +134,12 @@ pub fn run(allocator: Allocator) !void {
 
     std.log.info("applying sysctls", .{});
     try system.setSysctls(vmspec.sysctls);
+
+    // Process volumes before resolving env-from
+    if (vmspec.volumes) |volumes| {
+        std.log.info("processing volumes", .{});
+        try processVolumes(allocator, volumes);
+    }
 
     std.log.info("running init scripts", .{});
     try system.runInitScripts(vmspec.@"init-scripts", vmspec.env);
@@ -628,6 +638,103 @@ const ExpandedCommand = struct {
         }
     }
 };
+
+fn processVolumes(allocator: Allocator, volumes: []const Volume) !void {
+    var aws_ctx = AwsContext.init(allocator);
+    defer aws_ctx.deinit();
+
+    for (volumes) |volume| {
+        if (volume.s3) |s3| {
+            try handleS3Volume(&aws_ctx, &s3);
+        }
+        if (volume.ssm != null) {
+            std.log.warn("SSM volumes not yet implemented", .{});
+        }
+        if (volume.@"secrets-manager" != null) {
+            std.log.warn("Secrets Manager volumes not yet implemented", .{});
+        }
+        if (volume.ebs != null) {
+            std.log.warn("EBS volumes not yet implemented", .{});
+        }
+    }
+}
+
+fn handleS3Volume(aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
+
+    const s3_url_prefix = "s3://";
+    const bucket = volume.bucket;
+    const key_prefix = volume.@"key-prefix";
+    const destination = volume.mount.destination;
+    const uid = volume.mount.@"user-id";
+    const gid = volume.mount.@"group-id";
+    const optional = volume.optional orelse false;
+
+    std.log.info("processing S3 volume {s}{s}/{s} -> {s}", .{ s3_url_prefix, bucket, key_prefix, destination });
+
+    const s3_client = aws_ctx.getS3() catch |err| {
+        std.log.err("failed to initialize S3 client: {s}", .{@errorName(err)});
+        if (optional) {
+            std.log.info("S3 volume is optional, skipping", .{});
+            return;
+        }
+        return err;
+    };
+
+    // List all objects with the prefix
+    const objects = s3_client.listObjects(bucket, key_prefix) catch |err| {
+        if (optional) {
+            std.log.info("optional S3 volume {s}{s}/{s} failed, skipping: {s}", .{ s3_url_prefix, bucket, key_prefix, @errorName(err) });
+            return;
+        }
+        std.log.err("failed to list S3 objects in {s}{s}/{s}: {s}", .{ s3_url_prefix, bucket, key_prefix, @errorName(err) });
+        return err;
+    };
+    defer {
+        for (objects) |*obj| {
+            var o = obj.*;
+            o.deinit(aws_ctx.allocator);
+        }
+        aws_ctx.allocator.free(objects);
+    }
+
+    if (objects.len == 0) {
+        if (optional) {
+            std.log.info("no objects found in {s}{s}/{s}, skipping (optional)", .{ s3_url_prefix, bucket, key_prefix });
+            return;
+        }
+        std.log.err("no S3 objects found at {s}{s}/{s}", .{ s3_url_prefix, bucket, key_prefix });
+        return error.S3VolumeEmpty;
+    }
+
+    // Download and write each object
+    for (objects) |obj| {
+        std.log.debug("downloading s3://{s}/{s}", .{ obj.bucket, obj.key });
+
+        const content = s3_client.getObject(obj.bucket, obj.key) catch |err| {
+            std.log.err("failed to download s3://{s}/{s}: {s}", .{ obj.bucket, obj.key, @errorName(err) });
+            return err;
+        };
+        defer aws_ctx.allocator.free(content);
+
+        // Build destination path
+        const dest_path = fs_utils.joinPath(aws_ctx.allocator, destination, obj.path_suffix) catch |err| {
+            std.log.err("failed to build destination path: {s}", .{@errorName(err)});
+            return err;
+        };
+        defer aws_ctx.allocator.free(dest_path);
+
+        std.log.debug("writing {s} ({d} bytes)", .{ dest_path, content.len });
+
+        // Write file with appropriate permissions
+        // Non-secret files: dirs 0755, files 0644
+        fs_utils.writeFile(dest_path, content, 0o644, 0o755, uid, gid) catch |err| {
+            std.log.err("failed to write {s}: {s}", .{ dest_path, @errorName(err) });
+            return err;
+        };
+    }
+
+    std.log.info("S3 volume {s}{s}/{s} mounted to {s} ({d} files)", .{ s3_url_prefix, bucket, key_prefix, destination, objects.len });
+}
 
 fn expandCommandAndArgs(
     allocator: Allocator,

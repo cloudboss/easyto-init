@@ -135,7 +135,7 @@ pub const S3Client = struct {
         return map;
     }
 
-    /// List objects with a given prefix.
+    /// List objects with a given prefix, handling pagination.
     pub fn listObjects(self: *Self, bucket: []const u8, prefix: []const u8) ![]S3Object {
         scoped_log.debug("ListObjects s3://{s}/{s}", .{ bucket, prefix });
 
@@ -151,6 +151,7 @@ pub const S3Client = struct {
         }
 
         var continuation_token: ?[]const u8 = null;
+        defer if (continuation_token) |ct| self.allocator.free(ct);
 
         while (true) {
             const result = aws_sdk.Request(services.s3.list_objects_v2).call(.{
@@ -195,7 +196,6 @@ pub const S3Client = struct {
             break;
         }
 
-        if (continuation_token) |ct| self.allocator.free(ct);
         return try objects.toOwnedSlice(self.allocator);
     }
 };
