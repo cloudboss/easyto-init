@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const aws_s3 = @import("aws/s3.zig");
 const backoff = @import("backoff.zig");
 const container = @import("container.zig");
 const fs = @import("fs.zig");
@@ -16,6 +17,7 @@ const testing = std.testing;
 
 test {
     testing.refAllDecls(@This());
+    testing.refAllDecls(aws_s3);
     testing.refAllDecls(backoff);
     testing.refAllDecls(container);
     testing.refAllDecls(fs);
