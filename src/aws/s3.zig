@@ -7,6 +7,8 @@ const aws_sdk = @import("aws_sdk");
 
 const scoped_log = std.log.scoped(.aws_s3);
 
+const fs_utils = @import("../fs.zig");
+
 pub const S3Error = error{
     /// Object not found in S3
     ObjectNotFound,
@@ -138,6 +140,63 @@ pub const S3Client = struct {
 
         return try objects.toOwnedSlice(self.allocator);
     }
+
+    /// Download all objects matching a prefix to a destination directory.
+    /// For directory downloads (multiple files), each object's path_suffix determines
+    /// its location under destination. For single file downloads (prefix matches exact key),
+    /// the file is written directly to destination.
+    pub fn downloadPrefixToDir(
+        self: *Self,
+        bucket: []const u8,
+        prefix: []const u8,
+        destination: []const u8,
+        options: DownloadOptions,
+    ) !DownloadResult {
+        scoped_log.debug("downloadPrefixToDir s3://{s}/{s} -> {s}", .{ bucket, prefix, destination });
+
+        const objects = try self.listObjects(bucket, prefix);
+        defer {
+            for (objects) |*obj| {
+                var o = obj.*;
+                o.deinit(self.allocator);
+            }
+            self.allocator.free(objects);
+        }
+
+        for (objects) |obj| {
+            scoped_log.debug("downloading s3://{s}/{s}", .{ obj.bucket, obj.key });
+
+            const content = try self.getObject(obj.bucket, obj.key);
+            defer self.allocator.free(content);
+
+            // Build destination path: join destination with path_suffix.
+            // When path_suffix is empty (single file case), destination is the file path.
+            const dest_path = try fs_utils.joinPath(self.allocator, destination, obj.path_suffix);
+            defer self.allocator.free(dest_path);
+
+            scoped_log.debug("writing {s} ({d} bytes)", .{ dest_path, content.len });
+
+            fs_utils.writeFile(dest_path, content, options.file_mode, options.dir_mode, options.uid, options.gid) catch |err| {
+                scoped_log.err("failed to write {s}: {s}", .{ dest_path, @errorName(err) });
+                return err;
+            };
+        }
+
+        return DownloadResult{ .files_written = objects.len };
+    }
+};
+
+/// Options for downloading S3 objects to the filesystem.
+pub const DownloadOptions = struct {
+    file_mode: std.fs.File.Mode = 0o644,
+    dir_mode: std.fs.File.Mode = 0o755,
+    uid: ?u32 = null,
+    gid: ?u32 = null,
+};
+
+/// Result of a prefix download operation.
+pub const DownloadResult = struct {
+    files_written: usize,
 };
 
 pub const S3Object = struct {

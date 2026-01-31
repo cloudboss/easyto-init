@@ -660,16 +660,12 @@ fn processVolumes(allocator: Allocator, volumes: []const Volume) !void {
 }
 
 fn handleS3Volume(aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
-
-    const s3_url_prefix = "s3://";
     const bucket = volume.bucket;
     const key_prefix = volume.@"key-prefix";
     const destination = volume.mount.destination;
-    const uid = volume.mount.@"user-id";
-    const gid = volume.mount.@"group-id";
     const optional = volume.optional orelse false;
 
-    std.log.info("processing S3 volume {s}{s}/{s} -> {s}", .{ s3_url_prefix, bucket, key_prefix, destination });
+    std.log.info("processing S3 volume s3://{s}/{s} -> {s}", .{ bucket, key_prefix, destination });
 
     const s3_client = aws_ctx.getS3() catch |err| {
         std.log.err("failed to initialize S3 client: {s}", .{@errorName(err)});
@@ -680,60 +676,28 @@ fn handleS3Volume(aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
         return err;
     };
 
-    // List all objects with the prefix
-    const objects = s3_client.listObjects(bucket, key_prefix) catch |err| {
+    const result = s3_client.downloadPrefixToDir(bucket, key_prefix, destination, .{
+        .uid = volume.mount.@"user-id",
+        .gid = volume.mount.@"group-id",
+    }) catch |err| {
         if (optional) {
-            std.log.info("optional S3 volume {s}{s}/{s} failed, skipping: {s}", .{ s3_url_prefix, bucket, key_prefix, @errorName(err) });
+            std.log.info("optional S3 volume s3://{s}/{s} failed, skipping: {s}", .{ bucket, key_prefix, @errorName(err) });
             return;
         }
-        std.log.err("failed to list S3 objects in {s}{s}/{s}: {s}", .{ s3_url_prefix, bucket, key_prefix, @errorName(err) });
+        std.log.err("failed to download S3 volume s3://{s}/{s}: {s}", .{ bucket, key_prefix, @errorName(err) });
         return err;
     };
-    defer {
-        for (objects) |*obj| {
-            var o = obj.*;
-            o.deinit(aws_ctx.allocator);
-        }
-        aws_ctx.allocator.free(objects);
-    }
 
-    if (objects.len == 0) {
+    if (result.files_written == 0) {
         if (optional) {
-            std.log.info("no objects found in {s}{s}/{s}, skipping (optional)", .{ s3_url_prefix, bucket, key_prefix });
+            std.log.info("no objects found in s3://{s}/{s}, skipping (optional)", .{ bucket, key_prefix });
             return;
         }
-        std.log.err("no S3 objects found at {s}{s}/{s}", .{ s3_url_prefix, bucket, key_prefix });
+        std.log.err("no S3 objects found at s3://{s}/{s}", .{ bucket, key_prefix });
         return error.S3VolumeEmpty;
     }
 
-    // Download and write each object
-    for (objects) |obj| {
-        std.log.debug("downloading s3://{s}/{s}", .{ obj.bucket, obj.key });
-
-        const content = s3_client.getObject(obj.bucket, obj.key) catch |err| {
-            std.log.err("failed to download s3://{s}/{s}: {s}", .{ obj.bucket, obj.key, @errorName(err) });
-            return err;
-        };
-        defer aws_ctx.allocator.free(content);
-
-        // Build destination path
-        const dest_path = fs_utils.joinPath(aws_ctx.allocator, destination, obj.path_suffix) catch |err| {
-            std.log.err("failed to build destination path: {s}", .{@errorName(err)});
-            return err;
-        };
-        defer aws_ctx.allocator.free(dest_path);
-
-        std.log.debug("writing {s} ({d} bytes)", .{ dest_path, content.len });
-
-        // Write file with appropriate permissions
-        // Non-secret files: dirs 0755, files 0644
-        fs_utils.writeFile(dest_path, content, 0o644, 0o755, uid, gid) catch |err| {
-            std.log.err("failed to write {s}: {s}", .{ dest_path, @errorName(err) });
-            return err;
-        };
-    }
-
-    std.log.info("S3 volume {s}{s}/{s} mounted to {s} ({d} files)", .{ s3_url_prefix, bucket, key_prefix, destination, objects.len });
+    std.log.info("S3 volume s3://{s}/{s} mounted to {s} ({d} files)", .{ bucket, key_prefix, destination, result.files_written });
 }
 
 fn expandCommandAndArgs(
