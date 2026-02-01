@@ -6,11 +6,15 @@ const Mode = std.fs.File.Mode;
 const Allocator = std.mem.Allocator;
 const linux = std.os.linux;
 const posix = std.posix;
+const testing = std.testing;
 
 const aws_sdk = @import("aws_sdk");
 const k8s_expand = @import("k8s_expand");
 
+const asm_mod = @import("aws/asm.zig");
 const AwsContext = @import("aws/context.zig").AwsContext;
+const s3_mod = @import("aws/s3.zig");
+const ssm_mod = @import("aws/ssm.zig");
 const constants = @import("constants.zig");
 const container = @import("container.zig");
 const fs_utils = @import("fs.zig");
@@ -26,10 +30,6 @@ const Volume = vmspec_mod.Volume;
 const S3VolumeSource = vmspec_mod.S3VolumeSource;
 const SsmVolumeSource = vmspec_mod.SsmVolumeSource;
 const SecretsManagerVolumeSource = vmspec_mod.SecretsManagerVolumeSource;
-
-const s3_mod = @import("aws/s3.zig");
-const ssm_mod = @import("aws/ssm.zig");
-const asm_mod = @import("aws/asm.zig");
 
 const Error = error{
     MountError,
@@ -89,12 +89,16 @@ pub fn run(allocator: Allocator) !void {
     std.log.info("creating base symlinks", .{});
     try base_links();
 
+    std.log.info("initializing AWS context", .{});
+    var aws_ctx = try AwsContext.init(allocator);
+    defer aws_ctx.deinit();
+
     std.log.info("initializing network", .{});
-    try network.initializeNetwork(allocator);
+    try network.initializeNetwork(allocator, aws_ctx.getImds());
 
     // Fetch user data from IMDS
     std.log.info("fetching user data from IMDS", .{});
-    const user_data = fetchUserData(allocator) catch |err| blk: {
+    const user_data = fetchUserData(&aws_ctx) catch |err| blk: {
         std.log.warn("failed to fetch user data: {s}, continuing without", .{@errorName(err)});
         break :blk null;
     };
@@ -131,7 +135,7 @@ pub fn run(allocator: Allocator) !void {
     // Resolve env-from sources
     if (vmspec.@"env-from") |env_from| {
         std.log.info("resolving env-from sources", .{});
-        resolveEnvFrom(allocator, &vmspec, env_from) catch |err| {
+        resolveEnvFrom(allocator, &aws_ctx, &vmspec, env_from) catch |err| {
             std.log.err("unable to resolve environment variables from external sources", .{});
             return err;
         };
@@ -148,10 +152,10 @@ pub fn run(allocator: Allocator) !void {
     std.log.info("applying sysctls", .{});
     try system.setSysctls(vmspec.sysctls);
 
-    // Process volumes before resolving env-from
+    // Process volumes
     if (vmspec.volumes) |volumes| {
         std.log.info("processing volumes", .{});
-        try processVolumes(allocator, volumes);
+        try processVolumes(&aws_ctx, volumes);
     }
 
     std.log.info("running init scripts", .{});
@@ -359,17 +363,11 @@ fn read_metadata(allocator: Allocator, path: []const u8) !Metadata {
     };
 }
 
-fn fetchUserData(allocator: Allocator) !?[]const u8 {
-    var imds_client = aws_sdk.imds.ImdsClient.init(allocator, .{}) catch |err| {
-        std.log.err("failed to initialize IMDS client: {s}", .{@errorName(err)});
-        return err;
-    };
-    defer imds_client.deinit();
+fn fetchUserData(aws_ctx: *AwsContext) !?[]const u8 {
+    const imds_client = aws_ctx.getImds();
 
-    // User data endpoint returns 404 if no user data is configured
     const user_data = imds_client.get("/latest/user-data") catch |err| {
         if (err == error.HttpNotFound) {
-            std.log.info("no user data configured in IMDS", .{});
             return null;
         }
         std.log.err("failed to fetch user data from IMDS: {s}", .{@errorName(err)});
@@ -505,31 +503,18 @@ fn replaceInit(
     return error.ExecveFailed;
 }
 
-fn resolveEnvFrom(allocator: Allocator, vmspec: *VmSpec, env_from: []const EnvFromSource) !void {
-    var imds_client: ?aws_sdk.imds.ImdsClient = null;
-    defer if (imds_client) |*c| c.deinit();
-
-    var aws_ctx = AwsContext.init(allocator);
-    defer aws_ctx.deinit();
-
+fn resolveEnvFrom(allocator: Allocator, aws_ctx: *AwsContext, vmspec: *VmSpec, env_from: []const EnvFromSource) !void {
     const arena_alloc = vmspec.arena.?.allocator();
 
     for (env_from) |source| {
         if (source.imds) |imds| {
-            // Initialize IMDS client lazily
-            if (imds_client == null) {
-                imds_client = aws_sdk.imds.ImdsClient.init(allocator, .{}) catch |err| {
-                    std.log.err("failed to initialize IMDS client: {s}", .{@errorName(err)});
-                    if (imds.optional orelse false) continue;
-                    return err;
-                };
-            }
+            const imds_client = aws_ctx.getImds();
 
             // Fetch value from IMDS
             const imds_path = try std.fmt.allocPrint(allocator, "/latest/meta-data/{s}", .{imds.path});
             defer allocator.free(imds_path);
 
-            const value = imds_client.?.get(imds_path) catch |err| {
+            const value = imds_client.get(imds_path) catch |err| {
                 if (imds.optional orelse false) {
                     std.log.info("optional IMDS path {s} not found, skipping", .{imds.path});
                     continue;
@@ -548,11 +533,7 @@ fn resolveEnvFrom(allocator: Allocator, vmspec: *VmSpec, env_from: []const EnvFr
         }
 
         if (source.s3) |s3| {
-            const s3_client = aws_ctx.getS3() catch |err| {
-                std.log.err("failed to initialize S3 client: {s}", .{@errorName(err)});
-                if (s3.optional orelse false) continue;
-                return err;
-            };
+            const s3_client = try aws_ctx.getS3();
 
             if (s3.name) |name| {
                 // Single value with explicit name
@@ -599,11 +580,7 @@ fn resolveEnvFrom(allocator: Allocator, vmspec: *VmSpec, env_from: []const EnvFr
         }
 
         if (source.ssm) |ssm| {
-            const ssm_client = aws_ctx.getSsm() catch |err| {
-                std.log.err("failed to initialize SSM client: {s}", .{@errorName(err)});
-                if (ssm.optional orelse false) continue;
-                return err;
-            };
+            const ssm_client = try aws_ctx.getSsm();
 
             if (ssm.name) |name| {
                 // Single value with explicit name
@@ -650,11 +627,7 @@ fn resolveEnvFrom(allocator: Allocator, vmspec: *VmSpec, env_from: []const EnvFr
         }
 
         if (source.@"secrets-manager") |sm| {
-            const sm_client = aws_ctx.getSecretsManager() catch |err| {
-                std.log.err("failed to initialize Secrets Manager client: {s}", .{@errorName(err)});
-                if (sm.optional orelse false) continue;
-                return err;
-            };
+            const sm_client = try aws_ctx.getSecretsManager();
 
             if (sm.name) |name| {
                 // Single value with explicit name
@@ -777,19 +750,16 @@ const ExpandedCommand = struct {
     }
 };
 
-fn processVolumes(allocator: Allocator, volumes: []const Volume) !void {
-    var aws_ctx = AwsContext.init(allocator);
-    defer aws_ctx.deinit();
-
+fn processVolumes(aws_ctx: *AwsContext, volumes: []const Volume) !void {
     for (volumes) |volume| {
         if (volume.s3) |s3| {
-            try handleS3Volume(&aws_ctx, &s3);
+            try handleS3Volume(aws_ctx, &s3);
         }
         if (volume.ssm) |ssm| {
-            try handleSsmVolume(&aws_ctx, &ssm);
+            try handleSsmVolume(aws_ctx, &ssm);
         }
         if (volume.@"secrets-manager") |sm| {
-            try handleSecretsManagerVolume(&aws_ctx, &sm);
+            try handleSecretsManagerVolume(aws_ctx, &sm);
         }
         if (volume.ebs != null) {
             std.log.warn("EBS volumes not yet implemented", .{});
@@ -804,14 +774,7 @@ fn handleSsmVolume(aws_ctx: *AwsContext, volume: *const SsmVolumeSource) !void {
 
     std.log.info("processing SSM volume {s} -> {s}", .{ path, destination });
 
-    const ssm_client = aws_ctx.getSsm() catch |err| {
-        std.log.err("failed to initialize SSM client: {s}", .{@errorName(err)});
-        if (optional) {
-            std.log.info("SSM volume is optional, skipping", .{});
-            return;
-        }
-        return err;
-    };
+    const ssm_client = try aws_ctx.getSsm();
 
     const result = ssm_client.downloadPathToDir(path, destination, .{
         .uid = volume.mount.@"user-id",
@@ -845,14 +808,7 @@ fn handleS3Volume(aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
 
     std.log.info("processing S3 volume s3://{s}/{s} -> {s}", .{ bucket, key_prefix, destination });
 
-    const s3_client = aws_ctx.getS3() catch |err| {
-        std.log.err("failed to initialize S3 client: {s}", .{@errorName(err)});
-        if (optional) {
-            std.log.info("S3 volume is optional, skipping", .{});
-            return;
-        }
-        return err;
-    };
+    const s3_client = try aws_ctx.getS3();
 
     const result = s3_client.downloadPrefixToDir(bucket, key_prefix, destination, .{
         .uid = volume.mount.@"user-id",
@@ -885,14 +841,7 @@ fn handleSecretsManagerVolume(aws_ctx: *AwsContext, volume: *const SecretsManage
 
     std.log.info("processing Secrets Manager volume {s} -> {s}", .{ secret_id, destination });
 
-    const sm_client = aws_ctx.getSecretsManager() catch |err| {
-        std.log.err("failed to initialize Secrets Manager client: {s}", .{@errorName(err)});
-        if (optional) {
-            std.log.info("Secrets Manager volume is optional, skipping", .{});
-            return;
-        }
-        return err;
-    };
+    const sm_client = try aws_ctx.getSecretsManager();
 
     sm_client.downloadSecretToFile(secret_id, destination, .{
         .uid = volume.mount.@"user-id",
@@ -949,8 +898,6 @@ fn expandCommandAndArgs(
         .args = expanded_args,
     };
 }
-
-const testing = std.testing;
 
 test "addEnvVar adds to empty env" {
     const allocator = testing.allocator;

@@ -24,18 +24,15 @@ pub const S3Error = error{
 
 pub const S3Client = struct {
     allocator: Allocator,
-    region: []const u8,
     aws_client: aws_sdk.Client,
 
     const Self = @This();
     const services = aws_sdk.Services(.{.s3}){};
 
-    pub fn init(allocator: Allocator, region: []const u8, endpoint_url: ?[]const u8) !Self {
-        _ = endpoint_url; // SDK reads AWS_ENDPOINT_URL automatically
+    pub fn init(allocator: Allocator) Self {
         const aws_client = aws_sdk.Client.init(allocator, .{});
         return Self{
             .allocator = allocator,
-            .region = region,
             .aws_client = aws_client,
         };
     }
@@ -49,7 +46,6 @@ pub const S3Client = struct {
         scoped_log.debug("GetObject s3://{s}/{s}", .{ bucket, key });
 
         const options = aws_sdk.Options{
-            .region = self.region,
             .client = self.aws_client,
         };
 
@@ -85,7 +81,6 @@ pub const S3Client = struct {
         scoped_log.debug("ListObjects s3://{s}/{s}", .{ bucket, prefix });
 
         const options = aws_sdk.Options{
-            .region = self.region,
             .client = self.aws_client,
         };
 

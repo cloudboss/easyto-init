@@ -109,14 +109,14 @@ pub const Error = error{
 };
 
 /// Initialize network interfaces with retry/backoff.
-pub fn initializeNetwork(allocator: Allocator) !void {
+pub fn initializeNetwork(allocator: Allocator, imds_client: *aws_sdk.imds.ImdsClient) !void {
     const timeout_ns: u64 = 60 * std.time.ns_per_s;
     const start = std.time.nanoTimestamp();
     var backoff = RetryBackoff.init(2000);
     var last_error: ?anyerror = null;
 
     while (true) {
-        initializeNetworkInner(allocator) catch |err| {
+        initializeNetworkInner(allocator, imds_client) catch |err| {
             std.log.warn("network initialization attempt failed: {s}", .{@errorName(err)});
             last_error = err;
             const elapsed: u64 = @intCast(std.time.nanoTimestamp() - start);
@@ -135,19 +135,12 @@ pub fn initializeNetwork(allocator: Allocator) !void {
     return Error.NetworkInitFailed;
 }
 
-fn initializeNetworkInner(allocator: Allocator) !void {
+fn initializeNetworkInner(allocator: Allocator, imds_client: *aws_sdk.imds.ImdsClient) !void {
     var socket = nlz.Socket.open() catch {
         std.log.err("failed to create netlink socket", .{});
         return Error.NetlinkError;
     };
     defer socket.close();
-
-    // Initialize IMDS client
-    var imds_client = aws_sdk.imds.ImdsClient.init(allocator, .{}) catch |err| {
-        std.log.err("failed to initialize IMDS client: {s}", .{@errorName(err)});
-        return Error.NetworkInitFailed;
-    };
-    defer imds_client.deinit();
 
     // Load persisted state if available
     var parsed_state = loadPersistedState(allocator);
@@ -178,7 +171,7 @@ fn initializeNetworkInner(allocator: Allocator) !void {
     try ensureLoopback(&socket, interfaces.items, allocator);
 
     // Select and configure primary interface
-    const select_result = try selectPrimaryInterface(&socket, &imds_client, interfaces.items, &persisted_state, allocator);
+    const select_result = try selectPrimaryInterface(&socket, imds_client, interfaces.items, &persisted_state, allocator);
     const primary = select_result.primary;
     var bootstrap_lease = select_result.bootstrap_lease;
 
@@ -221,7 +214,7 @@ fn initializeNetworkInner(allocator: Allocator) !void {
     try persistInterfaces(allocator, final_interfaces.items, final_primary, &dhcp_lease);
 
     // Set hostname via IMDS
-    setHostname(&imds_client, allocator) catch |err| {
+    setHostname(imds_client, allocator) catch |err| {
         std.log.warn("failed to set hostname: {s}", .{@errorName(err)});
     };
 }

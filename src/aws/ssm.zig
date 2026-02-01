@@ -25,18 +25,15 @@ pub const SsmError = error{
 
 pub const SsmClient = struct {
     allocator: Allocator,
-    region: []const u8,
     aws_client: aws_sdk.Client,
 
     const Self = @This();
     const services = aws_sdk.Services(.{.ssm}){};
 
-    pub fn init(allocator: Allocator, region: []const u8, endpoint_url: ?[]const u8) !Self {
-        _ = endpoint_url; // SDK reads AWS_ENDPOINT_URL automatically
+    pub fn init(allocator: Allocator) Self {
         const aws_client = aws_sdk.Client.init(allocator, .{});
         return Self{
             .allocator = allocator,
-            .region = region,
             .aws_client = aws_client,
         };
     }
@@ -50,7 +47,6 @@ pub const SsmClient = struct {
         scoped_log.debug("GetParameter {s}", .{name});
 
         const options = aws_sdk.Options{
-            .region = self.region,
             .client = self.aws_client,
         };
 
@@ -88,7 +84,6 @@ pub const SsmClient = struct {
         scoped_log.debug("GetParametersByPath {s}", .{path});
 
         const options = aws_sdk.Options{
-            .region = self.region,
             .client = self.aws_client,
         };
 

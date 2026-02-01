@@ -1,46 +1,41 @@
 //! AWS context providing lazily-initialized clients for AWS services.
-//!
-//! This module provides a central context that manages AWS service clients.
-//! Clients are initialized on first use and cached for subsequent calls.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const aws_sdk = @import("aws_sdk");
+
 const S3Client = @import("s3.zig").S3Client;
-const SsmClient = @import("ssm.zig").SsmClient;
 const SecretsManagerClient = @import("asm.zig").SecretsManagerClient;
+const SsmClient = @import("ssm.zig").SsmClient;
 
 const scoped_log = std.log.scoped(.aws_context);
 
 pub const AwsContext = struct {
     allocator: Allocator,
-    region: []const u8,
-    endpoint_url: ?[]const u8,
 
+    imds: aws_sdk.imds.ImdsClient,
+    aws_client: ?aws_sdk.Client = null,
+    credentials_verified: bool = false,
     s3: ?S3Client = null,
     ssm: ?SsmClient = null,
     secrets_manager: ?SecretsManagerClient = null,
 
     const Self = @This();
+    const sts_services = aws_sdk.Services(.{.sts}){};
 
-    pub fn init(allocator: Allocator) Self {
-        // Get region from environment or default to us-east-1
-        const region = std.posix.getenv("AWS_REGION") orelse
-            std.posix.getenv("AWS_DEFAULT_REGION") orelse
-            "us-east-1";
+    pub const Error = error{
+        /// No IAM instance profile attached to the instance.
+        NoInstanceProfile,
+    };
 
-        // Get custom endpoint URL (for LocalStack)
-        const endpoint_url = std.posix.getenv("AWS_ENDPOINT_URL");
-
-        if (endpoint_url) |url| {
-            scoped_log.debug("Using custom endpoint: {s}", .{url});
-        }
+    /// Initialize the AWS context with an IMDS client.
+    pub fn init(allocator: Allocator) !Self {
+        const imds = try aws_sdk.imds.ImdsClient.init(allocator, .{});
 
         return Self{
             .allocator = allocator,
-            .region = region,
-            .endpoint_url = endpoint_url,
+            .imds = imds,
         };
     }
 
@@ -54,32 +49,66 @@ pub const AwsContext = struct {
         if (self.secrets_manager) |*client| {
             client.deinit();
         }
+        if (self.aws_client) |*client| {
+            client.deinit();
+        }
+        self.imds.deinit();
+    }
+
+    /// Get the IMDS client.
+    pub fn getImds(self: *Self) *aws_sdk.imds.ImdsClient {
+        return &self.imds;
     }
 
     /// Get or initialize the S3 client.
+    /// Returns error if no IAM instance profile is attached.
     pub fn getS3(self: *Self) !*S3Client {
+        try self.verifyCredentials();
         if (self.s3 == null) {
-            scoped_log.debug("Initializing S3 client", .{});
-            self.s3 = try S3Client.init(self.allocator, self.region, self.endpoint_url);
+            self.s3 = S3Client.init(self.allocator);
         }
         return &self.s3.?;
     }
 
     /// Get or initialize the SSM client.
+    /// Returns error if no IAM instance profile is attached.
     pub fn getSsm(self: *Self) !*SsmClient {
+        try self.verifyCredentials();
         if (self.ssm == null) {
-            scoped_log.debug("Initializing SSM client", .{});
-            self.ssm = try SsmClient.init(self.allocator, self.region, self.endpoint_url);
+            self.ssm = SsmClient.init(self.allocator);
         }
         return &self.ssm.?;
     }
 
     /// Get or initialize the Secrets Manager client.
+    /// Returns error if no IAM instance profile is attached.
     pub fn getSecretsManager(self: *Self) !*SecretsManagerClient {
+        try self.verifyCredentials();
         if (self.secrets_manager == null) {
-            scoped_log.debug("Initializing Secrets Manager client", .{});
-            self.secrets_manager = try SecretsManagerClient.init(self.allocator, self.region, self.endpoint_url);
+            self.secrets_manager = SecretsManagerClient.init(self.allocator);
         }
         return &self.secrets_manager.?;
+    }
+
+    /// Verify that IAM credentials are available by calling STS GetCallerIdentity.
+    /// This is called lazily on first access to any AWS service client.
+    fn verifyCredentials(self: *Self) !void {
+        if (self.credentials_verified) return;
+
+        if (self.aws_client == null) {
+            self.aws_client = aws_sdk.Client.init(self.allocator, .{});
+        }
+
+        const options = aws_sdk.Options{
+            .client = self.aws_client.?,
+        };
+
+        const result = aws_sdk.Request(sts_services.sts.get_caller_identity).call(.{}, options) catch |err| {
+            scoped_log.err("user data config requires an IAM instance profile: {s}", .{@errorName(err)});
+            return Error.NoInstanceProfile;
+        };
+        result.deinit();
+
+        self.credentials_verified = true;
     }
 };

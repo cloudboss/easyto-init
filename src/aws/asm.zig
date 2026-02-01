@@ -27,18 +27,15 @@ pub const SecretsManagerError = error{
 
 pub const SecretsManagerClient = struct {
     allocator: Allocator,
-    region: []const u8,
     aws_client: aws_sdk.Client,
 
     const Self = @This();
     const services = aws_sdk.Services(.{.secrets_manager}){};
 
-    pub fn init(allocator: Allocator, region: []const u8, endpoint_url: ?[]const u8) !Self {
-        _ = endpoint_url; // SDK reads AWS_ENDPOINT_URL automatically
+    pub fn init(allocator: Allocator) Self {
         const aws_client = aws_sdk.Client.init(allocator, .{});
         return Self{
             .allocator = allocator,
-            .region = region,
             .aws_client = aws_client,
         };
     }
@@ -53,7 +50,6 @@ pub const SecretsManagerClient = struct {
         scoped_log.debug("GetSecretValue {s}", .{secret_id});
 
         const options = aws_sdk.Options{
-            .region = self.region,
             .client = self.aws_client,
         };
 
@@ -126,7 +122,6 @@ test "SecretsManagerClient struct has expected fields" {
     // Compile-time check that the struct has the expected shape
     const T = SecretsManagerClient;
     try testing.expect(@hasField(T, "allocator"));
-    try testing.expect(@hasField(T, "region"));
     try testing.expect(@hasField(T, "aws_client"));
 }
 
