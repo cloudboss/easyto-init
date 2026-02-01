@@ -499,10 +499,10 @@ pub const VmSpec = struct {
             }
         }
 
-        if (name == null or secret_id == null) return null;
+        if (secret_id == null) return null;
 
         return SecretsManagerEnvSource{
-            .name = try allocator.dupe(u8, name.?),
+            .name = if (name) |n| try allocator.dupe(u8, n) else null,
             .@"secret-id" = try allocator.dupe(u8, secret_id.?),
             .optional = optional,
             .@"base64-encode" = base64_encode,
@@ -816,7 +816,7 @@ pub const VmSpec = struct {
 
     fn dupeSecretsManagerEnvSource(allocator: Allocator, src: SecretsManagerEnvSource) !SecretsManagerEnvSource {
         return SecretsManagerEnvSource{
-            .name = try allocator.dupe(u8, src.name),
+            .name = if (src.name) |n| try allocator.dupe(u8, n) else null,
             .@"secret-id" = try allocator.dupe(u8, src.@"secret-id"),
             .optional = src.optional,
             .@"base64-encode" = src.@"base64-encode",
@@ -918,7 +918,7 @@ pub const S3EnvSource = struct {
 
 pub const SecretsManagerEnvSource = struct {
     @"base64-encode": ?bool = null,
-    name: []const u8,
+    name: ?[]const u8 = null,
     optional: ?bool = null,
     @"secret-id": []const u8,
 };
@@ -1484,7 +1484,8 @@ test "VmSpec.from_yaml parses env-from with secrets-manager" {
 
     try testing.expect(vmspec.@"env-from" != null);
     const sm = vmspec.@"env-from".?[0].@"secrets-manager".?;
-    try testing.expectEqualStrings("DB_PASSWORD", sm.name);
+    try testing.expect(sm.name != null);
+    try testing.expectEqualStrings("DB_PASSWORD", sm.name.?);
     try testing.expectEqualStrings("prod/db/password", sm.@"secret-id");
 }
 
@@ -1650,4 +1651,78 @@ test "VmSpec.merge working-dir" {
     try vmspec.merge(other);
 
     try testing.expectEqualStrings("/app", vmspec.@"working-dir".?);
+}
+
+test "VmSpec.from_yaml parses both env and env-from" {
+    const yaml_content =
+        \\env:
+        \\  - name: DATABASE_URL
+        \\    value: "test-value"
+        \\env-from:
+        \\  - s3:
+        \\      bucket: env-bucket
+        \\      key: db-config.json
+        \\  - ssm:
+        \\      path: /app/db/username
+        \\      name: DB_USER
+        \\  - secrets-manager:
+        \\      secret-id: app/db/password
+        \\      name: DB_PASS
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    // Check env was parsed
+    try testing.expect(vmspec.env != null);
+    try testing.expectEqual(@as(usize, 1), vmspec.env.?.len);
+    try testing.expectEqualStrings("DATABASE_URL", vmspec.env.?[0].name);
+
+    // Check env-from was parsed
+    try testing.expect(vmspec.@"env-from" != null);
+    try testing.expectEqual(@as(usize, 3), vmspec.@"env-from".?.len);
+
+    // Check S3 source
+    try testing.expect(vmspec.@"env-from".?[0].s3 != null);
+    try testing.expectEqualStrings("env-bucket", vmspec.@"env-from".?[0].s3.?.bucket);
+
+    // Check SSM source
+    try testing.expect(vmspec.@"env-from".?[1].ssm != null);
+    try testing.expectEqualStrings("/app/db/username", vmspec.@"env-from".?[1].ssm.?.path);
+
+    // Check Secrets Manager source
+    try testing.expect(vmspec.@"env-from".?[2].@"secrets-manager" != null);
+    try testing.expectEqualStrings("app/db/password", vmspec.@"env-from".?[2].@"secrets-manager".?.@"secret-id");
+}
+
+test "VmSpec.merge env-from" {
+    var vmspec = VmSpec{
+        .arena = std.heap.ArenaAllocator.init(testing.allocator),
+    };
+    defer vmspec.deinit();
+
+    // Parse env-from from YAML
+    const yaml_content =
+        \\env-from:
+        \\  - s3:
+        \\      bucket: test-bucket
+        \\      key: config.json
+        \\  - ssm:
+        \\      path: /app/config
+        \\      name: CONFIG
+    ;
+    var other = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer other.deinit();
+
+    // Verify other has env-from
+    try testing.expect(other.@"env-from" != null);
+    try testing.expectEqual(@as(usize, 2), other.@"env-from".?.len);
+
+    // Merge into vmspec
+    try vmspec.merge(other);
+
+    // Verify env-from was merged
+    try testing.expect(vmspec.@"env-from" != null);
+    try testing.expectEqual(@as(usize, 2), vmspec.@"env-from".?.len);
+    try testing.expect(vmspec.@"env-from".?[0].s3 != null);
+    try testing.expect(vmspec.@"env-from".?[1].ssm != null);
 }

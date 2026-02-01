@@ -25,14 +25,17 @@ const NameValue = vmspec_mod.NameValue;
 const Volume = vmspec_mod.Volume;
 const S3VolumeSource = vmspec_mod.S3VolumeSource;
 const SsmVolumeSource = vmspec_mod.SsmVolumeSource;
+const SecretsManagerVolumeSource = vmspec_mod.SecretsManagerVolumeSource;
 
 const s3_mod = @import("aws/s3.zig");
 const ssm_mod = @import("aws/ssm.zig");
+const asm_mod = @import("aws/asm.zig");
 
 const Error = error{
     MountError,
     S3VolumeEmpty,
     ParameterNotFound,
+    SecretNotFound,
 };
 
 pub const Mount = struct {
@@ -641,8 +644,55 @@ fn resolveEnvFrom(allocator: Allocator, vmspec: *VmSpec, env_from: []const EnvFr
             }
         }
 
-        if (source.@"secrets-manager" != null) {
-            std.log.warn("Secrets Manager env-from not yet implemented", .{});
+        if (source.@"secrets-manager") |sm| {
+            const sm_client = aws_ctx.getSecretsManager() catch |err| {
+                std.log.err("failed to initialize Secrets Manager client: {s}", .{@errorName(err)});
+                if (sm.optional orelse false) continue;
+                return err;
+            };
+
+            if (sm.name) |name| {
+                // Single value with explicit name
+                const value = sm_client.getSecretValue(sm.@"secret-id") catch |err| {
+                    if (sm.optional orelse false) {
+                        std.log.info("optional secret {s} not found, skipping", .{sm.@"secret-id"});
+                        continue;
+                    }
+                    std.log.err("failed to fetch secret {s}: {s}", .{ sm.@"secret-id", @errorName(err) });
+                    return err;
+                };
+                defer allocator.free(value);
+
+                // Trim whitespace from the value
+                const trimmed = std.mem.trim(u8, value, " \t\r\n");
+
+                try addEnvVar(arena_alloc, vmspec, name, trimmed);
+                std.log.info("resolved env {s} from secret {s}", .{ name, sm.@"secret-id" });
+            } else {
+                // JSON map expanded to multiple env vars
+                var env_map = sm_client.getSecretMap(sm.@"secret-id") catch |err| {
+                    if (sm.optional orelse false) {
+                        std.log.info("optional secret {s} not found, skipping", .{sm.@"secret-id"});
+                        continue;
+                    }
+                    std.log.err("failed to fetch secret map {s}: {s}", .{ sm.@"secret-id", @errorName(err) });
+                    return err;
+                };
+                defer {
+                    var it = env_map.iterator();
+                    while (it.next()) |entry| {
+                        allocator.free(entry.key_ptr.*);
+                        allocator.free(entry.value_ptr.*);
+                    }
+                    env_map.deinit();
+                }
+
+                var map_it = env_map.iterator();
+                while (map_it.next()) |entry| {
+                    try addEnvVar(arena_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
+                    std.log.info("resolved env {s} from secret {s}", .{ entry.key_ptr.*, sm.@"secret-id" });
+                }
+            }
         }
     }
 }
@@ -703,8 +753,8 @@ fn processVolumes(allocator: Allocator, volumes: []const Volume) !void {
         if (volume.ssm) |ssm| {
             try handleSsmVolume(&aws_ctx, &ssm);
         }
-        if (volume.@"secrets-manager" != null) {
-            std.log.warn("Secrets Manager volumes not yet implemented", .{});
+        if (volume.@"secrets-manager") |sm| {
+            try handleSecretsManagerVolume(&aws_ctx, &sm);
         }
         if (volume.ebs != null) {
             std.log.warn("EBS volumes not yet implemented", .{});
@@ -791,6 +841,37 @@ fn handleS3Volume(aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
     }
 
     std.log.info("S3 volume s3://{s}/{s} mounted to {s} ({d} files)", .{ bucket, key_prefix, destination, result.files_written });
+}
+
+fn handleSecretsManagerVolume(aws_ctx: *AwsContext, volume: *const SecretsManagerVolumeSource) !void {
+    const secret_id = volume.@"secret-id";
+    const destination = volume.mount.destination;
+    const optional = volume.optional orelse false;
+
+    std.log.info("processing Secrets Manager volume {s} -> {s}", .{ secret_id, destination });
+
+    const sm_client = aws_ctx.getSecretsManager() catch |err| {
+        std.log.err("failed to initialize Secrets Manager client: {s}", .{@errorName(err)});
+        if (optional) {
+            std.log.info("Secrets Manager volume is optional, skipping", .{});
+            return;
+        }
+        return err;
+    };
+
+    sm_client.downloadSecretToFile(secret_id, destination, .{
+        .uid = volume.mount.@"user-id",
+        .gid = volume.mount.@"group-id",
+    }) catch |err| {
+        if (optional) {
+            std.log.info("optional secret {s} failed, skipping: {s}", .{ secret_id, @errorName(err) });
+            return;
+        }
+        std.log.err("failed to download secret {s}: {s}", .{ secret_id, @errorName(err) });
+        return err;
+    };
+
+    std.log.info("Secrets Manager secret {s} mounted to {s}", .{ secret_id, destination });
 }
 
 fn expandCommandAndArgs(
