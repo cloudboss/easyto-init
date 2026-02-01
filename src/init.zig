@@ -137,6 +137,11 @@ pub fn run(allocator: Allocator) !void {
         };
     }
 
+    // Expand variable references in env values (e.g., $(VAR) syntax)
+    if (vmspec.env) |env| {
+        try expandEnvValues(allocator, &vmspec, env);
+    }
+
     std.log.info("loading kernel modules", .{});
     try system.loadModules(vmspec.modules);
 
@@ -695,6 +700,36 @@ fn resolveEnvFrom(allocator: Allocator, vmspec: *VmSpec, env_from: []const EnvFr
             }
         }
     }
+}
+
+fn expandEnvValues(allocator: Allocator, vmspec: *VmSpec, env: []const NameValue) !void {
+    const arena_alloc = vmspec.arena.?.allocator();
+
+    // Build mapping from current env
+    var mapping = std.StringHashMap([]const u8).init(allocator);
+    defer mapping.deinit();
+
+    for (env) |nv| {
+        try mapping.put(nv.name, nv.value);
+    }
+
+    const context = [_]*const std.StringHashMap([]const u8){&mapping};
+
+    // Expand values and update env
+    var new_env = try arena_alloc.alloc(NameValue, env.len);
+    for (env, 0..) |nv, i| {
+        const expanded_value = try k8s_expand.expand(allocator, nv.value, &context);
+        defer if (!std.mem.eql(u8, expanded_value, nv.value)) allocator.free(expanded_value);
+
+        new_env[i] = NameValue{
+            .name = nv.name, // Keep the same name pointer
+            .value = if (!std.mem.eql(u8, expanded_value, nv.value))
+                try arena_alloc.dupe(u8, expanded_value)
+            else
+                nv.value, // Keep original if unchanged
+        };
+    }
+    vmspec.env = new_env;
 }
 
 fn addEnvVar(allocator: Allocator, vmspec: *VmSpec, name: []const u8, value: []const u8) !void {
