@@ -166,20 +166,26 @@ fn parseLine(line: []const u8) Line {
     var value: ?[]const u8 = null;
     var is_block_scalar = false;
 
-    if (std.mem.indexOf(u8, content, ": ")) |colon_pos| {
-        key = content[0..colon_pos];
-        const raw_value = std.mem.trim(u8, content[colon_pos + 2 ..], " \t\r");
-        if (raw_value.len == 0) {
+    // Check for comment line FIRST - comments can contain colons
+    // A comment line starts with # (after optional indentation and list marker)
+    const is_comment = content.len > 0 and content[0] == '#';
+
+    if (!is_comment) {
+        if (std.mem.indexOf(u8, content, ": ")) |colon_pos| {
+            key = content[0..colon_pos];
+            const raw_value = std.mem.trim(u8, content[colon_pos + 2 ..], " \t\r");
+            if (raw_value.len == 0) {
+                value = null;
+            } else {
+                value = stripInlineComment(raw_value);
+                if (value.?.len == 0) value = null;
+            }
+        } else if (content.len > 0 and content[content.len - 1] == ':') {
+            key = content[0 .. content.len - 1];
             value = null;
-        } else {
-            value = stripInlineComment(raw_value);
-            if (value.?.len == 0) value = null;
+        } else if (std.mem.eql(u8, std.mem.trim(u8, content, " \t\r"), "|")) {
+            is_block_scalar = true;
         }
-    } else if (content.len > 0 and content[content.len - 1] == ':') {
-        key = content[0 .. content.len - 1];
-        value = null;
-    } else if (std.mem.eql(u8, std.mem.trim(u8, content, " \t\r"), "|")) {
-        is_block_scalar = true;
     }
 
     return Line{
@@ -849,4 +855,47 @@ test "parse comment between list items" {
     try std.testing.expectEqual(@as(usize, 2), items.len);
     try std.testing.expectEqualStrings("one", items[0].getString().?);
     try std.testing.expectEqualStrings("two", items[1].getString().?);
+}
+
+test "parse multiple top-level keys with env and env-from" {
+    const input =
+        \\disable-services:
+        \\  - chrony
+        \\  - ssh
+        \\# Static env vars that reference values from env-from sources
+        \\env:
+        \\  - name: DATABASE_URL
+        \\    value: "test"
+        \\env-from:
+        \\  # S3: provides DB_HOST, DB_PORT, DB_NAME
+        \\  - s3:
+        \\      bucket: env-bucket
+        \\      key: db-config.json
+        \\  # SSM: provides DB_USER
+        \\  - ssm:
+        \\      path: /app/db/username
+        \\      name: DB_USER
+        \\command:
+        \\  - /bin/sh
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+
+    // Check disable-services
+    const ds = result.value.get("disable-services").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 2), ds.len);
+
+    // Check env
+    const env = result.value.get("env").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 1), env.len);
+
+    // Check env-from
+    const env_from = result.value.get("env-from");
+    try std.testing.expect(env_from != null);
+    const ef_list = env_from.?.getList().?;
+    try std.testing.expectEqual(@as(usize, 2), ef_list.len);
+
+    // Check command
+    const cmd = result.value.get("command").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 1), cmd.len);
 }
