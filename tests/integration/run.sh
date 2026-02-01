@@ -372,7 +372,7 @@ main()
 
     if [ ${failed} -gt 0 ]; then
         log "${failed} scenario(s) failed"
-        log "Logs available at: ${INTEGRATION_OUT}"
+        log "Logs available at: ${INTEGRATION_OUT#${PROJECT_ROOT}/}"
         exit 1
     fi
 
@@ -382,7 +382,7 @@ main()
     if [ -z "${KEEP_LOGS}" ]; then
         rm -rf "${INTEGRATION_OUT}"
     else
-        log "Logs available at: ${INTEGRATION_OUT}"
+        log "Logs available at: ${INTEGRATION_OUT#${PROJECT_ROOT}/}"
     fi
 }
 
