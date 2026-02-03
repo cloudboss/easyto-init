@@ -240,7 +240,7 @@ pub const Supervisor = struct {
             @ptrCast(envp.ptr),
         );
         const exec_err = posix.errno(exec_result);
-        std.log.err("execve failed: {s}", .{@tagName(exec_err)});
+        std.log.err("execve failed: {s}", .{errnoDescription(exec_err)});
         linux.exit(1);
     }
 
@@ -390,6 +390,24 @@ fn parseKernelThreadStatus(content: []const u8) !bool {
     }
 
     return error.FieldNotFound;
+}
+
+pub fn errnoDescription(err: posix.E) []const u8 {
+    return switch (err) {
+        .NOENT => "No such file or directory",
+        .ACCES => "Permission denied",
+        .PERM => "Operation not permitted",
+        .IO => "Input/output error",
+        .NOTDIR => "Not a directory",
+        .ISDIR => "Is a directory",
+        .NOEXEC => "Exec format error",
+        .TXTBSY => "Text file busy",
+        .NOMEM => "Cannot allocate memory",
+        .FAULT => "Bad address",
+        .NAMETOOLONG => "File name too long",
+        .LOOP => "Too many levels of symbolic links",
+        else => @tagName(err),
+    };
 }
 
 fn is_kernel_thread(pid: posix.pid_t) bool {

@@ -20,7 +20,8 @@ const container = @import("container.zig");
 const fs_utils = @import("fs.zig");
 const mkdir_p = fs_utils.mkdir_p;
 const network = @import("network.zig");
-const Supervisor = @import("service.zig").Supervisor;
+const service = @import("service.zig");
+const Supervisor = service.Supervisor;
 const system = @import("system.zig");
 const vmspec_mod = @import("vmspec.zig");
 const VmSpec = vmspec_mod.VmSpec;
@@ -499,7 +500,7 @@ fn replaceInit(
         @ptrCast(envp.ptr),
     );
     const exec_err = posix.errno(exec_result);
-    std.log.err("execve failed: {s}", .{@tagName(exec_err)});
+    std.log.err("execve failed: {s}", .{service.errnoDescription(exec_err)});
     return error.ExecveFailed;
 }
 
