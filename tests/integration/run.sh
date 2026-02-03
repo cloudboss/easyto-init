@@ -307,6 +307,14 @@ run_scenario()
     # Strip carriage returns from serial console output for pattern matching
     tr -d '\r' < "${output_file}" > "${output_file}.clean"
 
+    # Check for memory leaks
+    if grep -q "error(gpa):.*leaked" "${output_file}.clean"; then
+        log "FAIL: ${scenario_name} (memory leak detected)"
+        grep "error(gpa):.*leaked" "${output_file}.clean"
+        rm -f "${output_file}.clean"
+        return 1
+    fi
+
     # Check for expected-output file (for error-handling tests)
     if [ -f "${scenario_dir}/expected-output" ]; then
         if grep -qf "${scenario_dir}/expected-output" "${output_file}.clean"; then
