@@ -9,6 +9,7 @@ const login = @import("login.zig");
 const network = @import("network.zig");
 const nvme = @import("nvme-amz.zig");
 const service = @import("service.zig");
+const spot = @import("spot.zig");
 const string = @import("string.zig");
 const system = @import("system.zig");
 const vmspec = @import("vmspec.zig");
@@ -27,6 +28,7 @@ test {
     testing.refAllDecls(network);
     testing.refAllDecls(nvme);
     testing.refAllDecls(service);
+    testing.refAllDecls(spot);
     testing.refAllDecls(string);
     testing.refAllDecls(system);
     testing.refAllDecls(vmspec);

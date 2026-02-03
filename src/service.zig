@@ -14,6 +14,16 @@ const FLAGS_FIELD_INDEX: usize = 8;
 
 var shutdown_requested = std.atomic.Value(bool).init(false);
 
+/// Request a graceful shutdown. Called by spot termination monitor.
+pub fn requestShutdown() void {
+    shutdown_requested.store(true, .release);
+}
+
+/// Check if shutdown has been requested.
+pub fn isShutdownRequested() bool {
+    return shutdown_requested.load(.acquire);
+}
+
 pub const Supervisor = struct {
     allocator: Allocator,
     command: []const []const u8,

@@ -22,6 +22,7 @@ const mkdir_p = fs_utils.mkdir_p;
 const network = @import("network.zig");
 const service = @import("service.zig");
 const Supervisor = service.Supervisor;
+const spot = @import("spot.zig");
 const system = @import("system.zig");
 const vmspec_mod = @import("vmspec.zig");
 const VmSpec = vmspec_mod.VmSpec;
@@ -190,6 +191,7 @@ pub fn run(allocator: Allocator) !void {
         );
 
         try supervisor.start();
+        spot.startSpotTerminationMonitor();
         supervisor.wait();
 
         std.log.info("supervisor finished, shutting down", .{});
