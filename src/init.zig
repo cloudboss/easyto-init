@@ -696,14 +696,14 @@ fn expandEnvValues(allocator: Allocator, vmspec: *VmSpec, env: []const NameValue
     var new_env = try arena_alloc.alloc(NameValue, env.len);
     for (env, 0..) |nv, i| {
         const expanded_value = try k8s_expand.expand(allocator, nv.value, &context);
-        defer if (!std.mem.eql(u8, expanded_value, nv.value)) allocator.free(expanded_value);
+        defer allocator.free(expanded_value);
 
         new_env[i] = NameValue{
-            .name = nv.name, // Keep the same name pointer
+            .name = nv.name,
             .value = if (!std.mem.eql(u8, expanded_value, nv.value))
                 try arena_alloc.dupe(u8, expanded_value)
             else
-                nv.value, // Keep original if unchanged
+                nv.value,
         };
     }
     vmspec.env = new_env;
