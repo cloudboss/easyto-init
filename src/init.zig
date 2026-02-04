@@ -188,6 +188,7 @@ pub fn run(allocator: Allocator) !void {
             uid,
             gid,
             shutdown_grace_period,
+            vmspec.@"disable-services",
         );
 
         try supervisor.start();

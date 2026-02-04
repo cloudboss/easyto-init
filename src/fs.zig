@@ -92,6 +92,16 @@ fn chownFd(fd: posix.fd_t, uid: ?u32, gid: ?u32) !void {
     };
 }
 
+/// Read an entire file.
+pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(&buf);
+    return try reader.interface.allocRemaining(allocator, .unlimited);
+}
+
 /// Join a base path with a relative path, handling leading slashes.
 pub fn joinPath(allocator: std.mem.Allocator, base: []const u8, relative: []const u8) ![]const u8 {
     // Strip leading slashes from relative path

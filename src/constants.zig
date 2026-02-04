@@ -28,3 +28,4 @@ pub const GROUP_NAME_WHEEL = "wheel";
 pub const SSL_CERT_FILE = "amazon.pem";
 
 pub const USER_NAME_ROOT = "root";
+pub const USER_NAME_CHRONY = "cb-chrony";

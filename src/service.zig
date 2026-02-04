@@ -5,6 +5,8 @@ const posix = std.posix;
 const testing = std.testing;
 
 const constants = @import("constants.zig");
+const services_mod = @import("services.zig");
+const ServiceDef = services_mod.ServiceDef;
 const vmspec = @import("vmspec.zig");
 const NameValue = vmspec.NameValue;
 
@@ -14,7 +16,7 @@ const FLAGS_FIELD_INDEX: usize = 8;
 
 var shutdown_requested = std.atomic.Value(bool).init(false);
 
-/// Request a graceful shutdown. Called by spot termination monitor.
+/// Request a graceful shutdown.
 pub fn requestShutdown() void {
     shutdown_requested.store(true, .release);
 }
@@ -23,6 +25,12 @@ pub fn requestShutdown() void {
 pub fn isShutdownRequested() bool {
     return shutdown_requested.load(.acquire);
 }
+
+const ServiceState = struct {
+    def: ServiceDef,
+    pid: ?posix.pid_t = null,
+    thread: ?std.Thread = null,
+};
 
 pub const Supervisor = struct {
     allocator: Allocator,
@@ -34,6 +42,8 @@ pub const Supervisor = struct {
     gid: u32,
     shutdown_grace_period: u64,
     main_pid: ?posix.pid_t = null,
+    disable_services: ?[]const []const u8,
+    service_states: []ServiceState = &[_]ServiceState{},
 
     pub fn init(
         allocator: Allocator,
@@ -44,6 +54,7 @@ pub const Supervisor = struct {
         uid: u32,
         gid: u32,
         shutdown_grace_period: u64,
+        disable_services: ?[]const []const u8,
     ) Supervisor {
         return Supervisor{
             .allocator = allocator,
@@ -54,17 +65,98 @@ pub const Supervisor = struct {
             .uid = uid,
             .gid = gid,
             .shutdown_grace_period = shutdown_grace_period,
+            .disable_services = disable_services,
         };
     }
 
     pub fn start(self: *Supervisor) !void {
         setup_signal_handlers();
 
+        const enabled_services = services_mod.findEnabledServices(self.allocator, self.disable_services) catch |err| {
+            std.log.warn("failed to discover services: {s}", .{@errorName(err)});
+            return self.startMainProcess();
+        };
+        defer self.allocator.free(enabled_services);
+
+        if (enabled_services.len > 0) {
+            self.service_states = self.allocator.alloc(ServiceState, enabled_services.len) catch |err| {
+                std.log.warn("failed to allocate service states: {s}", .{@errorName(err)});
+                return self.startMainProcess();
+            };
+
+            for (enabled_services, 0..) |svc_def, i| {
+                self.service_states[i] = ServiceState{ .def = svc_def };
+            }
+
+            for (self.service_states) |*svc| {
+                self.startService(svc) catch |err| {
+                    if (svc.def.optional) {
+                        std.log.info("optional service {s} failed to start: {s}", .{ svc.def.name, @errorName(err) });
+                    } else {
+                        std.log.err("required service {s} failed to start: {s}", .{ svc.def.name, @errorName(err) });
+                        return err;
+                    }
+                };
+            }
+        }
+
+        try self.startMainProcess();
+    }
+
+    fn startMainProcess(self: *Supervisor) !void {
         std.log.info("starting main process: {s}", .{self.command[0]});
 
         const pid = try self.spawn_process();
         self.main_pid = pid;
         std.log.info("main process started with pid {d}", .{pid});
+    }
+
+    fn startService(self: *Supervisor, svc: *ServiceState) !void {
+        if (svc.def.init_fn) |init_fn| {
+            try init_fn(self.allocator);
+        }
+
+        const thread = try std.Thread.spawn(.{}, serviceLoop, .{ self, svc });
+        svc.thread = thread;
+    }
+
+    fn serviceLoop(_: *Supervisor, svc: *ServiceState) void {
+        var first_start = true;
+
+        while (!shutdown_requested.load(.acquire)) {
+            if (!first_start) {
+                std.Thread.sleep(5 * std.time.ns_per_s);
+                if (shutdown_requested.load(.acquire)) return;
+            }
+            first_start = false;
+
+            const pid = spawnServiceProcess(svc.def.args) catch |err| {
+                std.log.err("failed to spawn {s}: {s}", .{ svc.def.name, @errorName(err) });
+                continue;
+            };
+
+            svc.pid = pid;
+            std.log.debug("started service {s} with pid {d}", .{ svc.def.name, pid });
+
+            while (!shutdown_requested.load(.acquire)) {
+                var status: u32 = 0;
+                const result = linux.wait4(pid, &status, linux.W.NOHANG, null);
+                const e = posix.errno(result);
+
+                if (result > 0) {
+                    svc.pid = null;
+                    if (!shutdown_requested.load(.acquire)) {
+                        std.log.info("service {s} exited, will restart", .{svc.def.name});
+                    }
+                    break;
+                } else if (e == .CHILD) {
+                    svc.pid = null;
+                    break;
+                }
+
+                std.Thread.sleep(100 * std.time.ns_per_ms);
+            }
+        }
     }
 
     pub fn wait(self: *Supervisor) void {
@@ -74,6 +166,7 @@ pub const Supervisor = struct {
             if (shutdown_requested.load(.acquire) and !main_exited) {
                 std.log.info("shutdown requested, terminating processes", .{});
                 self.graceful_shutdown();
+                self.waitServiceThreads();
                 return;
             }
 
@@ -88,11 +181,13 @@ pub const Supervisor = struct {
                     std.log.info("main process exited", .{});
                     main_exited = true;
                     self.graceful_shutdown();
+                    self.waitServiceThreads();
                     return;
                 }
             } else if (e == .CHILD) {
                 if (main_exited) {
                     std.log.info("all processes exited", .{});
+                    self.waitServiceThreads();
                     return;
                 }
                 std.Thread.sleep(10 * std.time.ns_per_ms);
@@ -103,8 +198,21 @@ pub const Supervisor = struct {
             if (shutdown_requested.load(.acquire) and !main_exited) {
                 std.log.info("shutdown requested, terminating processes", .{});
                 self.graceful_shutdown();
+                self.waitServiceThreads();
                 return;
             }
+        }
+    }
+
+    fn waitServiceThreads(self: *Supervisor) void {
+        for (self.service_states) |svc| {
+            if (svc.thread) |thread| {
+                thread.join();
+            }
+        }
+        if (self.service_states.len > 0) {
+            self.allocator.free(self.service_states);
+            self.service_states = &[_]ServiceState{};
         }
     }
 
@@ -339,6 +447,48 @@ pub const Supervisor = struct {
     }
 };
 
+fn spawnServiceProcess(args: []const []const u8) !posix.pid_t {
+    const pid_result = linux.fork();
+    const pid_err = posix.errno(pid_result);
+    if (pid_err != .SUCCESS) {
+        return error.ForkFailed;
+    }
+
+    const pid: posix.pid_t = @intCast(pid_result);
+    if (pid == 0) {
+        execServiceProcess(args);
+    }
+
+    return pid;
+}
+
+fn execServiceProcess(args: []const []const u8) noreturn {
+    var argv_buf: [16]?[*:0]const u8 = undefined;
+    var arg_storage: [2048]u8 = undefined;
+    var arg_pos: usize = 0;
+
+    for (args, 0..) |arg, i| {
+        if (arg_pos + arg.len + 1 > arg_storage.len or i >= argv_buf.len - 1) {
+            std.log.err("arguments too large for service", .{});
+            linux.exit(1);
+        }
+        @memcpy(arg_storage[arg_pos..][0..arg.len], arg);
+        arg_storage[arg_pos + arg.len] = 0;
+        argv_buf[i] = @ptrCast(&arg_storage[arg_pos]);
+        arg_pos += arg.len + 1;
+    }
+    argv_buf[args.len] = null;
+
+    const exec_result = linux.execve(
+        argv_buf[0].?,
+        @ptrCast(&argv_buf),
+        @ptrCast(std.os.environ.ptr),
+    );
+    const exec_err = posix.errno(exec_result);
+    std.log.err("execve failed: {s}", .{errnoDescription(exec_err)});
+    linux.exit(1);
+}
+
 fn setup_signal_handlers() void {
     const handler = posix.Sigaction{
         .handler = .{ .handler = signal_handler },
@@ -501,6 +651,7 @@ test "Supervisor.init creates supervisor with correct fields" {
         1000,
         1000,
         30,
+        null,
     );
 
     try testing.expectEqual(allocator, supervisor.allocator);
@@ -530,6 +681,7 @@ test "Supervisor.init with null args" {
         0,
         0,
         10,
+        null,
     );
 
     try testing.expect(supervisor.args == null);
@@ -549,6 +701,7 @@ test "Supervisor.buildArgv with command only" {
         0,
         0,
         10,
+        null,
     );
 
     const result = try supervisor.buildArgv();
@@ -578,6 +731,7 @@ test "Supervisor.buildArgv with command and args" {
         0,
         0,
         10,
+        null,
     );
 
     const result = try supervisor.buildArgv();
@@ -608,6 +762,7 @@ test "Supervisor.buildArgv with empty args" {
         0,
         0,
         10,
+        null,
     );
 
     const result = try supervisor.buildArgv();
