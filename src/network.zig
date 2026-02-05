@@ -929,21 +929,31 @@ fn applyDhcpConfig(
     if (ack.options.get(.domain_name_server)) |servers| {
         dns_servers = try allocator.dupe([4]u8, servers);
     }
+    errdefer if (dns_servers.len > 0) allocator.free(dns_servers);
 
     // Get domain name
     var domain_name: ?[]const u8 = null;
     if (ack.options.get(.domain_name)) |dn| {
         domain_name = try allocator.dupe(u8, dn);
     }
+    errdefer if (domain_name) |dn| allocator.free(dn);
 
     // Get search list
     var search_list: []const []const u8 = &.{};
     if (ack.options.get(.domain_search)) |sl| {
         var list: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer {
+            for (list.items) |s| allocator.free(s);
+            list.deinit(allocator);
+        }
         for (sl) |s| {
             try list.append(allocator, try allocator.dupe(u8, s));
         }
         search_list = try list.toOwnedSlice(allocator);
+    }
+    errdefer {
+        for (search_list) |s| allocator.free(s);
+        if (search_list.len > 0) allocator.free(search_list);
     }
 
     const address_config = AddressConfig{

@@ -883,16 +883,28 @@ fn expandCommandAndArgs(
 
     // Expand command
     var expanded_command = try allocator.alloc([]const u8, command.len);
+    var cmd_count: usize = 0;
+    errdefer {
+        for (expanded_command[0..cmd_count]) |s| allocator.free(s);
+        allocator.free(expanded_command);
+    }
     for (command, 0..) |arg, i| {
         expanded_command[i] = try k8s_expand.expand(allocator, arg, &context);
+        cmd_count += 1;
     }
 
     // Expand args if present
     var expanded_args: ?[]const []const u8 = null;
     if (args) |args_slice| {
         var exp_args = try allocator.alloc([]const u8, args_slice.len);
+        var args_count: usize = 0;
+        errdefer {
+            for (exp_args[0..args_count]) |s| allocator.free(s);
+            allocator.free(exp_args);
+        }
         for (args_slice, 0..) |arg, i| {
             exp_args[i] = try k8s_expand.expand(allocator, arg, &context);
+            args_count += 1;
         }
         expanded_args = exp_args;
     }

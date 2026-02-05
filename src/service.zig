@@ -397,16 +397,19 @@ pub const Supervisor = struct {
         var envp = try self.allocator.alloc(?[*:0]const u8, env_count + 1);
         errdefer self.allocator.free(envp);
         var env_strings = try self.allocator.alloc([:0]const u8, env_count);
-        errdefer self.allocator.free(env_strings);
+        var env_strings_count: usize = 0;
+        errdefer {
+            for (env_strings[0..env_strings_count]) |s| self.allocator.free(s);
+            self.allocator.free(env_strings);
+        }
 
-        var idx: usize = 0;
         var iter = env_map.iterator();
         while (iter.next()) |entry| {
             const env_str = try std.fmt.allocPrint(self.allocator, "{s}={s}", .{ entry.key_ptr.*, entry.value_ptr.* });
             defer self.allocator.free(env_str);
-            env_strings[idx] = try self.allocator.dupeZ(u8, env_str);
-            envp[idx] = env_strings[idx].ptr;
-            idx += 1;
+            env_strings[env_strings_count] = try self.allocator.dupeZ(u8, env_str);
+            envp[env_strings_count] = env_strings[env_strings_count].ptr;
+            env_strings_count += 1;
         }
         envp[env_count] = null;
 
