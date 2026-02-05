@@ -40,6 +40,8 @@ METADATA = {
     "instance-type": "t3.micro",
     "placement/availability-zone": "us-east-1a",
     "placement/region": "us-east-1",
+    "public-keys/": "0=test-key",
+    "public-keys/0/openssh-key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC0test-key test@example.com",
 }
 
 # Mock IAM role and credentials

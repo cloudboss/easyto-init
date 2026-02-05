@@ -6,6 +6,7 @@ pub const DIR_DEV_SHM = "/dev/shm";
 pub const DIR_ET = "/.easyto";
 pub const DIR_ET_BIN = "/.easyto/bin";
 pub const DIR_ET_ETC = "/.easyto/etc";
+pub const DIR_ET_HOME = "/.easyto/home";
 pub const DIR_ET_RUN = "/.easyto/run";
 pub const DIR_ET_SBIN = "/.easyto/sbin";
 pub const DIR_ET_SERVICES = "/.easyto/services";

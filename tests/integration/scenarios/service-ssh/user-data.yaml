@@ -1,0 +1,3 @@
+disable-services:
+  - chrony
+command: ["/test-entrypoint"]

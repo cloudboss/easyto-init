@@ -189,6 +189,7 @@ pub fn run(allocator: Allocator) !void {
             gid,
             shutdown_grace_period,
             vmspec.@"disable-services",
+            aws_ctx.getImds(),
         );
 
         try supervisor.start();

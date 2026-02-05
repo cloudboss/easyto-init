@@ -4,6 +4,8 @@ const linux = std.os.linux;
 const posix = std.posix;
 const testing = std.testing;
 
+const aws_sdk = @import("aws_sdk");
+
 const constants = @import("constants.zig");
 const services_mod = @import("services.zig");
 const ServiceDef = services_mod.ServiceDef;
@@ -43,6 +45,7 @@ pub const Supervisor = struct {
     shutdown_grace_period: u64,
     main_pid: ?posix.pid_t = null,
     disable_services: ?[]const []const u8,
+    imds_client: ?*aws_sdk.imds.ImdsClient,
     service_states: []ServiceState = &[_]ServiceState{},
 
     pub fn init(
@@ -55,6 +58,7 @@ pub const Supervisor = struct {
         gid: u32,
         shutdown_grace_period: u64,
         disable_services: ?[]const []const u8,
+        imds_client: ?*aws_sdk.imds.ImdsClient,
     ) Supervisor {
         return Supervisor{
             .allocator = allocator,
@@ -66,13 +70,14 @@ pub const Supervisor = struct {
             .gid = gid,
             .shutdown_grace_period = shutdown_grace_period,
             .disable_services = disable_services,
+            .imds_client = imds_client,
         };
     }
 
     pub fn start(self: *Supervisor) !void {
         setup_signal_handlers();
 
-        const enabled_services = services_mod.findEnabledServices(self.allocator, self.disable_services) catch |err| {
+        const enabled_services = services_mod.findEnabledServices(self.allocator, self.disable_services, self.imds_client) catch |err| {
             std.log.warn("failed to discover services: {s}", .{@errorName(err)});
             return self.startMainProcess();
         };
@@ -180,6 +185,8 @@ pub const Supervisor = struct {
                 if (self.main_pid != null and reaped_pid == self.main_pid.?) {
                     std.log.info("main process exited", .{});
                     main_exited = true;
+                    // Signal service threads to stop restarting
+                    requestShutdown();
                     self.graceful_shutdown();
                     self.waitServiceThreads();
                     return;
@@ -214,6 +221,8 @@ pub const Supervisor = struct {
             self.allocator.free(self.service_states);
             self.service_states = &[_]ServiceState{};
         }
+        // Clean up global service state
+        services_mod.deinit();
     }
 
     fn graceful_shutdown(self: *Supervisor) void {
@@ -655,6 +664,7 @@ test "Supervisor.init creates supervisor with correct fields" {
         1000,
         30,
         null,
+        null,
     );
 
     try testing.expectEqual(allocator, supervisor.allocator);
@@ -685,6 +695,7 @@ test "Supervisor.init with null args" {
         0,
         10,
         null,
+        null,
     );
 
     try testing.expect(supervisor.args == null);
@@ -704,6 +715,7 @@ test "Supervisor.buildArgv with command only" {
         0,
         0,
         10,
+        null,
         null,
     );
 
@@ -735,6 +747,7 @@ test "Supervisor.buildArgv with command and args" {
         0,
         10,
         null,
+        null,
     );
 
     const result = try supervisor.buildArgv();
@@ -765,6 +778,7 @@ test "Supervisor.buildArgv with empty args" {
         0,
         0,
         10,
+        null,
         null,
     );
 
