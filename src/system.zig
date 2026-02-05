@@ -1,9 +1,11 @@
 const std = @import("std");
 const linux = std.os.linux;
 const fmt = std.fmt;
+const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
+const backoff = @import("backoff.zig");
 const constants = @import("constants.zig");
 const nvme = @import("nvme-amz.zig");
 const NameValue = @import("vmspec.zig").NameValue;
@@ -94,6 +96,180 @@ pub fn device_has_numeric_suffix(device: []const u8) bool {
         return false;
     }
     return (device[len - 1] >= '0') and (device[len - 1] <= '9');
+}
+
+/// Check if a device has a filesystem using blkid.
+/// Returns true if filesystem detected, false if no filesystem.
+pub fn deviceHasFilesystem(device: []const u8) !bool {
+    const blkid_path = constants.DIR_ET_SBIN ++ "/blkid";
+
+    var child = std.process.Child.init(
+        &[_][]const u8{ blkid_path, device },
+        std.heap.page_allocator,
+    );
+    child.stderr_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+
+    child.spawn() catch |err| {
+        std.log.err("failed to run blkid for {s}: {s}", .{ device, @errorName(err) });
+        return err;
+    };
+
+    const result = child.wait() catch |err| {
+        std.log.err("failed to wait for blkid {s}: {s}", .{ device, @errorName(err) });
+        return err;
+    };
+
+    return switch (result.Exited) {
+        0 => true, // Filesystem detected
+        2 => false, // No filesystem found
+        else => {
+            std.log.err("blkid {s} failed with exit code {d}", .{ device, result.Exited });
+            return error.BlkidFailed;
+        },
+    };
+}
+
+/// Wait for a device to exist with exponential backoff.
+pub fn waitForDevice(device: []const u8, timeout_secs: u64) !void {
+    const timeout_ns: u64 = timeout_secs * std.time.ns_per_s;
+    const start_time = std.time.nanoTimestamp();
+
+    var retry = backoff.RetryBackoff.init(10000);
+
+    while (true) {
+        // Check if device exists
+        if (std.fs.accessAbsolute(device, .{})) {
+            std.log.debug("device {s} is available", .{device});
+            return;
+        } else |_| {}
+
+        const elapsed: u64 = @intCast(std.time.nanoTimestamp() - start_time);
+        if (elapsed > timeout_ns) {
+            std.log.err("timeout waiting for device {s} to exist", .{device});
+            return error.DeviceTimeout;
+        }
+
+        std.log.debug("waiting for device {s} to exist", .{device});
+        retry.wait();
+    }
+}
+
+/// Create a filesystem on a device if it doesn't have one.
+pub fn createFilesystem(device: []const u8, fs_type: []const u8) !void {
+    // Check if device already has a filesystem
+    const has_fs = deviceHasFilesystem(device) catch |err| {
+        std.log.err("unable to check if {s} has a filesystem: {s}", .{ device, @errorName(err) });
+        return err;
+    };
+
+    if (has_fs) {
+        std.log.debug("device {s} already has a filesystem", .{device});
+        return;
+    }
+
+    // Build mkfs path
+    var mkfs_buf: [128]u8 = undefined;
+    const mkfs_path = fmt.bufPrint(&mkfs_buf, "{s}/mkfs.{s}", .{ constants.DIR_ET_SBIN, fs_type }) catch {
+        std.log.err("mkfs path too long for {s}", .{fs_type});
+        return error.PathTooLong;
+    };
+
+    // Check if mkfs tool exists
+    std.fs.accessAbsolute(mkfs_path, .{}) catch |err| {
+        if (err == error.FileNotFound) {
+            std.log.err("unsupported filesystem {s} for {s}", .{ fs_type, device });
+            return error.UnsupportedFilesystem;
+        }
+        std.log.err("unable to access {s}: {s}", .{ mkfs_path, @errorName(err) });
+        return err;
+    };
+
+    std.log.info("creating {s} filesystem on {s}", .{ fs_type, device });
+
+    // Create null-terminated path for execve
+    var mkfs_z_buf: [129]u8 = undefined;
+    @memcpy(mkfs_z_buf[0..mkfs_path.len], mkfs_path);
+    mkfs_z_buf[mkfs_path.len] = 0;
+    const mkfs_z: [*:0]const u8 = @ptrCast(&mkfs_z_buf);
+
+    // Create null-terminated device path
+    var device_z_buf: [256]u8 = undefined;
+    @memcpy(device_z_buf[0..device.len], device);
+    device_z_buf[device.len] = 0;
+    const device_z: [*:0]const u8 = @ptrCast(&device_z_buf);
+
+    // Fork and exec mkfs
+    const pid_result = linux.fork();
+    const pid_err = posix.errno(pid_result);
+    if (pid_err != .SUCCESS) {
+        std.log.err("fork failed for mkfs: {s}", .{@tagName(pid_err)});
+        return error.ForkFailed;
+    }
+
+    const pid: posix.pid_t = @intCast(pid_result);
+    if (pid == 0) {
+        // Child process - exec mkfs
+        const argv = [_:null]?[*:0]const u8{ mkfs_z, device_z };
+        const envp = [_:null]?[*:0]const u8{};
+        const exec_result = linux.execve(mkfs_z, &argv, &envp);
+        const exec_err = posix.errno(exec_result);
+        std.log.err("unable to run mkfs: {s}", .{@tagName(exec_err)});
+        linux.exit(127);
+    }
+
+    // Parent process - wait for child
+    var status: u32 = 0;
+    while (true) {
+        const wait_result = linux.waitpid(pid, &status, 0);
+        const wait_err = posix.errno(wait_result);
+        if (wait_err == .SUCCESS) break;
+        if (wait_err == .INTR) continue;
+        std.log.err("waitpid failed for mkfs: {s}", .{@tagName(wait_err)});
+        return error.WaitFailed;
+    }
+
+    // Check exit status
+    if (linux.W.IFEXITED(status)) {
+        const exit_code = linux.W.EXITSTATUS(status);
+        if (exit_code != 0) {
+            std.log.err("mkfs.{s} {s} failed with exit code {d}", .{ fs_type, device, exit_code });
+            return error.MkfsFailed;
+        }
+    } else if (linux.W.IFSIGNALED(status)) {
+        const sig = linux.W.TERMSIG(status);
+        std.log.err("mkfs.{s} {s} killed by signal {d}", .{ fs_type, device, sig });
+        return error.MkfsFailed;
+    }
+
+    std.log.info("created {s} filesystem on {s}", .{ fs_type, device });
+}
+
+/// Mount a device to a destination.
+pub fn mountDevice(device: []const u8, destination: []const u8, fs_type: []const u8) !void {
+    const fs_utils = @import("fs.zig");
+
+    // Create mount point if it doesn't exist
+    fs_utils.mkdir_p(destination, 0o755) catch |err| {
+        std.log.err("failed to create mount point {s}: {s}", .{ destination, @errorName(err) });
+        return err;
+    };
+
+    // Mount the device
+    const ret = linux.mount(
+        @ptrCast(device),
+        @ptrCast(destination),
+        @ptrCast(fs_type),
+        0, // No special flags
+        0, // No mount data
+    );
+    const e = posix.errno(ret);
+    if (e != .SUCCESS) {
+        std.log.err("mount {s} on {s} failed: {s}", .{ device, destination, @tagName(e) });
+        return error.MountFailed;
+    }
+
+    std.log.info("mounted {s} on {s}", .{ device, destination });
 }
 
 pub fn poweroff() void {

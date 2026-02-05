@@ -660,6 +660,7 @@ pub const VmSpec = struct {
         var fs_type: ?[]const u8 = null;
         var make_fs: ?bool = null;
         var mount_val: ?Mount = null;
+        var attachment: ?EbsVolumeAttachment = null;
 
         for (map) |entry| {
             if (std.mem.eql(u8, entry.key, "device")) {
@@ -672,17 +673,70 @@ pub const VmSpec = struct {
                 }
             } else if (std.mem.eql(u8, entry.key, "mount")) {
                 mount_val = try parseMount(allocator, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "attachment")) {
+                attachment = try parseEbsVolumeAttachment(allocator, entry.value);
             }
         }
 
-        if (device == null or mount_val == null) return null;
+        if (device == null) return null;
 
         return EbsVolumeSource{
+            .attachment = attachment,
             .device = try allocator.dupe(u8, device.?),
             .@"fs-type" = if (fs_type) |f| try allocator.dupe(u8, f) else null,
             .@"make-fs" = make_fs,
-            .mount = mount_val.?,
+            .mount = mount_val,
         };
+    }
+
+    fn parseEbsVolumeAttachment(allocator: Allocator, value: yaml.Value) !?EbsVolumeAttachment {
+        const map = value.getMap() orelse return null;
+        var tags: ?[]AwsTag = null;
+        var timeout: ?u64 = null;
+
+        for (map) |entry| {
+            if (std.mem.eql(u8, entry.key, "tags")) {
+                tags = try parseAwsTagList(allocator, entry.value);
+            } else if (std.mem.eql(u8, entry.key, "timeout")) {
+                if (entry.value.getString()) |s| {
+                    timeout = std.fmt.parseInt(u64, s, 10) catch null;
+                }
+            }
+        }
+
+        return EbsVolumeAttachment{
+            .tags = tags orelse &[_]AwsTag{},
+            .timeout = timeout,
+        };
+    }
+
+    fn parseAwsTagList(allocator: Allocator, value: yaml.Value) !?[]AwsTag {
+        const list = value.getList() orelse return null;
+        var result = try std.ArrayList(AwsTag).initCapacity(allocator, list.len);
+        errdefer result.deinit(allocator);
+
+        for (list) |item| {
+            const item_map = item.getMap() orelse continue;
+            var key: ?[]const u8 = null;
+            var tag_value: ?[]const u8 = null;
+
+            for (item_map) |entry| {
+                if (std.mem.eql(u8, entry.key, "key")) {
+                    key = entry.value.getString();
+                } else if (std.mem.eql(u8, entry.key, "value")) {
+                    tag_value = entry.value.getString();
+                }
+            }
+
+            if (key) |k| {
+                try result.append(allocator, AwsTag{
+                    .key = try allocator.dupe(u8, k),
+                    .value = if (tag_value) |v| try allocator.dupe(u8, v) else null,
+                });
+            }
+        }
+
+        return try result.toOwnedSlice(allocator);
     }
 
     fn parseMount(allocator: Allocator, value: yaml.Value) !?Mount {
@@ -765,10 +819,25 @@ pub const VmSpec = struct {
 
     fn dupeEbsVolumeSource(allocator: Allocator, src: EbsVolumeSource) !EbsVolumeSource {
         return EbsVolumeSource{
+            .attachment = if (src.attachment) |att| try dupeEbsVolumeAttachment(allocator, att) else null,
             .device = try allocator.dupe(u8, src.device),
             .@"fs-type" = if (src.@"fs-type") |f| try allocator.dupe(u8, f) else null,
             .@"make-fs" = src.@"make-fs",
-            .mount = try dupeMount(allocator, src.mount),
+            .mount = if (src.mount) |m| try dupeMount(allocator, m) else null,
+        };
+    }
+
+    fn dupeEbsVolumeAttachment(allocator: Allocator, src: EbsVolumeAttachment) !EbsVolumeAttachment {
+        var tags = try allocator.alloc(AwsTag, src.tags.len);
+        for (src.tags, 0..) |tag, i| {
+            tags[i] = AwsTag{
+                .key = try allocator.dupe(u8, tag.key),
+                .value = if (tag.value) |v| try allocator.dupe(u8, v) else null,
+            };
+        }
+        return EbsVolumeAttachment{
+            .tags = tags,
+            .timeout = src.timeout,
         };
     }
 
@@ -970,10 +1039,21 @@ pub const Volume = struct {
 };
 
 pub const EbsVolumeSource = struct {
+    attachment: ?EbsVolumeAttachment = null,
     device: []const u8,
     @"fs-type": ?[]const u8 = null,
     @"make-fs": ?bool = null,
-    mount: Mount,
+    mount: ?Mount = null,
+};
+
+pub const EbsVolumeAttachment = struct {
+    tags: []AwsTag = &[_]AwsTag{},
+    timeout: ?u64 = null,
+};
+
+pub const AwsTag = struct {
+    key: []const u8,
+    value: ?[]const u8 = null,
 };
 
 pub const S3VolumeSource = struct {

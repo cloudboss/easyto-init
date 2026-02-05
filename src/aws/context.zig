@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 
 const aws_sdk = @import("aws_sdk");
 
+const Ec2Client = @import("ec2.zig").Ec2Client;
 const S3Client = @import("s3.zig").S3Client;
 const SecretsManagerClient = @import("asm.zig").SecretsManagerClient;
 const SsmClient = @import("ssm.zig").SsmClient;
@@ -17,6 +18,7 @@ pub const AwsContext = struct {
     imds: aws_sdk.imds.ImdsClient,
     aws_client: ?aws_sdk.Client = null,
     credentials_verified: bool = false,
+    ec2: ?Ec2Client = null,
     s3: ?S3Client = null,
     ssm: ?SsmClient = null,
     secrets_manager: ?SecretsManagerClient = null,
@@ -40,6 +42,9 @@ pub const AwsContext = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.ec2) |*client| {
+            client.deinit();
+        }
         if (self.s3) |*client| {
             client.deinit();
         }
@@ -88,6 +93,16 @@ pub const AwsContext = struct {
             self.secrets_manager = SecretsManagerClient.init(self.allocator);
         }
         return &self.secrets_manager.?;
+    }
+
+    /// Get or initialize the EC2 client.
+    /// Returns error if no IAM instance profile is attached.
+    pub fn getEc2(self: *Self) !*Ec2Client {
+        try self.verifyCredentials();
+        if (self.ec2 == null) {
+            self.ec2 = Ec2Client.init(self.allocator);
+        }
+        return &self.ec2.?;
     }
 
     /// Verify that IAM credentials are available by calling STS GetCallerIdentity.

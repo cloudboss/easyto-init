@@ -26,6 +26,7 @@ const spot = @import("spot.zig");
 const system = @import("system.zig");
 const vmspec_mod = @import("vmspec.zig");
 const VmSpec = vmspec_mod.VmSpec;
+const EbsVolumeSource = vmspec_mod.EbsVolumeSource;
 const EnvFromSource = vmspec_mod.EnvFromSource;
 const NameValue = vmspec_mod.NameValue;
 const Volume = vmspec_mod.Volume;
@@ -786,8 +787,8 @@ fn processVolumes(aws_ctx: *AwsContext, volumes: []const Volume) !void {
         if (volume.@"secrets-manager") |sm| {
             try handleSecretsManagerVolume(aws_ctx, &sm);
         }
-        if (volume.ebs != null) {
-            std.log.warn("EBS volumes not yet implemented", .{});
+        if (volume.ebs) |ebs| {
+            try handleEbsVolume(aws_ctx, &ebs);
         }
     }
 }
@@ -881,6 +882,106 @@ fn handleSecretsManagerVolume(aws_ctx: *AwsContext, volume: *const SecretsManage
     };
 
     std.log.info("Secrets Manager secret {s} mounted to {s}", .{ secret_id, destination });
+}
+
+fn handleEbsVolume(aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
+    const device = volume.device;
+
+    std.log.info("processing EBS volume {s}", .{device});
+
+    // Validate device is specified
+    if (device.len == 0) {
+        std.log.err("EBS volume must have a device", .{});
+        return error.InvalidEbsConfig;
+    }
+
+    // Validate mount configuration if present
+    if (volume.mount) |mnt| {
+        if (mnt.destination.len == 0) {
+            std.log.err("EBS volume mount must have a destination", .{});
+            return error.InvalidEbsConfig;
+        }
+    }
+
+    // Handle volume attachment if specified
+    if (volume.attachment) |attachment| {
+        const imds_client = aws_ctx.getImds();
+
+        // Get availability zone from IMDS
+        const az = imds_client.get("/latest/meta-data/placement/availability-zone") catch |err| {
+            std.log.err("failed to get availability zone from IMDS: {s}", .{@errorName(err)});
+            return err;
+        };
+        defer aws_ctx.allocator.free(az);
+
+        // Get instance ID from IMDS
+        const instance_id = imds_client.get("/latest/meta-data/instance-id") catch |err| {
+            std.log.err("failed to get instance ID from IMDS: {s}", .{@errorName(err)});
+            return err;
+        };
+        defer aws_ctx.allocator.free(instance_id);
+
+        // Get EC2 client and ensure volume is attached
+        const ec2_client = try aws_ctx.getEc2();
+        ec2_client.ensureVolumeAttached(
+            &attachment,
+            device,
+            std.mem.trim(u8, az, " \t\r\n"),
+            std.mem.trim(u8, instance_id, " \t\r\n"),
+        ) catch |err| {
+            std.log.err("unable to ensure EBS volume {s} is attached: {s}", .{ device, @errorName(err) });
+            return err;
+        };
+
+        std.log.info("EBS volume {s} is attached", .{device});
+
+        // Wait for device to appear
+        const timeout = attachment.timeout orelse 300;
+        system.waitForDevice(device, timeout) catch |err| {
+            std.log.err("timeout waiting for device {s}: {s}", .{ device, @errorName(err) });
+            return err;
+        };
+
+        std.log.info("EBS volume device {s} is available", .{device});
+    }
+
+    // If no mount specified, we're done
+    const mnt = volume.mount orelse return;
+
+    // Get filesystem type (required for mounting)
+    const fs_type = volume.@"fs-type" orelse {
+        std.log.err("EBS volume mount must have a filesystem type", .{});
+        return error.InvalidEbsConfig;
+    };
+
+    // Create filesystem if make-fs is true or not specified (default: create if needed)
+    const make_fs = volume.@"make-fs" orelse true;
+    if (make_fs) {
+        system.createFilesystem(device, fs_type) catch |err| {
+            std.log.err("failed to create filesystem on {s}: {s}", .{ device, @errorName(err) });
+            return err;
+        };
+    }
+
+    // Parse mode if specified
+    const mode: std.fs.File.Mode = if (mnt.mode) |mode_str|
+        std.fmt.parseInt(u32, mode_str, 8) catch 0o755
+    else
+        0o755;
+
+    // Create mount point with proper permissions
+    fs_utils.mkdir_p_own(mnt.destination, mode, mnt.@"user-id", mnt.@"group-id") catch |err| {
+        std.log.err("failed to create mount point {s}: {s}", .{ mnt.destination, @errorName(err) });
+        return err;
+    };
+
+    // Mount the device
+    system.mountDevice(device, mnt.destination, fs_type) catch |err| {
+        std.log.err("failed to mount {s} on {s}: {s}", .{ device, mnt.destination, @errorName(err) });
+        return err;
+    };
+
+    std.log.info("EBS volume {s} mounted to {s}", .{ device, mnt.destination });
 }
 
 fn expandCommandAndArgs(
