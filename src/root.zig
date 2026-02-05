@@ -12,6 +12,7 @@ const service = @import("service.zig");
 const spot = @import("spot.zig");
 const string = @import("string.zig");
 const system = @import("system.zig");
+const uevent = @import("uevent.zig");
 const vmspec = @import("vmspec.zig");
 const yaml = @import("yaml.zig");
 
@@ -31,6 +32,7 @@ test {
     testing.refAllDecls(spot);
     testing.refAllDecls(string);
     testing.refAllDecls(system);
+    testing.refAllDecls(uevent);
     testing.refAllDecls(vmspec);
     testing.refAllDecls(yaml);
 }

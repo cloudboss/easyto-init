@@ -24,6 +24,7 @@ const service = @import("service.zig");
 const Supervisor = service.Supervisor;
 const spot = @import("spot.zig");
 const system = @import("system.zig");
+const uevent = @import("uevent.zig");
 const vmspec_mod = @import("vmspec.zig");
 const VmSpec = vmspec_mod.VmSpec;
 const EbsVolumeSource = vmspec_mod.EbsVolumeSource;
@@ -106,6 +107,9 @@ pub fn run(allocator: Allocator) !void {
         break :blk null;
     };
     defer if (user_data) |ud| allocator.free(ud);
+
+    std.log.info("starting uevent listener", .{});
+    try uevent.startUeventListener(allocator);
 
     std.log.info("linking nvme devices", .{});
     try system.link_nvme_devices(allocator);

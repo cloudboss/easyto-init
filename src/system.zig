@@ -13,78 +13,163 @@ const NameValue = @import("vmspec.zig").NameValue;
 const SYS_BLOCK_PATH = "/sys/block";
 
 pub fn link_nvme_devices(allocator: Allocator) !void {
-    var dir = try std.fs.openDirAbsolute(SYS_BLOCK_PATH, .{ .iterate = true });
+    var dir = try std.fs.openDirAbsolute(
+        SYS_BLOCK_PATH,
+        .{ .iterate = true },
+    );
     defer dir.close();
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
-        if (entry.kind != std.fs.File.Kind.directory) continue;
+        if (entry.kind != .directory) continue;
         const device_name = entry.name;
-        var device_dir = try dir.openDir(device_name, .{});
-        defer device_dir.close();
-        var errno: usize = 0;
-        var nvme_info = nvme.Nvme.from_fd(allocator, device_dir.fd, &errno) catch {
-            continue;
-        };
-        defer nvme_info.deinit(allocator);
-        const ec2_device_name = try nvme_info.name();
-        var buf: [128]u8 = undefined;
-        const device_link_path = try fmt.bufPrint(
-            &buf,
-            "{s}/{s}",
-            .{ constants.DIR_DEV, ec2_device_name },
-        );
-        try std.posix.link(device_name, device_link_path);
 
-        // Link partitions too if they exist.
-        var partitions = try disk_partitions(allocator, device_name);
+        linkNvmeDevice(allocator, device_name, null) catch {};
+
+        var partitions = disk_partitions(
+            allocator,
+            device_name,
+        ) catch continue;
         defer {
             for (partitions.items) |*p| p.deinit(allocator);
             partitions.deinit(allocator);
         }
-        for (partitions.items) |*partition| {
-            var pt_buf: [128]u8 = undefined;
-            const partition_name = if (device_has_numeric_suffix(ec2_device_name))
-                try fmt.bufPrint(&pt_buf, "{s}p{s}", .{ ec2_device_name, partition.partition })
-            else
-                try fmt.bufPrint(&pt_buf, "{s}{s}", .{ ec2_device_name, partition.partition });
-            var pt_lnk_buf: [128]u8 = undefined;
-            const partition_link_path = try fmt.bufPrint(
-                &pt_lnk_buf,
-                "{s}/{s}",
-                .{ constants.DIR_DEV, partition_name },
-            );
-            try std.posix.link(partition.device, partition_link_path);
+        for (partitions.items) |partition| {
+            linkNvmeDevice(
+                allocator,
+                partition.name,
+                partition.part_num,
+            ) catch {};
         }
     }
 }
 
-pub const PartitionInfo = struct {
-    device: []const u8,
-    partition: []const u8,
+const PartitionInfo = struct {
+    name: []const u8,
+    part_num: []const u8,
 
-    pub fn deinit(self: *PartitionInfo, allocator: Allocator) void {
-        allocator.free(self.partition);
+    fn deinit(self: *PartitionInfo, allocator: Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.part_num);
     }
 };
 
-pub fn disk_partitions(allocator: Allocator, device: []const u8) !std.ArrayList(PartitionInfo) {
-    var buf: [128]u8 = undefined;
-    const sys_device_path = try fmt.bufPrint(&buf, "{s}/{s}", .{ SYS_BLOCK_PATH, device });
+/// Link a single device to its EC2 device name via symlink.
+/// Used by the uevent listener for hotplugged NVMe devices.
+pub fn linkNvmeDevice(allocator: Allocator, device_name: []const u8, part_num: ?[]const u8) !void {
+    var dev_path_buf: [128]u8 = undefined;
+    const dev_path = try fmt.bufPrint(
+        &dev_path_buf,
+        "{s}/{s}",
+        .{ constants.DIR_DEV, device_name },
+    );
 
-    var dir = try std.fs.openDirAbsolute(sys_device_path, .{ .iterate = true });
+    const file = std.fs.openFileAbsolute(dev_path, .{}) catch |err| {
+        std.log.err("unable to open {s}: {s}", .{ dev_path, @errorName(err) });
+        return err;
+    };
+    defer file.close();
+
+    var errno: usize = 0;
+    var nvme_info = nvme.Nvme.from_fd(allocator, file.handle, &errno) catch {
+        return;
+    };
+    defer nvme_info.deinit(allocator);
+
+    std.log.debug("nvme device: {any}", .{nvme_info});
+
+    const ec2_name = nvme_info.name() catch return;
+
+    var link_name_buf: [128]u8 = undefined;
+    const link_name = if (part_num) |pn|
+        if (device_has_numeric_suffix(ec2_name))
+            try fmt.bufPrint(&link_name_buf, "{s}p{s}", .{ ec2_name, pn })
+        else
+            try fmt.bufPrint(&link_name_buf, "{s}{s}", .{ ec2_name, pn })
+    else
+        ec2_name;
+
+    var link_path_buf: [128]u8 = undefined;
+    const link_path = try fmt.bufPrint(
+        &link_path_buf,
+        "{s}/{s}",
+        .{ constants.DIR_DEV, link_name },
+    );
+
+    std.log.debug("linking {s} to {s}", .{ device_name, link_path });
+
+    std.posix.symlink(device_name, link_path) catch |err| {
+        if (err != error.PathAlreadyExists) {
+            std.log.err(
+                "unable to link {s} to {s}: {s}",
+                .{ device_name, link_path, @errorName(err) },
+            );
+            return err;
+        }
+    };
+}
+
+fn disk_partitions(
+    allocator: Allocator,
+    device: []const u8,
+) !std.ArrayList(PartitionInfo) {
+    var path_buf: [128]u8 = undefined;
+    const sys_device_path = try fmt.bufPrint(
+        &path_buf,
+        "{s}/{s}",
+        .{ SYS_BLOCK_PATH, device },
+    );
+
+    var dir = std.fs.openDirAbsolute(
+        sys_device_path,
+        .{ .iterate = true },
+    ) catch |err| {
+        std.log.err(
+            "unable to open {s}: {s}",
+            .{ sys_device_path, @errorName(err) },
+        );
+        return err;
+    };
     defer dir.close();
     var iter = dir.iterate();
 
-    var partitions = try std.ArrayList(PartitionInfo).initCapacity(allocator, 10);
+    var partitions: std.ArrayList(PartitionInfo) = .empty;
 
     while (try iter.next()) |entry| {
-        if (entry.kind != std.fs.File.Kind.directory) continue;
-        if (!std.ascii.eqlIgnoreCase(entry.name, device)) continue;
-        var pt_buf: [128]u8 = undefined;
-        const partition_path = try fmt.bufPrint(&pt_buf, "{s}/partition", .{sys_device_path});
-        const partition_file = try dir.openFile(partition_path, .{});
-        const partition = try partition_file.readToEndAlloc(allocator, 32);
-        try partitions.append(allocator, PartitionInfo{ .device = device, .partition = partition });
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, device)) continue;
+
+        var pt_path_buf: [256]u8 = undefined;
+        const pt_path = fmt.bufPrint(
+            &pt_path_buf,
+            "{s}/partition",
+            .{entry.name},
+        ) catch continue;
+
+        const pt_file = dir.openFile(pt_path, .{}) catch continue;
+        defer pt_file.close();
+
+        const raw = pt_file.readToEndAlloc(allocator, 32) catch continue;
+        const part_num = std.mem.trim(u8, raw, " \t\r\n");
+        // Dupe the trimmed slice so we can free the raw buffer.
+        const pn = allocator.dupe(u8, part_num) catch {
+            allocator.free(raw);
+            continue;
+        };
+        allocator.free(raw);
+
+        const name = allocator.dupe(u8, entry.name) catch {
+            allocator.free(pn);
+            continue;
+        };
+
+        partitions.append(allocator, PartitionInfo{
+            .name = name,
+            .part_num = pn,
+        }) catch {
+            allocator.free(name);
+            allocator.free(pn);
+            continue;
+        };
     }
 
     return partitions;
