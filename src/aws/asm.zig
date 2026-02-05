@@ -56,7 +56,10 @@ pub const SecretsManagerClient = struct {
         const result = aws_sdk.Request(services.secrets_manager.get_secret_value).call(.{
             .secret_id = secret_id,
         }, options) catch |err| {
-            scoped_log.err("Secrets Manager GetSecretValue failed for {s}: {s}", .{ secret_id, @errorName(err) });
+            scoped_log.err(
+                "Secrets Manager GetSecretValue failed for {s}: {s}",
+                .{ secret_id, @errorName(err) },
+            );
             return SecretsManagerError.RequestFailed;
         };
         defer result.deinit();
@@ -101,7 +104,14 @@ pub const SecretsManagerClient = struct {
 
         scoped_log.debug("writing {s} ({d} bytes)", .{ destination, content.len });
 
-        fs_utils.writeFile(destination, content, options.file_mode, options.dir_mode, options.uid, options.gid) catch |err| {
+        fs_utils.writeFile(
+            destination,
+            content,
+            options.file_mode,
+            options.dir_mode,
+            options.uid,
+            options.gid,
+        ) catch |err| {
             scoped_log.err("failed to write {s}: {s}", .{ destination, @errorName(err) });
             return err;
         };

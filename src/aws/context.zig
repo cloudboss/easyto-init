@@ -103,7 +103,10 @@ pub const AwsContext = struct {
             .client = self.aws_client.?,
         };
 
-        const result = aws_sdk.Request(sts_services.sts.get_caller_identity).call(.{}, options) catch |err| {
+        const result = aws_sdk.Request(sts_services.sts.get_caller_identity).call(
+            .{},
+            options,
+        ) catch |err| {
             scoped_log.err("user data config requires an IAM instance profile: {s}", .{@errorName(err)});
             return Error.NoInstanceProfile;
         };

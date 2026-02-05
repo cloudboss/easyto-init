@@ -508,7 +508,12 @@ fn replaceInit(
     return error.ExecveFailed;
 }
 
-fn resolveEnvFrom(allocator: Allocator, aws_ctx: *AwsContext, vmspec: *VmSpec, env_from: []const EnvFromSource) !void {
+fn resolveEnvFrom(
+    allocator: Allocator,
+    aws_ctx: *AwsContext,
+    vmspec: *VmSpec,
+    env_from: []const EnvFromSource,
+) !void {
     const arena_alloc = vmspec.arena.?.allocator();
 
     for (env_from) |source| {
@@ -544,10 +549,16 @@ fn resolveEnvFrom(allocator: Allocator, aws_ctx: *AwsContext, vmspec: *VmSpec, e
                 // Single value with explicit name
                 const value = s3_client.getObject(s3.bucket, s3.key) catch |err| {
                     if (s3.optional orelse false) {
-                        std.log.info("optional S3 object s3://{s}/{s} not found, skipping", .{ s3.bucket, s3.key });
+                        std.log.info(
+                            "optional S3 object s3://{s}/{s} not found, skipping",
+                            .{ s3.bucket, s3.key },
+                        );
                         continue;
                     }
-                    std.log.err("failed to fetch S3 object s3://{s}/{s}: {s}", .{ s3.bucket, s3.key, @errorName(err) });
+                    std.log.err(
+                        "failed to fetch S3 object s3://{s}/{s}: {s}",
+                        .{ s3.bucket, s3.key, @errorName(err) },
+                    );
                     return err;
                 };
                 defer allocator.free(value);
@@ -561,10 +572,16 @@ fn resolveEnvFrom(allocator: Allocator, aws_ctx: *AwsContext, vmspec: *VmSpec, e
                 // JSON map expanded to multiple env vars
                 var env_map = s3_client.getObjectMap(s3.bucket, s3.key) catch |err| {
                     if (s3.optional orelse false) {
-                        std.log.info("optional S3 object s3://{s}/{s} not found, skipping", .{ s3.bucket, s3.key });
+                        std.log.info(
+                            "optional S3 object s3://{s}/{s} not found, skipping",
+                            .{ s3.bucket, s3.key },
+                        );
                         continue;
                     }
-                    std.log.err("failed to fetch S3 object map s3://{s}/{s}: {s}", .{ s3.bucket, s3.key, @errorName(err) });
+                    std.log.err(
+                        "failed to fetch S3 object map s3://{s}/{s}: {s}",
+                        .{ s3.bucket, s3.key, @errorName(err) },
+                    );
                     return err;
                 };
                 defer {
@@ -579,7 +596,10 @@ fn resolveEnvFrom(allocator: Allocator, aws_ctx: *AwsContext, vmspec: *VmSpec, e
                 var map_it = env_map.iterator();
                 while (map_it.next()) |entry| {
                     try addEnvVar(arena_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
-                    std.log.info("resolved env {s} from S3 s3://{s}/{s}", .{ entry.key_ptr.*, s3.bucket, s3.key });
+                    std.log.info(
+                        "resolved env {s} from S3 s3://{s}/{s}",
+                        .{ entry.key_ptr.*, s3.bucket, s3.key },
+                    );
                 }
             }
         }

@@ -261,7 +261,12 @@ pub const Names = struct {
         if (self.virtual_name) |vn| allocator.free(vn);
     }
 
-    pub fn format(self: Names, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(
+        self: Names,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
         _ = try writer.print("{s}{{ .device_name = ", .{@typeName(Names)});
         _ = try writer.print("{?s}", .{self.device_name});
         try writer.writeAll(", .virtual_name = ");
@@ -323,7 +328,12 @@ pub const Nvme = struct {
         self.names.deinit(allocator);
     }
 
-    pub fn format(self: Nvme, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(
+        self: Nvme,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
         _ = try writer.print("{s}{{ .model = ", .{@typeName(Nvme)});
         _ = try writer.print("{any}", .{self.model});
         try writer.writeAll(", .names = ");

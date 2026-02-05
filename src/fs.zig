@@ -37,7 +37,14 @@ fn mkdir_p_own_at(dir_fd: posix.fd_t, path: []const u8, mode: Mode, uid: ?u32, g
 }
 
 /// Write content to a file, creating parent directories as needed.
-pub fn writeFile(path: []const u8, content: []const u8, file_mode: Mode, dir_mode: Mode, uid: ?u32, gid: ?u32) !void {
+pub fn writeFile(
+    path: []const u8,
+    content: []const u8,
+    file_mode: Mode,
+    dir_mode: Mode,
+    uid: ?u32,
+    gid: ?u32,
+) !void {
     // Create parent directories
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |last_slash| {
         if (last_slash > 0) {

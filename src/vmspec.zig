@@ -730,7 +730,10 @@ pub const VmSpec = struct {
         return Volume{
             .s3 = if (vol.s3) |s3| try dupeS3VolumeSource(allocator, s3) else null,
             .ssm = if (vol.ssm) |ssm| try dupeSsmVolumeSource(allocator, ssm) else null,
-            .@"secrets-manager" = if (vol.@"secrets-manager") |sm| try dupeSecretsManagerVolumeSource(allocator, sm) else null,
+            .@"secrets-manager" = if (vol.@"secrets-manager") |sm|
+                try dupeSecretsManagerVolumeSource(allocator, sm)
+            else
+                null,
             .ebs = if (vol.ebs) |ebs| try dupeEbsVolumeSource(allocator, ebs) else null,
         };
     }
@@ -791,7 +794,10 @@ pub const VmSpec = struct {
         return EnvFromSource{
             .imds = if (src.imds) |imds| try dupeImdsEnvSource(allocator, imds) else null,
             .s3 = if (src.s3) |s3| try dupeS3EnvSource(allocator, s3) else null,
-            .@"secrets-manager" = if (src.@"secrets-manager") |sm| try dupeSecretsManagerEnvSource(allocator, sm) else null,
+            .@"secrets-manager" = if (src.@"secrets-manager") |sm|
+                try dupeSecretsManagerEnvSource(allocator, sm)
+            else
+                null,
             .ssm = if (src.ssm) |ssm| try dupeSsmEnvSource(allocator, ssm) else null,
         };
     }

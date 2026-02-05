@@ -77,7 +77,11 @@ pub const Supervisor = struct {
     pub fn start(self: *Supervisor) !void {
         setup_signal_handlers();
 
-        const enabled_services = services_mod.findEnabledServices(self.allocator, self.disable_services, self.imds_client) catch |err| {
+        const enabled_services = services_mod.findEnabledServices(
+            self.allocator,
+            self.disable_services,
+            self.imds_client,
+        ) catch |err| {
             std.log.warn("failed to discover services: {s}", .{@errorName(err)});
             return self.startMainProcess();
         };
@@ -414,7 +418,11 @@ pub const Supervisor = struct {
 
         var iter = env_map.iterator();
         while (iter.next()) |entry| {
-            const env_str = try std.fmt.allocPrint(self.allocator, "{s}={s}", .{ entry.key_ptr.*, entry.value_ptr.* });
+            const env_str = try std.fmt.allocPrint(
+                self.allocator,
+                "{s}={s}",
+                .{ entry.key_ptr.*, entry.value_ptr.* },
+            );
             defer self.allocator.free(env_str);
             env_strings[env_strings_count] = try self.allocator.dupeZ(u8, env_str);
             envp[env_strings_count] = env_strings[env_strings_count].ptr;

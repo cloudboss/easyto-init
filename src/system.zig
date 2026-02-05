@@ -26,7 +26,11 @@ pub fn link_nvme_devices(allocator: Allocator) !void {
         defer nvme_info.deinit(allocator);
         const ec2_device_name = try nvme_info.name();
         var buf: [128]u8 = undefined;
-        const device_link_path = try fmt.bufPrint(&buf, "{s}/{s}", .{ constants.DIR_DEV, ec2_device_name });
+        const device_link_path = try fmt.bufPrint(
+            &buf,
+            "{s}/{s}",
+            .{ constants.DIR_DEV, ec2_device_name },
+        );
         try std.posix.link(device_name, device_link_path);
 
         // Link partitions too if they exist.
@@ -42,7 +46,11 @@ pub fn link_nvme_devices(allocator: Allocator) !void {
             else
                 try fmt.bufPrint(&pt_buf, "{s}{s}", .{ ec2_device_name, partition.partition });
             var pt_lnk_buf: [128]u8 = undefined;
-            const partition_link_path = try fmt.bufPrint(&pt_lnk_buf, "{s}/{s}", .{ constants.DIR_DEV, partition_name });
+            const partition_link_path = try fmt.bufPrint(
+                &pt_lnk_buf,
+                "{s}/{s}",
+                .{ constants.DIR_DEV, partition_name },
+            );
             try std.posix.link(partition.device, partition_link_path);
         }
     }
@@ -150,7 +158,11 @@ fn runInitScript(script: []const u8, index: usize, env: ?[]const NameValue) !voi
 
     // Build script path: /.easyto/run/init-{index}
     var path_buf: [128]u8 = undefined;
-    const path_len = fmt.bufPrint(&path_buf, "{s}/init-{d}", .{ constants.DIR_ET_RUN, index }) catch {
+    const path_len = fmt.bufPrint(
+        &path_buf,
+        "{s}/init-{d}",
+        .{ constants.DIR_ET_RUN, index },
+    ) catch {
         std.log.err("init script path too long", .{});
         return error.PathTooLong;
     };

@@ -71,7 +71,10 @@ pub const S3Client = struct {
         defer self.allocator.free(content);
 
         return parseJsonToMap(self.allocator, content) catch |err| {
-            scoped_log.err("Failed to parse JSON from s3://{s}/{s}: {s}", .{ bucket, key, @errorName(err) });
+            scoped_log.err(
+                "Failed to parse JSON from s3://{s}/{s}: {s}",
+                .{ bucket, key, @errorName(err) },
+            );
             return err;
         };
     }
@@ -99,7 +102,10 @@ pub const S3Client = struct {
                 .prefix = prefix,
                 .continuation_token = continuation_token,
             }, options) catch |err| {
-                scoped_log.err("S3 ListObjects failed for s3://{s}/{s}: {s}", .{ bucket, prefix, @errorName(err) });
+                scoped_log.err(
+                    "S3 ListObjects failed for s3://{s}/{s}: {s}",
+                    .{ bucket, prefix, @errorName(err) },
+                );
                 return S3Error.RequestFailed;
             };
             defer result.deinit();
@@ -171,7 +177,14 @@ pub const S3Client = struct {
 
             scoped_log.debug("writing {s} ({d} bytes)", .{ dest_path, content.len });
 
-            fs_utils.writeFile(dest_path, content, options.file_mode, options.dir_mode, options.uid, options.gid) catch |err| {
+            fs_utils.writeFile(
+                dest_path,
+                content,
+                options.file_mode,
+                options.dir_mode,
+                options.uid,
+                options.gid,
+            ) catch |err| {
                 scoped_log.err("failed to write {s}: {s}", .{ dest_path, @errorName(err) });
                 return err;
             };

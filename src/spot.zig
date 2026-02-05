@@ -23,7 +23,11 @@ const SPOT_INSTANCE_ACTION_PATH = "/latest/meta-data/spot/instance-action";
 /// When a termination notice is detected, it triggers a graceful shutdown
 /// via the supervisor's shutdown_requested atomic.
 pub fn startSpotTerminationMonitor() void {
-    const thread = std.Thread.spawn(.{ .stack_size = 1024 * 1024 }, monitorLoop, .{}) catch |err| {
+    const thread = std.Thread.spawn(
+        .{ .stack_size = 1024 * 1024 },
+        monitorLoop,
+        .{},
+    ) catch |err| {
         scoped_log.err("failed to spawn spot termination monitor thread: {s}", .{@errorName(err)});
         return;
     };

@@ -206,7 +206,13 @@ fn isCommentLine(line: Line) bool {
         line.content[0] == '#';
 }
 
-fn parseValue(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
+fn parseValue(
+    allocator: Allocator,
+    lines: []const Line,
+    start: usize,
+    base_indent: usize,
+    owned_strings: *std.ArrayListUnmanaged([]const u8),
+) ParseError!Value {
     // Skip comment lines at the structural level
     var actual_start = start;
     while (actual_start < lines.len) {
@@ -244,7 +250,13 @@ fn parseValue(allocator: Allocator, lines: []const Line, start: usize, base_inde
     return Value{ .string = std.mem.trim(u8, first.content, " \t\r\"'") };
 }
 
-fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
+fn parseList(
+    allocator: Allocator,
+    lines: []const Line,
+    start: usize,
+    base_indent: usize,
+    owned_strings: *std.ArrayListUnmanaged([]const u8),
+) ParseError!Value {
     var items = ArrayList(Value){};
     errdefer {
         for (items.items) |item| {
@@ -337,7 +349,13 @@ fn parseList(allocator: Allocator, lines: []const Line, start: usize, base_inden
     return Value{ .list = try items.toOwnedSlice(allocator) };
 }
 
-fn parseMap(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
+fn parseMap(
+    allocator: Allocator,
+    lines: []const Line,
+    start: usize,
+    base_indent: usize,
+    owned_strings: *std.ArrayListUnmanaged([]const u8),
+) ParseError!Value {
     var entries = ArrayList(MapEntry){};
     errdefer {
         for (entries.items) |entry| {
@@ -393,7 +411,13 @@ const BlockScalarResult = struct {
     next_index: usize,
 };
 
-fn parseBlockScalarFromList(allocator: Allocator, lines: []const Line, start: usize, list_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!BlockScalarResult {
+fn parseBlockScalarFromList(
+    allocator: Allocator,
+    lines: []const Line,
+    start: usize,
+    list_indent: usize,
+    owned_strings: *std.ArrayListUnmanaged([]const u8),
+) ParseError!BlockScalarResult {
     var content = ArrayList(u8){};
     errdefer content.deinit(allocator);
 
@@ -457,7 +481,13 @@ fn parseBlockScalarFromList(allocator: Allocator, lines: []const Line, start: us
     };
 }
 
-fn parseBlockScalar(allocator: Allocator, lines: []const Line, start: usize, base_indent: usize, owned_strings: *std.ArrayListUnmanaged([]const u8)) ParseError!Value {
+fn parseBlockScalar(
+    allocator: Allocator,
+    lines: []const Line,
+    start: usize,
+    base_indent: usize,
+    owned_strings: *std.ArrayListUnmanaged([]const u8),
+) ParseError!Value {
     _ = base_indent;
     var content = ArrayList(u8){};
     errdefer content.deinit(allocator);

@@ -165,7 +165,14 @@ pub const SsmClient = struct {
 
             scoped_log.debug("writing {s} ({d} bytes)", .{ dest_path, param.value.len });
 
-            fs_utils.writeFile(dest_path, param.value, options.file_mode, options.dir_mode, options.uid, options.gid) catch |err| {
+            fs_utils.writeFile(
+                dest_path,
+                param.value,
+                options.file_mode,
+                options.dir_mode,
+                options.uid,
+                options.gid,
+            ) catch |err| {
                 scoped_log.err("failed to write {s}: {s}", .{ dest_path, @errorName(err) });
                 return err;
             };

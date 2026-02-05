@@ -171,15 +171,34 @@ fn initializeNetworkInner(allocator: Allocator, imds_client: *aws_sdk.imds.ImdsC
     try ensureLoopback(&socket, interfaces.items, allocator);
 
     // Select and configure primary interface
-    const select_result = try selectPrimaryInterface(&socket, imds_client, interfaces.items, &persisted_state, allocator);
+    const select_result = try selectPrimaryInterface(
+        &socket,
+        imds_client,
+        interfaces.items,
+        &persisted_state,
+        allocator,
+    );
     const primary = select_result.primary;
     var bootstrap_lease = select_result.bootstrap_lease;
 
     // Apply primary naming (rename to eth0 if needed)
-    const final_primary = try applyPrimaryNaming(&socket, interfaces.items, primary, &persisted_state, allocator);
+    const final_primary = try applyPrimaryNaming(
+        &socket,
+        interfaces.items,
+        primary,
+        &persisted_state,
+        allocator,
+    );
 
     // Configure DHCP on primary (or use persisted config if available)
-    const dhcp_result = try configurePrimaryDhcp(&socket, primary, final_primary, bootstrap_lease, &persisted_state, allocator);
+    const dhcp_result = try configurePrimaryDhcp(
+        &socket,
+        primary,
+        final_primary,
+        bootstrap_lease,
+        &persisted_state,
+        allocator,
+    );
     var dhcp_lease = dhcp_result.lease;
     defer dhcp_lease.deinit(allocator);
 
@@ -307,7 +326,10 @@ fn selectPrimaryInterface(
 
     // Discover primary MAC from IMDS
     const primary_mac = discoverPrimaryMacViaImds(imds_client, allocator) catch |err| {
-        std.log.warn("failed to discover primary MAC from IMDS: {s}, using bootstrap interface", .{@errorName(err)});
+        std.log.warn(
+            "failed to discover primary MAC from IMDS: {s}, using bootstrap interface",
+            .{@errorName(err)},
+        );
         // Fall back to bootstrap interface
         for (interfaces) |iface| {
             if (iface.ifindex == bootstrap_ifindex) {
@@ -349,7 +371,11 @@ fn discoverPrimaryMacViaImds(imds_client: *aws_sdk.imds.ImdsClient, allocator: A
 
         // Query device number for this MAC
         var path_buf: [128]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "/latest/meta-data/network/interfaces/macs/{s}/device-number", .{mac}) catch continue;
+        const path = std.fmt.bufPrint(
+            &path_buf,
+            "/latest/meta-data/network/interfaces/macs/{s}/device-number",
+            .{mac},
+        ) catch continue;
 
         const devnum = imds_client.get(path) catch continue;
         defer allocator.free(devnum);
@@ -426,7 +452,14 @@ fn configurePrimaryDhcp(
             // Apply persisted address
             const ip_addr = persisted_config.ip_address.?;
             const prefix_len = persisted_config.prefix_len.?;
-            try applyPersistedConfig(socket, primary.ifindex, ip_addr, prefix_len, persisted_config.gateway, allocator);
+            try applyPersistedConfig(
+                socket,
+                primary.ifindex,
+                ip_addr,
+                prefix_len,
+                persisted_config.gateway,
+                allocator,
+            );
 
             // Write resolver config
             if (persisted_state.resolver) |resolver| {
@@ -610,9 +643,9 @@ fn establishBootstrapConnectivity(
     allocator: Allocator,
 ) !struct { ifindex: u32, lease: DhcpLease } {
     const ignored_prefixes = [_][]const u8{
-        "lo",     "veth",    "docker", "br",      "virbr",
-        "vlan",   "tun",     "tap",    "macvtap", "bond",
-        "team",   "wg",      "ppp",    "dummy",
+        "lo",   "veth", "docker", "br",      "virbr",
+        "vlan", "tun",  "tap",    "macvtap", "bond",
+        "team", "wg",   "ppp",    "dummy",
     };
 
     std.log.info("found {} total interfaces for bootstrap evaluation", .{interfaces.len});
@@ -1059,7 +1092,14 @@ fn applyPrimaryNaming(
         }
     }
 
-    try renameInterfaceCollision(socket, interfaces, primary.ifindex, desired, &family_max_indices, allocator);
+    try renameInterfaceCollision(
+        socket,
+        interfaces,
+        primary.ifindex,
+        desired,
+        &family_max_indices,
+        allocator,
+    );
 
     return desired;
 }
@@ -1092,7 +1132,11 @@ fn renameInterfaceCollision(
             .simple => |s| {
                 const next_idx = nextFamilyIndex(interfaces, s.prefix, family_max_indices);
                 var new_name_buf: [32]u8 = undefined;
-                const new_name = std.fmt.bufPrint(&new_name_buf, "{s}{}", .{ s.prefix, next_idx }) catch return Error.InvalidInterface;
+                const new_name = std.fmt.bufPrint(
+                    &new_name_buf,
+                    "{s}{}",
+                    .{ s.prefix, next_idx },
+                ) catch return Error.InvalidInterface;
 
                 socket.setLinkName(ex.ifindex, new_name, allocator) catch |err| {
                     std.log.err("failed to rename interface: {s}", .{@errorName(err)});
@@ -1422,7 +1466,10 @@ pub fn macToString(mac: [6]u8) [17]u8 {
 }
 
 fn subnetMaskToPrefix(mask: [4]u8) u8 {
-    const m: u32 = (@as(u32, mask[0]) << 24) | (@as(u32, mask[1]) << 16) | (@as(u32, mask[2]) << 8) | mask[3];
+    const m: u32 = (@as(u32, mask[0]) << 24) |
+        (@as(u32, mask[1]) << 16) |
+        (@as(u32, mask[2]) << 8) |
+        mask[3];
     return @popCount(m);
 }
 
