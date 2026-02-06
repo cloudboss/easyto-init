@@ -179,9 +179,19 @@ pub fn run(allocator: Allocator) !void {
     const shutdown_grace_period = vmspec.@"shutdown-grace-period" orelse 10;
     const replace_init = vmspec.@"replace-init" orelse false;
 
+    const readonly_root_fs = vmspec.security.@"readonly-root-fs" orelse false;
+
     if (replace_init) {
         std.log.info("replacing init with command", .{});
-        try replaceInit(command, args, vmspec.env, working_dir, uid, gid);
+        try replaceInit(
+            command,
+            args,
+            vmspec.env,
+            working_dir,
+            uid,
+            gid,
+            readonly_root_fs,
+        );
     } else {
         std.log.info("starting supervisor", .{});
         var supervisor = Supervisor.init(
@@ -195,6 +205,7 @@ pub fn run(allocator: Allocator) !void {
             shutdown_grace_period,
             vmspec.@"disable-services",
             aws_ctx.getImds(),
+            readonly_root_fs,
         );
 
         try supervisor.start();
@@ -394,10 +405,15 @@ fn replaceInit(
     working_dir: []const u8,
     uid: u32,
     gid: u32,
+    readonly_root_fs: bool,
 ) !void {
     if (command.len == 0) {
         std.log.err("command is empty", .{});
         return error.EmptyCommand;
+    }
+
+    if (readonly_root_fs) {
+        try system.remountRootReadonly();
     }
 
     // Change to working directory

@@ -8,6 +8,7 @@ const aws_sdk = @import("aws_sdk");
 
 const constants = @import("constants.zig");
 const services_mod = @import("services.zig");
+const system = @import("system.zig");
 const ServiceDef = services_mod.ServiceDef;
 const vmspec = @import("vmspec.zig");
 const NameValue = vmspec.NameValue;
@@ -43,6 +44,7 @@ pub const Supervisor = struct {
     uid: u32,
     gid: u32,
     shutdown_grace_period: u64,
+    readonly_root_fs: bool,
     main_pid: ?posix.pid_t = null,
     disable_services: ?[]const []const u8,
     imds_client: ?*aws_sdk.imds.ImdsClient,
@@ -59,6 +61,7 @@ pub const Supervisor = struct {
         shutdown_grace_period: u64,
         disable_services: ?[]const []const u8,
         imds_client: ?*aws_sdk.imds.ImdsClient,
+        readonly_root_fs: bool,
     ) Supervisor {
         return Supervisor{
             .allocator = allocator,
@@ -69,6 +72,7 @@ pub const Supervisor = struct {
             .uid = uid,
             .gid = gid,
             .shutdown_grace_period = shutdown_grace_period,
+            .readonly_root_fs = readonly_root_fs,
             .disable_services = disable_services,
             .imds_client = imds_client,
         };
@@ -113,6 +117,10 @@ pub const Supervisor = struct {
     }
 
     fn startMainProcess(self: *Supervisor) !void {
+        if (self.readonly_root_fs) {
+            try system.remountRootReadonly();
+        }
+
         std.log.info("starting main process: {s}", .{self.command[0]});
 
         const pid = try self.spawn_process();
@@ -673,6 +681,7 @@ test "Supervisor.init creates supervisor with correct fields" {
         30,
         null,
         null,
+        false,
     );
 
     try testing.expectEqual(allocator, supervisor.allocator);
@@ -704,6 +713,7 @@ test "Supervisor.init with null args" {
         10,
         null,
         null,
+        false,
     );
 
     try testing.expect(supervisor.args == null);
@@ -725,6 +735,7 @@ test "Supervisor.buildArgv with command only" {
         10,
         null,
         null,
+        false,
     );
 
     const result = try supervisor.buildArgv();
@@ -756,6 +767,7 @@ test "Supervisor.buildArgv with command and args" {
         10,
         null,
         null,
+        false,
     );
 
     const result = try supervisor.buildArgv();
@@ -788,6 +800,7 @@ test "Supervisor.buildArgv with empty args" {
         10,
         null,
         null,
+        false,
     );
 
     const result = try supervisor.buildArgv();

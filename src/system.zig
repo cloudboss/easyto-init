@@ -10,7 +10,29 @@ const constants = @import("constants.zig");
 const nvme = @import("nvme-amz.zig");
 const NameValue = @import("vmspec.zig").NameValue;
 
+const mount = linux.mount;
+const ms = linux.MS;
+
 const SYS_BLOCK_PATH = "/sys/block";
+
+pub fn remountRootReadonly() !void {
+    std.log.info("remounting root filesystem as readonly", .{});
+    const ret = mount(
+        null,
+        @ptrCast(constants.DIR_ROOT),
+        null,
+        ms.REMOUNT | ms.RDONLY,
+        0,
+    );
+    const e = posix.errno(ret);
+    if (e != .SUCCESS) {
+        std.log.err(
+            "unable to remount root filesystem as readonly: {s}",
+            .{@tagName(e)},
+        );
+        return error.RemountFailed;
+    }
+}
 
 pub fn link_nvme_devices(allocator: Allocator) !void {
     var dir = try std.fs.openDirAbsolute(
