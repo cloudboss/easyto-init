@@ -126,6 +126,7 @@ test-integration: \
 		-v $(DIR_ROOT):/code:z \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
+		--security-opt label=type:container_runtime_t \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
@@ -142,6 +143,7 @@ test-integration-kvm: \
 		-v $(DIR_ROOT):/code:z \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
+		--security-opt label=type:container_runtime_t \
 		--device=/dev/kvm \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \

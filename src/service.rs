@@ -26,7 +26,7 @@ use signal_hook::iterator::Signals;
 use crate::{
     aws::{context::AwsCtx, imds::ImdsClient},
     constants,
-    fs::mkdir_p,
+    fs::{mkdir_p, mkdir_p_own},
     login::{self, Find},
     spot::start_spot_termination_monitor,
     vmspec::{NameValues, VmSpec},
@@ -336,6 +336,7 @@ impl Ssh {
     }
 
     fn ssh_write_pub_key(dir: &Path, uid: Uid, gid: Gid, pub_key: String) -> Result<()> {
+        mkdir_p_own(dir, Mode::from(0o700), Some(uid), Some(gid))?;
         let key_path = Path::new(dir).join("authorized_keys");
         let mut file = File::options()
             .create(true)
