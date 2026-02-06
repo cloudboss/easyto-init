@@ -415,8 +415,6 @@ pub fn runInitScripts(scripts: ?[]const []const u8, env: ?[]const NameValue) !vo
 
 /// Run a single init script.
 fn runInitScript(script: []const u8, index: usize, env: ?[]const NameValue) !void {
-    _ = env; // Environment passing not yet implemented for init scripts
-
     // Build script path: /.easyto/run/init-{index}
     var path_buf: [128]u8 = undefined;
     const path_len = fmt.bufPrint(
@@ -433,11 +431,17 @@ fn runInitScript(script: []const u8, index: usize, env: ?[]const NameValue) !voi
 
     // Write script to file with executable permissions
     const file = std.fs.createFileAbsolute(path, .{ .mode = 0o755 }) catch |err| {
-        std.log.err("failed to create init script {s}: {s}", .{ path, @errorName(err) });
+        std.log.err(
+            "failed to create init script {s}: {s}",
+            .{ path, @errorName(err) },
+        );
         return err;
     };
     file.writeAll(script) catch |err| {
-        std.log.err("failed to write init script {s}: {s}", .{ path, @errorName(err) });
+        std.log.err(
+            "failed to write init script {s}: {s}",
+            .{ path, @errorName(err) },
+        );
         file.close();
         return err;
     };
@@ -449,23 +453,66 @@ fn runInitScript(script: []const u8, index: usize, env: ?[]const NameValue) !voi
     path_z_buf[path.len] = 0;
     const path_z: [*:0]const u8 = @ptrCast(&path_z_buf);
 
+    // Build envp from NameValue slice using stack buffers
+    const env_slice = env orelse &[_]NameValue{};
+    var envp_buf: [256]?[*:0]const u8 = undefined;
+
+    if (env_slice.len + 1 > envp_buf.len) {
+        std.log.err("too many environment variables", .{});
+        return error.TooManyEnvVars;
+    }
+
+    var env_storage: [16384]u8 = undefined;
+    var env_pos: usize = 0;
+
+    for (env_slice, 0..) |nv, idx| {
+        const needed = nv.name.len + 1 + nv.value.len + 1;
+        if (env_pos + needed > env_storage.len) {
+            std.log.err("environment too large", .{});
+            return error.EnvironmentTooLarge;
+        }
+
+        const start = env_pos;
+        @memcpy(env_storage[env_pos..][0..nv.name.len], nv.name);
+        env_pos += nv.name.len;
+        env_storage[env_pos] = '=';
+        env_pos += 1;
+        @memcpy(env_storage[env_pos..][0..nv.value.len], nv.value);
+        env_pos += nv.value.len;
+        env_storage[env_pos] = 0;
+        env_pos += 1;
+
+        envp_buf[idx] = @ptrCast(&env_storage[start]);
+    }
+    envp_buf[env_slice.len] = null;
+    const envp = envp_buf[0 .. env_slice.len + 1];
+
     // Execute the script using fork/exec - kernel handles shebang
     const pid_result = linux.fork();
     const pid_err = std.posix.errno(pid_result);
     if (pid_err != .SUCCESS) {
-        std.log.err("fork failed for init script: {s}", .{@tagName(pid_err)});
+        std.log.err(
+            "fork failed for init script: {s}",
+            .{@tagName(pid_err)},
+        );
         std.fs.deleteFileAbsolute(path) catch {};
         return error.ForkFailed;
     }
 
     const pid: std.posix.pid_t = @intCast(pid_result);
     if (pid == 0) {
-        // Child process - exec the script directly (kernel handles shebang)
+        // Child process - exec the script
         const argv = [_:null]?[*:0]const u8{path_z};
-        const envp = [_:null]?[*:0]const u8{};
-        const exec_result = linux.execve(path_z, &argv, &envp);
+        const exec_result = linux.execve(
+            path_z,
+            &argv,
+            @ptrCast(envp.ptr),
+        );
         const exec_err = std.posix.errno(exec_result);
-        std.log.err("unable to run init script: {s}", .{@tagName(exec_err)});
+        std.log.err(
+            "unable to run init script: {s}",
+            .{@tagName(exec_err)},
+        );
         linux.exit(127);
     }
 
