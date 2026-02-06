@@ -18,6 +18,14 @@
             .url = "git+https://github.com/cloudboss/nlz#1726940b7627dad3386dde519bd725264f7adede",
             .hash = "nlz-0.1.0-mbEQKzyQAQBVNb8u-R1Bs5A2bKtlp2_KML_ofCPI86NB",
         },
+        .zgpt = .{
+            .url = "git+https://github.com/cloudboss/zgpt#9dbc5851e341c6cb16cb23c7a7daabbaea103997",
+            .hash = "zgpt-0.0.0--v5LmI7kAADRpolPmez-M4AEY42j4n_RWzPyXpi4Qa2K",
+        },
+        .zblkpg = .{
+            .url = "git+https://github.com/cloudboss/zblkpg#499a6a112ce77aa6b92e6e975f5707c8188ce262",
+            .hash = "zblkpg-0.1.0-u34-N0WrAABMVzXZZ7jt0xyAKFlQIPcyyFOnCX9XaJ81",
+        },
     },
     .fingerprint = 0xb2e6bbb659318356,
     .paths = .{

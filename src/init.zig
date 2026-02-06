@@ -159,6 +159,9 @@ pub fn run(allocator: Allocator) !void {
     std.log.info("applying sysctls", .{});
     try system.setSysctls(vmspec.sysctls);
 
+    std.log.info("resizing root volume", .{});
+    system.resizeRootVolume(allocator);
+
     // Process volumes
     if (vmspec.volumes) |volumes| {
         std.log.info("processing volumes", .{});

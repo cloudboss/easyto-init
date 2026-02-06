@@ -5,6 +5,10 @@ const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
+const GptContext = @import("zgpt").GptContext;
+const GptEntry = @import("zgpt").gpt.GptEntry;
+const resizePartition = @import("zblkpg").resizePartition;
+
 const backoff = @import("backoff.zig");
 const constants = @import("constants.zig");
 const nvme = @import("nvme-amz.zig");
@@ -277,7 +281,11 @@ pub fn createFilesystem(device: []const u8, fs_type: []const u8) !void {
 
     // Build mkfs path
     var mkfs_buf: [128]u8 = undefined;
-    const mkfs_path = fmt.bufPrint(&mkfs_buf, "{s}/mkfs.{s}", .{ constants.DIR_ET_SBIN, fs_type }) catch {
+    const mkfs_path = fmt.bufPrint(
+        &mkfs_buf,
+        "{s}/mkfs.{s}",
+        .{ constants.DIR_ET_SBIN, fs_type },
+    ) catch {
         std.log.err("mkfs path too long for {s}", .{fs_type});
         return error.PathTooLong;
     };
@@ -621,6 +629,326 @@ fn procPathFromDotted(buf: []u8, key: []const u8) ![]const u8 {
     }
 
     return buf[0..pos];
+}
+
+const RootDevices = struct {
+    partition: []const u8,
+    disk: []const u8,
+};
+
+/// Resize root EBS volume partition and filesystem if the
+/// underlying disk was expanded. Gracefully skips if no block
+/// device is found (e.g., when booting from initramfs).
+pub fn resizeRootVolume(allocator: Allocator) void {
+    resizeRootVolumeImpl(allocator) catch |err| {
+        std.log.debug(
+            "skipping root volume resize: {s}",
+            .{@errorName(err)},
+        );
+    };
+}
+
+fn resizeRootVolumeImpl(allocator: Allocator) !void {
+    var part_buf: [64]u8 = undefined;
+    var disk_buf: [64]u8 = undefined;
+    const devices = try findRootDevices(
+        &part_buf,
+        &disk_buf,
+    );
+
+    var disk_path_buf: [128]u8 = undefined;
+    const disk_path = try fmt.bufPrint(
+        &disk_path_buf,
+        "{s}/{s}",
+        .{ constants.DIR_DEV, devices.disk },
+    );
+    std.log.debug(
+        "root disk device path: {s}",
+        .{disk_path},
+    );
+
+    var gpt_ctx = GptContext.init(
+        allocator,
+        disk_path,
+    ) catch |err| {
+        std.log.err(
+            "unable to open {s} for resize: {s}",
+            .{ disk_path, @errorName(err) },
+        );
+        return err;
+    };
+    defer gpt_ctx.deinit();
+
+    try gpt_ctx.load();
+
+    const header = gpt_ctx.primary_header orelse
+        return error.InvalidState;
+    const first_usable: i64 = @intCast(
+        header.getFirstUsableLba(),
+    );
+    std.log.debug(
+        "first usable sector: {d}",
+        .{first_usable},
+    );
+
+    const disk_sectors = try diskSectors(devices.disk);
+
+    // Calculate last usable sector from actual disk size.
+    // Formula from growpart: accounts for backup GPT
+    // and alignment.
+    const alignment: i64 = 2048;
+    const gpt_len = first_usable - 2;
+    const last_usable: u64 = @intCast(
+        @divTrunc(
+            disk_sectors - gpt_len - 1,
+            alignment,
+        ) * alignment,
+    );
+    std.log.debug(
+        "last usable sector: {d}",
+        .{last_usable},
+    );
+
+    const entries = gpt_ctx.partition_entries orelse
+        return error.InvalidState;
+    var root_entry: ?*GptEntry = null;
+    var part_num: u32 = 0;
+    for (entries, 0..) |*entry, i| {
+        if (entry.isEmpty()) continue;
+        const name = entry.getName(
+            allocator,
+        ) catch continue;
+        defer allocator.free(name);
+        if (std.mem.eql(u8, name, "root")) {
+            root_entry = entry;
+            part_num = @intCast(i + 1);
+            break;
+        }
+    }
+    const entry = root_entry orelse {
+        std.log.err("root partition not found", .{});
+        return error.PartitionNotFound;
+    };
+
+    // Don't resize if within 1 MiB of max (a la growpart).
+    const fudge: u64 = 1024 * 1024 / 512;
+    if (entry.getEndLba() >= last_usable -| fudge) {
+        std.log.debug(
+            "root partition already at maximum size",
+            .{},
+        );
+        return;
+    }
+
+    const first_lba = entry.getStartLba();
+    std.log.info(
+        "resizing partition from sector {d} to {d}",
+        .{ entry.getEndLba(), last_usable },
+    );
+
+    entry.setLbaRange(first_lba, last_usable);
+
+    // Update header for expanded disk.
+    gpt_ctx.primary_header.?.last_usable_lba =
+        std.mem.nativeToLittle(u64, last_usable);
+    gpt_ctx.primary_header.?.alternate_lba =
+        std.mem.nativeToLittle(
+            u64,
+            @as(u64, @intCast(disk_sectors)) - 1,
+        );
+
+    try gpt_ctx.save();
+
+    resizePartition(
+        gpt_ctx.device_file.handle,
+        @intCast(part_num),
+        @intCast(first_lba),
+        @intCast(last_usable),
+        512,
+    ) catch |err| {
+        std.log.err(
+            "unable to reread partition table: {s}",
+            .{@errorName(err)},
+        );
+        return err;
+    };
+
+    var part_path_buf: [128]u8 = undefined;
+    const part_path = try fmt.bufPrint(
+        &part_path_buf,
+        "{s}/{s}",
+        .{ constants.DIR_DEV, devices.partition },
+    );
+    std.log.debug("growing root filesystem", .{});
+    try growFilesystem(part_path);
+}
+
+fn findRootDevices(
+    part_buf: []u8,
+    disk_buf: []u8,
+) !RootDevices {
+    const mounts_path = constants.DIR_PROC ++ "/mounts";
+    const file = std.fs.openFileAbsolute(
+        mounts_path,
+        .{},
+    ) catch |err| {
+        std.log.err(
+            "unable to open {s}: {s}",
+            .{ mounts_path, @errorName(err) },
+        );
+        return err;
+    };
+    defer file.close();
+
+    var read_buf: [8192]u8 = undefined;
+    const bytes_read = try file.read(&read_buf);
+    const content = read_buf[0..bytes_read];
+
+    var partition_name: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        var fields = std.mem.splitScalar(
+            u8,
+            line,
+            ' ',
+        );
+        const device = fields.next() orelse continue;
+        const mount_point = fields.next() orelse
+            continue;
+
+        if (!std.mem.eql(u8, mount_point, "/")) continue;
+        if (!std.mem.startsWith(u8, device, "/dev/"))
+            continue;
+
+        const pname = device[5..];
+        if (pname.len > part_buf.len) continue;
+        @memcpy(part_buf[0..pname.len], pname);
+        partition_name = part_buf[0..pname.len];
+        break;
+    }
+
+    const part_name = partition_name orelse {
+        return error.RootDeviceNotFound;
+    };
+    std.log.debug("root partition: {s}", .{part_name});
+
+    var dir = std.fs.openDirAbsolute(
+        SYS_BLOCK_PATH,
+        .{ .iterate = true },
+    ) catch |err| {
+        std.log.err(
+            "unable to open {s}: {s}",
+            .{ SYS_BLOCK_PATH, @errorName(err) },
+        );
+        return err;
+    };
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (try iter.next()) |dir_entry| {
+        if (dir_entry.kind != .directory) continue;
+
+        var abs_buf: [384]u8 = undefined;
+        const abs_path = fmt.bufPrint(
+            &abs_buf,
+            "{s}/{s}/{s}",
+            .{
+                SYS_BLOCK_PATH,
+                dir_entry.name,
+                part_name,
+            },
+        ) catch continue;
+
+        std.fs.accessAbsolute(
+            abs_path,
+            .{},
+        ) catch continue;
+
+        const dn = dir_entry.name;
+        if (dn.len > disk_buf.len) continue;
+        @memcpy(disk_buf[0..dn.len], dn);
+        return RootDevices{
+            .partition = part_name,
+            .disk = disk_buf[0..dn.len],
+        };
+    }
+
+    return error.ParentDiskNotFound;
+}
+
+fn diskSectors(device: []const u8) !i64 {
+    var path_buf: [256]u8 = undefined;
+    const path = try fmt.bufPrint(
+        &path_buf,
+        "{s}/{s}/size",
+        .{ SYS_BLOCK_PATH, device },
+    );
+    return intFromFile(path);
+}
+
+fn intFromFile(path: []const u8) !i64 {
+    const file = std.fs.openFileAbsolute(
+        path,
+        .{},
+    ) catch |err| {
+        std.log.err(
+            "unable to open {s}: {s}",
+            .{ path, @errorName(err) },
+        );
+        return err;
+    };
+    defer file.close();
+
+    var buf: [64]u8 = undefined;
+    const bytes_read = try file.read(&buf);
+    const content = std.mem.trim(
+        u8,
+        buf[0..bytes_read],
+        " \t\r\n",
+    );
+    return std.fmt.parseInt(i64, content, 10) catch |err| {
+        std.log.err(
+            "unable to parse contents of {s}: {s}",
+            .{ path, @errorName(err) },
+        );
+        return err;
+    };
+}
+
+fn growFilesystem(device_path: []const u8) !void {
+    const resize2fs =
+        constants.DIR_ET_SBIN ++ "/resize2fs";
+
+    var child = std.process.Child.init(
+        &[_][]const u8{ resize2fs, device_path },
+        std.heap.page_allocator,
+    );
+    child.stderr_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+
+    child.spawn() catch |err| {
+        std.log.err(
+            "failed to run resize2fs for {s}: {s}",
+            .{ device_path, @errorName(err) },
+        );
+        return err;
+    };
+
+    const result = child.wait() catch |err| {
+        std.log.err(
+            "failed to wait for resize2fs {s}: {s}",
+            .{ device_path, @errorName(err) },
+        );
+        return err;
+    };
+
+    if (result.Exited != 0) {
+        std.log.err(
+            "resize2fs {s} failed with exit code {d}",
+            .{ device_path, result.Exited },
+        );
+        return error.ResizeFsFailed;
+    }
 }
 
 test "procPathFromDotted" {
