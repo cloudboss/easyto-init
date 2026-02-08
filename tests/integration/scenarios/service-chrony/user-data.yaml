@@ -1,0 +1,31 @@
+disable-services:
+  - ssh
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== service-chrony test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    # Verify chrony run directory was created with correct ownership
+    [ -d "/.easyto/run/chrony" ] || fail "/.easyto/run/chrony not created"
+    owner=$(stat -c '%U:%G' /.easyto/run/chrony)
+    [ "${owner}" = "cb-chrony:cb-chrony" ] || fail "/.easyto/run/chrony owned by ${owner}, expected cb-chrony:cb-chrony"
+    echo "OK: chrony run directory created with correct ownership"
+
+    # Wait for chronyd to be responsive via chronyc
+    i=0
+    while [ ${i} -lt 50 ]; do
+        if /.easyto/bin/chronyc tracking >/dev/null 2>&1; then
+            echo "OK: chronyd responding to chronyc"
+            break
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    [ ${i} -lt 50 ] || fail "chronyd not responding after 5 seconds"
+
+    echo "PASS"

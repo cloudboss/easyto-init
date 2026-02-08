@@ -1,0 +1,40 @@
+disable-services:
+  - chrony
+init-scripts:
+  - |
+    #!/bin/sh
+    mkdir -p /.easyto/var/empty
+    mkdir -p /.easyto/home/testuser
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== service-ssh test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    # Verify authorized_keys was written for testuser
+    ak="/.easyto/home/testuser/.ssh/authorized_keys"
+    [ -f "${ak}" ] || fail "authorized_keys not found at ${ak}"
+    grep -q "ssh-rsa" "${ak}" || fail "authorized_keys does not contain ssh-rsa key"
+    echo "OK: authorized_keys written"
+
+    # Verify host keys were generated
+    [ -f "/.easyto/etc/ssh/ssh_host_rsa_key" ] || fail "RSA host key not generated"
+    [ -f "/.easyto/etc/ssh/ssh_host_ed25519_key" ] || fail "Ed25519 host key not generated"
+    echo "OK: host keys generated"
+
+    # Wait for sshd to be listening on port 22
+    i=0
+    while [ ${i} -lt 50 ]; do
+        if grep -q ':0016 ' /proc/net/tcp 2>/dev/null; then
+            echo "OK: sshd listening on port 22"
+            echo "PASS"
+            exit 0
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    fail "sshd not listening on port 22 after 5 seconds"
