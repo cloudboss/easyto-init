@@ -83,6 +83,7 @@ ZIG_BUILD_FLAGS = --cache-dir $(DIR_OUT)/zig-cache --global-cache-dir $(DIR_OUT)
 $(DIR_OUT)/zig-out/bin/init: \
 		$(HAS_IMAGE_LOCAL) \
 		build.zig \
+		build.zig.zon \
 		$(shell find src -type f -name '*.zig')
 	@docker run --rm -t \
 		-v $(DIR_ROOT):/code \
