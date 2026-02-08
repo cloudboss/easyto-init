@@ -57,7 +57,7 @@ check_prerequisites()
 
 build_test_image()
 {
-    scenario_dir="${1:-}"
+    local build_scenario_dir="${1:-}"
     log "Building test image..."
     mkdir -p "${INTEGRATION_OUT}"
     ${SCRIPT_DIR}/image/build.sh \
@@ -65,7 +65,7 @@ build_test_image()
         "${INIT_BINARY}" \
         "${EASYTO_ASSETS_RUNTIME}" \
         "${INITRAMFS}" \
-        "${scenario_dir}"
+        "${build_scenario_dir}"
 }
 
 get_scenario_config()
