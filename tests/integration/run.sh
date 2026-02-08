@@ -5,6 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
 OUTPUT_DIR="${PROJECT_ROOT}/_output"
 EASYTO_ASSETS_VERSION=${EASYTO_ASSETS_VERSION:?EASYTO_ASSETS_VERSION must be defined}
+CTR_IMAGE_ALPINE=${CTR_IMAGE_ALPINE:?CTR_IMAGE_ALPINE must be defined}
 
 # Create temp directory for this test run
 mkdir -p "${OUTPUT_DIR}"
@@ -59,7 +60,12 @@ build_test_image()
     scenario_dir="${1:-}"
     log "Building test image..."
     mkdir -p "${INTEGRATION_OUT}"
-    "${SCRIPT_DIR}/image/build.sh" "${INIT_BINARY}" "${EASYTO_ASSETS_RUNTIME}" "${INITRAMFS}" "${scenario_dir}"
+    ${SCRIPT_DIR}/image/build.sh \
+        "${CTR_IMAGE_ALPINE}" \
+        "${INIT_BINARY}" \
+        "${EASYTO_ASSETS_RUNTIME}" \
+        "${INITRAMFS}" \
+        "${scenario_dir}"
 }
 
 get_scenario_config()
