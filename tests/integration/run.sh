@@ -306,7 +306,7 @@ run_scenario()
     # Check results
     if [ ${exit_code} -eq 124 ]; then
         log "TIMEOUT: ${scenario_name} (${TIMEOUT}s exceeded)"
-        cat "${output_file}"
+        log "Log: ${output_file}"
         return 1
     fi
 
@@ -323,8 +323,7 @@ run_scenario()
             log "FAIL: ${scenario_name} (expected output not found)"
             log "Expected pattern:"
             cat "${scenario_dir}/expected-output"
-            log "Actual output:"
-            cat "${output_file}"
+            log "Log: ${output_file}"
             rm -f "${output_file}.clean"
             return 1
         fi
@@ -335,12 +334,12 @@ run_scenario()
     elif grep -q "^FAIL" "${output_file}.clean"; then
         log "FAIL: ${scenario_name}"
         grep "^FAIL" "${output_file}.clean"
-        cat "${output_file}"
+        log "Log: ${output_file}"
         rm -f "${output_file}.clean"
         return 1
     else
         log "UNKNOWN: ${scenario_name} (no PASS/FAIL marker)"
-        cat "${output_file}"
+        log "Log: ${output_file}"
         rm -f "${output_file}.clean"
         return 1
     fi
@@ -359,25 +358,29 @@ main()
     check_prerequisites
     build_test_image
 
-    failed=0
+    failed=""
 
     if [ -n "${SCENARIO}" ]; then
         # Run single scenario
         if ! run_scenario "${SCENARIO}"; then
-            failed=1
+            failed="${SCENARIO}"
         fi
     else
         # Run all scenarios
         for scenario_dir in "${SCRIPT_DIR}/scenarios"/*/; do
             scenario_name=$(basename "${scenario_dir}")
             if ! run_scenario "${scenario_name}"; then
-                failed=$((failed + 1))
+                if [ -n "${failed}" ]; then
+                    failed="${failed} ${scenario_name}"
+                else
+                    failed="${scenario_name}"
+                fi
             fi
         done
     fi
 
-    if [ ${failed} -gt 0 ]; then
-        log "${failed} scenario(s) failed"
+    if [ -n "${failed}" ]; then
+        log "Failed scenarios: ${failed}"
         log "Logs available at: ${INTEGRATION_OUT}"
         exit 1
     fi
