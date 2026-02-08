@@ -58,14 +58,16 @@ const FilterBuilder = struct {
 pub const Ec2Client = struct {
     allocator: Allocator,
     aws_client: aws_sdk.Client,
+    region: []const u8,
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator) Self {
+    pub fn init(allocator: Allocator, region: []const u8) Self {
         const aws_client = aws_sdk.Client.init(allocator, .{});
         return Self{
             .allocator = allocator,
             .aws_client = aws_client,
+            .region = region,
         };
     }
 
@@ -108,6 +110,7 @@ pub const Ec2Client = struct {
     ) !bool {
         const options = aws_sdk.Options{
             .client = self.aws_client,
+            .region = self.region,
         };
 
         var fb = FilterBuilder.init(self.allocator);
@@ -169,6 +172,7 @@ pub const Ec2Client = struct {
     ) !?[]const u8 {
         const options = aws_sdk.Options{
             .client = self.aws_client,
+            .region = self.region,
         };
 
         var fb = FilterBuilder.init(self.allocator);
@@ -207,6 +211,7 @@ pub const Ec2Client = struct {
     ) !void {
         const options = aws_sdk.Options{
             .client = self.aws_client,
+            .region = self.region,
         };
 
         const result = aws_sdk.Request(services.ec2.attach_volume).call(.{

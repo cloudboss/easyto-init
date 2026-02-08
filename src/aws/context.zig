@@ -16,6 +16,7 @@ pub const AwsContext = struct {
     allocator: Allocator,
 
     imds: aws_sdk.imds.ImdsClient,
+    region: ?[]const u8 = null,
     aws_client: ?aws_sdk.Client = null,
     credentials_verified: bool = false,
     ec2: ?Ec2Client = null,
@@ -57,6 +58,7 @@ pub const AwsContext = struct {
         if (self.aws_client) |*client| {
             client.deinit();
         }
+        if (self.region) |region| self.allocator.free(region);
         self.imds.deinit();
     }
 
@@ -70,7 +72,7 @@ pub const AwsContext = struct {
     pub fn getS3(self: *Self) !*S3Client {
         try self.verifyCredentials();
         if (self.s3 == null) {
-            self.s3 = S3Client.init(self.allocator);
+            self.s3 = S3Client.init(self.allocator, self.region.?);
         }
         return &self.s3.?;
     }
@@ -80,7 +82,7 @@ pub const AwsContext = struct {
     pub fn getSsm(self: *Self) !*SsmClient {
         try self.verifyCredentials();
         if (self.ssm == null) {
-            self.ssm = SsmClient.init(self.allocator);
+            self.ssm = SsmClient.init(self.allocator, self.region.?);
         }
         return &self.ssm.?;
     }
@@ -90,7 +92,10 @@ pub const AwsContext = struct {
     pub fn getSecretsManager(self: *Self) !*SecretsManagerClient {
         try self.verifyCredentials();
         if (self.secrets_manager == null) {
-            self.secrets_manager = SecretsManagerClient.init(self.allocator);
+            self.secrets_manager = SecretsManagerClient.init(
+                self.allocator,
+                self.region.?,
+            );
         }
         return &self.secrets_manager.?;
     }
@@ -100,7 +105,7 @@ pub const AwsContext = struct {
     pub fn getEc2(self: *Self) !*Ec2Client {
         try self.verifyCredentials();
         if (self.ec2 == null) {
-            self.ec2 = Ec2Client.init(self.allocator);
+            self.ec2 = Ec2Client.init(self.allocator, self.region.?);
         }
         return &self.ec2.?;
     }
@@ -110,12 +115,15 @@ pub const AwsContext = struct {
     fn verifyCredentials(self: *Self) !void {
         if (self.credentials_verified) return;
 
+        try self.resolveRegion();
+
         if (self.aws_client == null) {
             self.aws_client = aws_sdk.Client.init(self.allocator, .{});
         }
 
         const options = aws_sdk.Options{
             .client = self.aws_client.?,
+            .region = self.region.?,
         };
 
         const result = aws_sdk.Request(sts_services.sts.get_caller_identity).call(
@@ -128,5 +136,22 @@ pub const AwsContext = struct {
         result.deinit();
 
         self.credentials_verified = true;
+    }
+
+    /// Fetch the region from IMDS if not already resolved.
+    fn resolveRegion(self: *Self) !void {
+        if (self.region != null) return;
+
+        const region = self.imds.get(
+            "/latest/meta-data/placement/region",
+        ) catch |err| {
+            scoped_log.err(
+                "failed to get region from IMDS: {s}",
+                .{@errorName(err)},
+            );
+            return err;
+        };
+        scoped_log.info("AWS region: {s}", .{region});
+        self.region = region;
     }
 };

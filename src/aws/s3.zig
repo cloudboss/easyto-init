@@ -25,15 +25,17 @@ pub const S3Error = error{
 pub const S3Client = struct {
     allocator: Allocator,
     aws_client: aws_sdk.Client,
+    region: []const u8,
 
     const Self = @This();
     const services = aws_sdk.Services(.{.s3}){};
 
-    pub fn init(allocator: Allocator) Self {
+    pub fn init(allocator: Allocator, region: []const u8) Self {
         const aws_client = aws_sdk.Client.init(allocator, .{});
         return Self{
             .allocator = allocator,
             .aws_client = aws_client,
+            .region = region,
         };
     }
 
@@ -47,6 +49,7 @@ pub const S3Client = struct {
 
         const options = aws_sdk.Options{
             .client = self.aws_client,
+            .region = self.region,
         };
 
         const result = aws_sdk.Request(services.s3.get_object).call(.{
@@ -85,6 +88,7 @@ pub const S3Client = struct {
 
         const options = aws_sdk.Options{
             .client = self.aws_client,
+            .region = self.region,
         };
 
         var objects: std.ArrayListUnmanaged(S3Object) = .empty;

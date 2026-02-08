@@ -26,15 +26,17 @@ pub const SsmError = error{
 pub const SsmClient = struct {
     allocator: Allocator,
     aws_client: aws_sdk.Client,
+    region: []const u8,
 
     const Self = @This();
     const services = aws_sdk.Services(.{.ssm}){};
 
-    pub fn init(allocator: Allocator) Self {
+    pub fn init(allocator: Allocator, region: []const u8) Self {
         const aws_client = aws_sdk.Client.init(allocator, .{});
         return Self{
             .allocator = allocator,
             .aws_client = aws_client,
+            .region = region,
         };
     }
 
@@ -48,6 +50,7 @@ pub const SsmClient = struct {
 
         const options = aws_sdk.Options{
             .client = self.aws_client,
+            .region = self.region,
         };
 
         const result = aws_sdk.Request(services.ssm.get_parameter).call(.{
@@ -85,6 +88,7 @@ pub const SsmClient = struct {
 
         const options = aws_sdk.Options{
             .client = self.aws_client,
+            .region = self.region,
         };
 
         var parameters: std.ArrayListUnmanaged(SsmParameter) = .empty;
