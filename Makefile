@@ -12,7 +12,7 @@ include $(DIR_OUT)/Makefile.inc
 endif
 
 # Override Makefile.inc.
-CTR_IMAGE_RUST = rust:1.90.0-alpine3.22
+CTR_IMAGE_RUST = ghcr.io/cloudboss/docker.io/library/rust:1.90.0-alpine3.22
 CTR_IMAGE_RUST_SHA256 = $(shell echo -n $(CTR_IMAGE_RUST) | sha256sum | awk '{print $$1}')
 DOCKER_INPUTS_SHA256 = $(shell echo -n $(UID_SHA256)$(GID_SHA256)$(CTR_IMAGE_RUST_SHA256)$(DOCKERFILE_SHA256) | \
 	sha256sum | awk '{print $$1}' | cut -c 1-40)
@@ -27,6 +27,8 @@ $(HAS_IMAGE_LOCAL): $(HAS_COMMAND_DOCKER) | $(DIR_OUT)/dockerbuild/
 		$(DIR_OUT)/dockerbuild
 	@touch $(HAS_IMAGE_LOCAL)
 # End override.
+
+CTR_IMAGE_ALPINE = ghcr.io/cloudboss/docker.io/library/alpine:3.23.2
 
 DIR_RELEASE = $(DIR_OUT)/release
 
@@ -127,6 +129,7 @@ test-integration: \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		--security-opt label=type:container_runtime_t \
+		-e CTR_IMAGE_ALPINE=$(CTR_IMAGE_ALPINE) \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
@@ -145,6 +148,7 @@ test-integration-kvm: \
 		--group-add $(DOCKER_GID) \
 		--security-opt label=type:container_runtime_t \
 		--device=/dev/kvm \
+		-e CTR_IMAGE_ALPINE=$(CTR_IMAGE_ALPINE) \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
