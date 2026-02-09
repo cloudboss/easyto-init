@@ -5,6 +5,7 @@ const backoff = @import("backoff.zig");
 const container = @import("container.zig");
 const fs = @import("fs.zig");
 const init = @import("init.zig");
+const log_level = @import("log_level.zig");
 const login = @import("login.zig");
 const network = @import("network.zig");
 const nvme = @import("nvme-amz.zig");
@@ -25,6 +26,7 @@ test {
     testing.refAllDecls(container);
     testing.refAllDecls(fs);
     testing.refAllDecls(init);
+    testing.refAllDecls(log_level);
     testing.refAllDecls(login);
     testing.refAllDecls(network);
     testing.refAllDecls(nvme);

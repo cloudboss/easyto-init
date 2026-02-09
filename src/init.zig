@@ -18,6 +18,7 @@ const ssm_mod = @import("aws/ssm.zig");
 const constants = @import("constants.zig");
 const container = @import("container.zig");
 const fs_utils = @import("fs.zig");
+const log_level = @import("log_level.zig");
 const mkdir_p = fs_utils.mkdir_p;
 const network = @import("network.zig");
 const service = @import("service.zig");
@@ -108,6 +109,27 @@ pub fn run(allocator: Allocator) !void {
     };
     defer if (user_data) |ud| allocator.free(ud);
 
+    // Parse user data early so we can enable debug logging before
+    // NVMe linking and other operations.
+    var user_vmspec_parsed: ?VmSpec = null;
+    if (user_data) |ud| {
+        std.log.info("parsing user data YAML", .{});
+        if (VmSpec.from_yaml(allocator, ud)) |user_vmspec_opt| {
+            user_vmspec_parsed = user_vmspec_opt;
+        } else |err| {
+            std.log.err("unable to parse user data: {s}", .{@errorName(err)});
+            return err;
+        }
+    }
+    defer if (user_vmspec_parsed) |*uv| uv.deinit();
+
+    if (user_vmspec_parsed) |uv| {
+        if (uv.debug != null and uv.debug.?) {
+            log_level.setLevel(.debug);
+            std.log.debug("debug logging enabled", .{});
+        }
+    }
+
     std.log.info("starting uevent listener", .{});
     try uevent.startUeventListener(allocator);
 
@@ -123,20 +145,10 @@ pub fn run(allocator: Allocator) !void {
     var vmspec = try VmSpec.from_config_file(allocator, &metadata.parsed.value);
     defer vmspec.deinit();
 
-    // Parse and merge user data if available
-    if (user_data) |ud| {
-        std.log.info("parsing user data YAML", .{});
-        if (VmSpec.from_yaml(allocator, ud)) |user_vmspec_opt| {
-            if (user_vmspec_opt) |user_vmspec_const| {
-                var user_vmspec = user_vmspec_const;
-                defer user_vmspec.deinit();
-                std.log.info("merging user data into vmspec", .{});
-                try vmspec.merge(user_vmspec);
-            }
-        } else |err| {
-            std.log.err("unable to parse user data: {s}", .{@errorName(err)});
-            return err;
-        }
+    // Merge user data if available
+    if (user_vmspec_parsed) |user_vmspec| {
+        std.log.info("merging user data into vmspec", .{});
+        try vmspec.merge(user_vmspec);
     }
 
     // Resolve env-from sources
