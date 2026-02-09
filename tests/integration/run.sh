@@ -223,6 +223,7 @@ run_scenario()
     nic_count=$(get_scenario_config "${scenario_name}" "NIC_COUNT" "1")
     spot_termination_delay=$(get_scenario_config "${scenario_name}" "SPOT_TERMINATION_DELAY" "0")
     use_localstack=$(get_scenario_config "${scenario_name}" "USE_LOCALSTACK" "0")
+    disk_size=$(get_scenario_config "${scenario_name}" "DISK_SIZE" "")
 
     # Start mock IMDS server for this scenario
     start_mock_imds "${scenario_name}" "${nic_count}" "${spot_termination_delay}"
@@ -251,6 +252,16 @@ run_scenario()
         kernel_cmdline="${kernel_cmdline} AWS_REGION=us-east-1"
     fi
 
+    # Generate disk image if DISK_SIZE is configured
+    disk_args=""
+    disk_img=""
+    if [ -n "${disk_size}" ]; then
+        disk_img="${INTEGRATION_OUT}/${scenario_name}-disk.raw"
+        log "Creating ${disk_size} disk image at ${disk_img}"
+        truncate -s "${disk_size}" "${disk_img}"
+        disk_args="-drive file=${disk_img},format=raw,id=disk0,if=none -device nvme,serial=easytotest01,drive=disk0"
+    fi
+
     # Generate NIC arguments
     nic_args=$(generate_qemu_nic_args "${nic_count}")
 
@@ -268,6 +279,7 @@ run_scenario()
             -append "${kernel_cmdline}" \
             -nographic \
             ${nic_args} \
+            ${disk_args} \
             -no-reboot \
             2>&1 | tee "${output_file}"
         # Get exit code from timeout via a temp file since PIPESTATUS isn't portable
@@ -287,6 +299,7 @@ run_scenario()
             -append "${kernel_cmdline}" \
             -nographic \
             ${nic_args} \
+            ${disk_args} \
             -no-reboot \
             > "${output_file}" 2>&1
         exit_code=$?
@@ -296,6 +309,11 @@ run_scenario()
     # Stop mock services
     stop_mock_imds
     stop_localstack
+
+    # Clean up disk image
+    if [ -n "${disk_img}" ] && [ -f "${disk_img}" ]; then
+        rm -f "${disk_img}"
+    fi
 
     # Check results
     if [ ${exit_code} -eq 124 ]; then

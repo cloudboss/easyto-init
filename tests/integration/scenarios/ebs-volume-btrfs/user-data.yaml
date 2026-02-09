@@ -1,0 +1,33 @@
+disable-services:
+  - chrony
+  - ssh
+volumes:
+  - ebs:
+      device: /dev/nvme0n1
+      mount:
+        fs-type: btrfs
+        destination: /mnt/data
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== ebs-volume test ==="
+
+    # Check if the mount point exists
+    if ! mountpoint -q /mnt/data; then
+        echo "FAIL: /mnt/data is not a mount point"
+        mount | grep /mnt/data || true
+        exit 1
+    fi
+
+    # Verify we can write to the filesystem
+    echo "hello from ebs" > /mnt/data/test.txt
+    content=$(cat /mnt/data/test.txt)
+    if [ "$content" != "hello from ebs" ]; then
+        echo "FAIL: test.txt has wrong content: $content"
+        exit 1
+    fi
+
+    echo "EBS volume mounted and writable"
+    echo "PASS"
