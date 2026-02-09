@@ -657,20 +657,12 @@ pub const VmSpec = struct {
     fn parseEbsVolumeSource(allocator: Allocator, value: yaml.Value) !?EbsVolumeSource {
         const map = value.getMap() orelse return null;
         var device: ?[]const u8 = null;
-        var fs_type: ?[]const u8 = null;
-        var make_fs: ?bool = null;
         var mount_val: ?Mount = null;
         var attachment: ?EbsVolumeAttachment = null;
 
         for (map) |entry| {
             if (std.mem.eql(u8, entry.key, "device")) {
                 device = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "fs-type")) {
-                fs_type = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "make-fs")) {
-                if (entry.value.getString()) |s| {
-                    make_fs = std.mem.eql(u8, s, "true");
-                }
             } else if (std.mem.eql(u8, entry.key, "mount")) {
                 mount_val = try parseMount(allocator, entry.value);
             } else if (std.mem.eql(u8, entry.key, "attachment")) {
@@ -683,8 +675,6 @@ pub const VmSpec = struct {
         return EbsVolumeSource{
             .attachment = attachment,
             .device = try allocator.dupe(u8, device.?),
-            .@"fs-type" = if (fs_type) |f| try allocator.dupe(u8, f) else null,
-            .@"make-fs" = make_fs,
             .mount = mount_val,
         };
     }
@@ -742,6 +732,7 @@ pub const VmSpec = struct {
     fn parseMount(allocator: Allocator, value: yaml.Value) !?Mount {
         const map = value.getMap() orelse return null;
         var destination: ?[]const u8 = null;
+        var fs_type: ?[]const u8 = null;
         var user_id: ?u32 = null;
         var group_id: ?u32 = null;
         var mode: ?[]const u8 = null;
@@ -749,6 +740,8 @@ pub const VmSpec = struct {
         for (map) |entry| {
             if (std.mem.eql(u8, entry.key, "destination")) {
                 destination = entry.value.getString();
+            } else if (std.mem.eql(u8, entry.key, "fs-type")) {
+                fs_type = entry.value.getString();
             } else if (std.mem.eql(u8, entry.key, "user-id")) {
                 if (entry.value.getString()) |s| {
                     user_id = std.fmt.parseInt(u32, s, 10) catch null;
@@ -766,6 +759,7 @@ pub const VmSpec = struct {
 
         return Mount{
             .destination = try allocator.dupe(u8, destination.?),
+            .@"fs-type" = if (fs_type) |f| try allocator.dupe(u8, f) else null,
             .@"user-id" = user_id,
             .@"group-id" = group_id,
             .mode = if (mode) |m| try allocator.dupe(u8, m) else null,
@@ -821,8 +815,6 @@ pub const VmSpec = struct {
         return EbsVolumeSource{
             .attachment = if (src.attachment) |att| try dupeEbsVolumeAttachment(allocator, att) else null,
             .device = try allocator.dupe(u8, src.device),
-            .@"fs-type" = if (src.@"fs-type") |f| try allocator.dupe(u8, f) else null,
-            .@"make-fs" = src.@"make-fs",
             .mount = if (src.mount) |m| try dupeMount(allocator, m) else null,
         };
     }
@@ -844,6 +836,7 @@ pub const VmSpec = struct {
     fn dupeMount(allocator: Allocator, src: Mount) !Mount {
         return Mount{
             .destination = try allocator.dupe(u8, src.destination),
+            .@"fs-type" = if (src.@"fs-type") |f| try allocator.dupe(u8, f) else null,
             .@"user-id" = src.@"user-id",
             .@"group-id" = src.@"group-id",
             .mode = if (src.mode) |m| try allocator.dupe(u8, m) else null,
@@ -1041,8 +1034,6 @@ pub const Volume = struct {
 pub const EbsVolumeSource = struct {
     attachment: ?EbsVolumeAttachment = null,
     device: []const u8,
-    @"fs-type": ?[]const u8 = null,
-    @"make-fs": ?bool = null,
     mount: ?Mount = null,
 };
 
@@ -1077,6 +1068,7 @@ pub const SsmVolumeSource = struct {
 
 pub const Mount = struct {
     destination: []const u8,
+    @"fs-type": ?[]const u8 = null,
     @"group-id": ?u32 = null,
     mode: ?[]const u8 = null,
     options: ?[][]const u8 = null,

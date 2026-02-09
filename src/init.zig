@@ -936,6 +936,10 @@ fn handleEbsVolume(aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
             std.log.err("EBS volume mount must have a destination", .{});
             return error.InvalidEbsConfig;
         }
+        if (mnt.@"fs-type" == null or mnt.@"fs-type".?.len == 0) {
+            std.log.err("EBS volume mount must have a filesystem type", .{});
+            return error.InvalidEbsConfig;
+        }
     }
 
     // Handle volume attachment if specified
@@ -983,20 +987,12 @@ fn handleEbsVolume(aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
     // If no mount specified, we're done
     const mnt = volume.mount orelse return;
 
-    // Get filesystem type (required for mounting)
-    const fs_type = volume.@"fs-type" orelse {
-        std.log.err("EBS volume mount must have a filesystem type", .{});
-        return error.InvalidEbsConfig;
-    };
+    const fs_type = mnt.@"fs-type".?;
 
-    // Create filesystem if make-fs is true or not specified (default: create if needed)
-    const make_fs = volume.@"make-fs" orelse true;
-    if (make_fs) {
-        system.createFilesystem(device, fs_type) catch |err| {
-            std.log.err("failed to create filesystem on {s}: {s}", .{ device, @errorName(err) });
-            return err;
-        };
-    }
+    system.createFilesystem(device, fs_type) catch |err| {
+        std.log.err("failed to create filesystem on {s}: {s}", .{ device, @errorName(err) });
+        return err;
+    };
 
     // Parse mode if specified
     const mode: std.fs.File.Mode = if (mnt.mode) |mode_str|
