@@ -39,15 +39,21 @@ pub fn remountRootReadonly() !void {
 }
 
 pub fn link_nvme_devices(allocator: Allocator) !void {
-    var dir = try std.fs.openDirAbsolute(
+    var dir = std.fs.openDirAbsolute(
         SYS_BLOCK_PATH,
         .{ .iterate = true },
-    );
+    ) catch |err| {
+        std.log.err(
+            "unable to open {s}: {s}",
+            .{ SYS_BLOCK_PATH, @errorName(err) },
+        );
+        return err;
+    };
     defer dir.close();
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
-        if (entry.kind != .directory) continue;
         const device_name = entry.name;
+        std.log.debug("found block device: {s}", .{device_name});
 
         linkNvmeDevice(allocator, device_name, null) catch {};
 
@@ -96,14 +102,24 @@ pub fn linkNvmeDevice(allocator: Allocator, device_name: []const u8, part_num: ?
     defer file.close();
 
     var errno: usize = 0;
-    var nvme_info = nvme.Nvme.from_fd(allocator, file.handle, &errno) catch {
+    var nvme_info = nvme.Nvme.from_fd(allocator, file.handle, &errno) catch |err| {
+        std.log.debug(
+            "skipping {s}: not an Amazon NVMe device: {s}",
+            .{ device_name, @errorName(err) },
+        );
         return;
     };
     defer nvme_info.deinit(allocator);
 
     std.log.debug("nvme device: {any}", .{nvme_info});
 
-    const ec2_name = nvme_info.name() catch return;
+    const ec2_name = nvme_info.name() catch |err| {
+        std.log.debug(
+            "skipping {s}: no device name: {s}",
+            .{ device_name, @errorName(err) },
+        );
+        return;
+    };
 
     var link_name_buf: [128]u8 = undefined;
     const link_name = if (part_num) |pn|
@@ -846,8 +862,6 @@ fn findRootDevices(
 
     var iter = dir.iterate();
     while (try iter.next()) |dir_entry| {
-        if (dir_entry.kind != .directory) continue;
-
         var abs_buf: [384]u8 = undefined;
         const abs_path = fmt.bufPrint(
             &abs_buf,
