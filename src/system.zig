@@ -318,58 +318,28 @@ pub fn createFilesystem(device: []const u8, fs_type: []const u8) !void {
 
     std.log.info("creating {s} filesystem on {s}", .{ fs_type, device });
 
-    // Create null-terminated path for execve
-    var mkfs_z_buf: [129]u8 = undefined;
-    @memcpy(mkfs_z_buf[0..mkfs_path.len], mkfs_path);
-    mkfs_z_buf[mkfs_path.len] = 0;
-    const mkfs_z: [*:0]const u8 = @ptrCast(&mkfs_z_buf);
+    var child = std.process.Child.init(
+        &[_][]const u8{ mkfs_path, device },
+        std.heap.page_allocator,
+    );
+    child.stderr_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
 
-    // Create null-terminated device path
-    var device_z_buf: [256]u8 = undefined;
-    @memcpy(device_z_buf[0..device.len], device);
-    device_z_buf[device.len] = 0;
-    const device_z: [*:0]const u8 = @ptrCast(&device_z_buf);
+    child.spawn() catch |err| {
+        std.log.err("unable to run {s}: {s}", .{ mkfs_path, @errorName(err) });
+        return err;
+    };
 
-    // Fork and exec mkfs
-    const pid_result = linux.fork();
-    const pid_err = posix.errno(pid_result);
-    if (pid_err != .SUCCESS) {
-        std.log.err("fork failed for mkfs: {s}", .{@tagName(pid_err)});
-        return error.ForkFailed;
-    }
+    const result = child.wait() catch |err| {
+        std.log.err("failed to wait for {s}: {s}", .{ mkfs_path, @errorName(err) });
+        return err;
+    };
 
-    const pid: posix.pid_t = @intCast(pid_result);
-    if (pid == 0) {
-        // Child process - exec mkfs
-        const argv = [_:null]?[*:0]const u8{ mkfs_z, device_z };
-        const envp = [_:null]?[*:0]const u8{};
-        const exec_result = linux.execve(mkfs_z, &argv, &envp);
-        const exec_err = posix.errno(exec_result);
-        std.log.err("unable to run mkfs: {s}", .{@tagName(exec_err)});
-        linux.exit(127);
-    }
-
-    // Parent process - wait for child
-    var status: u32 = 0;
-    while (true) {
-        const wait_result = linux.waitpid(pid, &status, 0);
-        const wait_err = posix.errno(wait_result);
-        if (wait_err == .SUCCESS) break;
-        if (wait_err == .INTR) continue;
-        std.log.err("waitpid failed for mkfs: {s}", .{@tagName(wait_err)});
-        return error.WaitFailed;
-    }
-
-    // Check exit status
-    if (linux.W.IFEXITED(status)) {
-        const exit_code = linux.W.EXITSTATUS(status);
-        if (exit_code != 0) {
-            std.log.err("mkfs.{s} {s} failed with exit code {d}", .{ fs_type, device, exit_code });
-            return error.MkfsFailed;
-        }
-    } else if (linux.W.IFSIGNALED(status)) {
-        const sig = linux.W.TERMSIG(status);
-        std.log.err("mkfs.{s} {s} killed by signal {d}", .{ fs_type, device, sig });
+    if (result.Exited != 0) {
+        std.log.err(
+            "mkfs.{s} {s} failed with exit code {d}",
+            .{ fs_type, device, result.Exited },
+        );
         return error.MkfsFailed;
     }
 
