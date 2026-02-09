@@ -356,14 +356,24 @@ pub fn mountDevice(device: []const u8, destination: []const u8, fs_type: []const
         return err;
     };
 
-    // Mount the device
-    const ret = linux.mount(
-        @ptrCast(device),
-        @ptrCast(destination),
-        @ptrCast(fs_type),
-        0, // No special flags
-        0, // No mount data
-    );
+    // Create null-terminated copies for the mount syscall.
+    var dev_buf: [256]u8 = undefined;
+    var dest_buf: [256]u8 = undefined;
+    var fs_buf: [64]u8 = undefined;
+    const dev_z = fmt.bufPrintZ(&dev_buf, "{s}", .{device}) catch {
+        std.log.err("device path too long: {s}", .{device});
+        return error.PathTooLong;
+    };
+    const dest_z = fmt.bufPrintZ(&dest_buf, "{s}", .{destination}) catch {
+        std.log.err("mount destination too long: {s}", .{destination});
+        return error.PathTooLong;
+    };
+    const fs_z = fmt.bufPrintZ(&fs_buf, "{s}", .{fs_type}) catch {
+        std.log.err("fs type too long: {s}", .{fs_type});
+        return error.PathTooLong;
+    };
+
+    const ret = linux.mount(dev_z, dest_z, fs_z, 0, 0);
     const e = posix.errno(ret);
     if (e != .SUCCESS) {
         std.log.err("mount {s} on {s} failed: {s}", .{ device, destination, @tagName(e) });
