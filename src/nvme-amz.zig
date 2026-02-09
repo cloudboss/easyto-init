@@ -283,6 +283,17 @@ pub const Model = enum {
     AmazonInstanceStore,
 };
 
+fn parseModel(mn: *const [40]u8) Error!Model {
+    const trimmed = std.mem.trimRight(u8, mn, &.{ ' ', 0 });
+    if (std.mem.eql(u8, trimmed, AMZ_EBS_MN)) {
+        return .AmazonElasticBlockStore;
+    } else if (std.mem.eql(u8, trimmed, AMZ_INST_STORE_MN)) {
+        return .AmazonInstanceStore;
+    } else {
+        return Error.UnknownModelNumber;
+    }
+}
+
 /// An NVMe device, containing a subset of all identifying information.
 pub const Nvme = struct {
     /// The [model](Model) of the device.
@@ -298,18 +309,11 @@ pub const Nvme = struct {
             return Error.UnknownVendorId;
         }
 
-        var model: Model = undefined;
         var mn: [40]u8 = undefined;
         for (ctrl.mn, 0..) |c, i| {
             mn[i] = @intCast(c);
         }
-        if (string.equals(&mn, AMZ_EBS_MN)) {
-            model = Model.AmazonElasticBlockStore;
-        } else if (string.equals(&mn, AMZ_INST_STORE_MN)) {
-            model = Model.AmazonInstanceStore;
-        } else {
-            return Error.UnknownModelNumber;
-        }
+        const model = try parseModel(&mn);
 
         const names = try Names.from_string(allocator, &ctrl.vs.bdev);
 
@@ -481,4 +485,60 @@ test "nvme struct both device_name and virtual_name" {
         .vendor_id = AMZ_VENDOR_ID,
     };
     try testing.expect(string.equals(try nvme.name(), "sdf"));
+}
+
+test "parseModel ebs space padded" {
+    var mn: [40]u8 = undefined;
+    @memset(&mn, ' ');
+    @memcpy(mn[0..AMZ_EBS_MN.len], AMZ_EBS_MN);
+    try testing.expectEqual(Model.AmazonElasticBlockStore, try parseModel(&mn));
+}
+
+test "parseModel ebs null padded" {
+    var mn: [40]u8 = undefined;
+    @memset(&mn, 0);
+    @memcpy(mn[0..AMZ_EBS_MN.len], AMZ_EBS_MN);
+    try testing.expectEqual(Model.AmazonElasticBlockStore, try parseModel(&mn));
+}
+
+test "parseModel ebs exact length" {
+    // Model string that fills exactly 40 bytes (won't happen in
+    // practice, but verifies no off-by-one).
+    var mn: [40]u8 = undefined;
+    @memset(&mn, 'x');
+    @memcpy(mn[0..AMZ_EBS_MN.len], AMZ_EBS_MN);
+    try testing.expectError(Error.UnknownModelNumber, parseModel(&mn));
+}
+
+test "parseModel instance store space padded" {
+    var mn: [40]u8 = undefined;
+    @memset(&mn, ' ');
+    @memcpy(mn[0..AMZ_INST_STORE_MN.len], AMZ_INST_STORE_MN);
+    try testing.expectEqual(Model.AmazonInstanceStore, try parseModel(&mn));
+}
+
+test "parseModel instance store null padded" {
+    var mn: [40]u8 = undefined;
+    @memset(&mn, 0);
+    @memcpy(mn[0..AMZ_INST_STORE_MN.len], AMZ_INST_STORE_MN);
+    try testing.expectEqual(Model.AmazonInstanceStore, try parseModel(&mn));
+}
+
+test "parseModel unknown" {
+    var mn: [40]u8 = undefined;
+    @memset(&mn, 0);
+    @memcpy(mn[0..7], "Unknown");
+    try testing.expectError(Error.UnknownModelNumber, parseModel(&mn));
+}
+
+test "parseModel all spaces" {
+    var mn: [40]u8 = undefined;
+    @memset(&mn, ' ');
+    try testing.expectError(Error.UnknownModelNumber, parseModel(&mn));
+}
+
+test "parseModel all nulls" {
+    var mn: [40]u8 = undefined;
+    @memset(&mn, 0);
+    try testing.expectError(Error.UnknownModelNumber, parseModel(&mn));
 }
