@@ -4,7 +4,7 @@ const linux = std.os.linux;
 const posix = std.posix;
 const testing = std.testing;
 
-const aws_sdk = @import("aws_sdk");
+const aws = @import("aws");
 
 const constants = @import("constants.zig");
 const services_mod = @import("services.zig");
@@ -47,7 +47,7 @@ pub const Supervisor = struct {
     readonly_root_fs: bool,
     main_pid: ?posix.pid_t = null,
     disable_services: ?[]const []const u8,
-    imds_client: ?*aws_sdk.imds.ImdsClient,
+    imds_client: ?*aws.ImdsClient,
     service_states: []ServiceState = &[_]ServiceState{},
 
     pub fn init(
@@ -60,7 +60,7 @@ pub const Supervisor = struct {
         gid: u32,
         shutdown_grace_period: u64,
         disable_services: ?[]const []const u8,
-        imds_client: ?*aws_sdk.imds.ImdsClient,
+        imds_client: ?*aws.ImdsClient,
         readonly_root_fs: bool,
     ) Supervisor {
         return Supervisor{

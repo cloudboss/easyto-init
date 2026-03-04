@@ -1,8 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const posix = std.posix;
+const testing = std.testing;
 
-const aws_sdk = @import("aws_sdk");
+const aws = @import("aws");
 
 const constants = @import("constants.zig");
 const fs_utils = @import("fs.zig");
@@ -202,7 +203,7 @@ pub const ssh_service = ServiceDef{
 pub fn findEnabledServices(
     allocator: Allocator,
     disable_services: ?[]const []const u8,
-    imds_client: ?*aws_sdk.imds.ImdsClient,
+    imds_client: ?*aws.ImdsClient,
 ) ![]const ServiceDef {
     var enabled = try std.ArrayList(ServiceDef).initCapacity(allocator, 4);
     errdefer enabled.deinit(allocator);
@@ -253,9 +254,13 @@ pub fn findEnabledServices(
     return try enabled.toOwnedSlice(allocator);
 }
 
-fn fetchSshPubKey(allocator: Allocator, imds: *aws_sdk.imds.ImdsClient) !?[]const u8 {
-    const key = imds.get("/latest/meta-data/public-keys/0/openssh-key") catch |err| {
-        if (err == error.HttpNotFound) {
+fn fetchSshPubKey(allocator: Allocator, imds: *aws.ImdsClient) !?[]const u8 {
+    var diagnostic: aws.imds.ServiceError = undefined;
+    const key = imds.getMetadata(
+        "/latest/meta-data/public-keys/0/openssh-key",
+        .{ .diagnostic = &diagnostic },
+    ) catch |err| {
+        if (err == error.HttpError and diagnostic.httpStatus() == 404) {
             return null;
         }
         std.log.err("failed to fetch SSH public key from IMDS: {s}", .{@errorName(err)});
@@ -277,8 +282,6 @@ fn isServiceDisabled(name: []const u8, disable_services: ?[]const []const u8) bo
     }
     return false;
 }
-
-const testing = std.testing;
 
 test "isServiceDisabled returns false for null list" {
     try testing.expect(!isServiceDisabled("chrony", null));

@@ -5,7 +5,8 @@
 //! spot instance termination.
 
 const std = @import("std");
-const aws_sdk = @import("aws_sdk");
+
+const aws = @import("aws");
 
 const service = @import("service.zig");
 
@@ -41,7 +42,7 @@ pub fn startSpotTerminationMonitor() void {
 /// use-after-free when the main thread cleans up.
 fn monitorLoop() void {
     const allocator = std.heap.page_allocator;
-    var imds_client = aws_sdk.imds.ImdsClient.init(allocator, .{}) catch |err| {
+    var imds_client = aws.ImdsClient.init(allocator, .{}) catch |err| {
         scoped_log.err("failed to initialize IMDS client for spot monitor: {s}", .{@errorName(err)});
         return;
     };
@@ -76,9 +77,13 @@ const CheckResult = union(enum) {
     check_error: []const u8,
 };
 
-fn checkSpotTermination(imds_client: *aws_sdk.imds.ImdsClient) CheckResult {
-    const response = imds_client.get(SPOT_INSTANCE_ACTION_PATH) catch |err| {
-        if (err == error.HttpNotFound) {
+fn checkSpotTermination(imds_client: *aws.ImdsClient) CheckResult {
+    var diagnostic: aws.imds.ServiceError = undefined;
+    const response = imds_client.getMetadata(
+        SPOT_INSTANCE_ACTION_PATH,
+        .{ .diagnostic = &diagnostic },
+    ) catch |err| {
+        if (err == error.HttpError and diagnostic.httpStatus() == 404) {
             return .no_termination;
         }
         return .{ .check_error = @errorName(err) };

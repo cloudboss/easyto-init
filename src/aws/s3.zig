@@ -2,74 +2,97 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const testing = std.testing;
 
-const aws_sdk = @import("aws_sdk");
-
-const scoped_log = std.log.scoped(.aws_s3);
+const aws = @import("aws");
+const s3 = @import("s3");
 
 const fs_utils = @import("../fs.zig");
 
+const scoped_log = std.log.scoped(.aws_s3);
+
 pub const S3Error = error{
-    /// Object not found in S3
-    ObjectNotFound,
-    /// Access denied to S3 object
-    AccessDenied,
-    /// S3 request failed
-    RequestFailed,
-    /// Invalid JSON content
     InvalidJson,
-    /// Out of memory
-    OutOfMemory,
+    ObjectNotFound,
+    ReadError,
+    RequestFailed,
+    ServiceError,
 };
 
 pub const S3Client = struct {
     allocator: Allocator,
-    aws_client: aws_sdk.Client,
-    region: []const u8,
+    config: aws.Config,
 
     const Self = @This();
-    const services = aws_sdk.Services(.{.s3}){};
 
-    pub fn init(allocator: Allocator, region: []const u8) Self {
-        const aws_client = aws_sdk.Client.init(allocator, .{});
+    pub fn init(allocator: Allocator, region: []const u8) !Self {
         return Self{
             .allocator = allocator,
-            .aws_client = aws_client,
-            .region = region,
+            .config = try aws.Config.load(allocator, .{ .region = region }),
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.aws_client.deinit();
+        self.config.deinit();
     }
 
     /// Fetch an object from S3 as bytes.
     pub fn getObject(self: *Self, bucket: []const u8, key: []const u8) ![]const u8 {
-        scoped_log.debug("GetObject s3://{s}/{s}", .{ bucket, key });
+        const s3_object = try std.fmt.allocPrint(self.allocator, "s3://{s}/{s}", .{ bucket, key });
+        defer self.allocator.free(s3_object);
+        scoped_log.debug("GetObject {s}", .{s3_object});
 
-        const options = aws_sdk.Options{
-            .client = self.aws_client,
-            .region = self.region,
-        };
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
 
-        const result = aws_sdk.Request(services.s3.get_object).call(.{
-            .bucket = bucket,
-            .key = key,
-        }, options) catch |err| {
-            scoped_log.err("S3 GetObject failed for s3://{s}/{s}: {s}", .{ bucket, key, @errorName(err) });
+        var client = s3.Client.init(self.allocator, &self.config);
+        defer client.deinit();
+
+        var diagnostic: s3.ServiceError = undefined;
+        var result = client.getObject(
+            arena.allocator(),
+            .{
+                .bucket = bucket,
+                .key = key,
+            },
+            .{ .diagnostic = &diagnostic },
+        ) catch |err| {
+            if (err == error.ServiceError) {
+                defer diagnostic.deinit();
+                scoped_log.err(
+                    "S3 GetObject failed for {s}: {s}: {s}",
+                    .{ s3_object, diagnostic.code(), diagnostic.message() },
+                );
+                return S3Error.ServiceError;
+            }
+            scoped_log.err(
+                "S3 GetObject failed for {s}: {s}",
+                .{ s3_object, @errorName(err) },
+            );
             return S3Error.RequestFailed;
         };
         defer result.deinit();
 
-        if (result.response.body) |body| {
-            return try self.allocator.dupe(u8, body);
+        if (result.body) |*body| {
+            return body.readAll(self.allocator, 10 * 1024 * 1024) catch |err| {
+                scoped_log.err(
+                    "Failed to read S3 body for {s}: {s}",
+                    .{ s3_object, @errorName(err) },
+                );
+                return S3Error.ReadError;
+            };
         }
 
         return S3Error.ObjectNotFound;
     }
 
-    /// Fetch an object from S3 and parse it as a JSON map of string key-value pairs.
-    pub fn getObjectMap(self: *Self, bucket: []const u8, key: []const u8) !std.StringHashMap([]const u8) {
+    /// Fetch an object from S3 and parse it as a JSON map of
+    /// string key-value pairs.
+    pub fn getObjectMap(
+        self: *Self,
+        bucket: []const u8,
+        key: []const u8,
+    ) !std.StringHashMap([]const u8) {
         const content = try self.getObject(bucket, key);
         defer self.allocator.free(content);
 
@@ -86,43 +109,55 @@ pub const S3Client = struct {
     pub fn listObjects(self: *Self, bucket: []const u8, prefix: []const u8) ![]S3Object {
         scoped_log.debug("ListObjects s3://{s}/{s}", .{ bucket, prefix });
 
-        const options = aws_sdk.Options{
-            .client = self.aws_client,
-            .region = self.region,
-        };
-
         var objects: std.ArrayListUnmanaged(S3Object) = .empty;
         errdefer {
             for (objects.items) |*obj| obj.deinit(self.allocator);
             objects.deinit(self.allocator);
         }
 
-        var continuation_token: ?[]const u8 = null;
-        defer if (continuation_token) |ct| self.allocator.free(ct);
+        var client = s3.Client.init(self.allocator, &self.config);
+        defer client.deinit();
 
-        while (true) {
-            const result = aws_sdk.Request(services.s3.list_objects_v2).call(.{
-                .bucket = bucket,
-                .prefix = prefix,
-                .continuation_token = continuation_token,
-            }, options) catch |err| {
-                scoped_log.err(
-                    "S3 ListObjects failed for s3://{s}/{s}: {s}",
-                    .{ bucket, prefix, @errorName(err) },
-                );
+        var paginator = client.listObjectsV2Paginator(.{
+            .bucket = bucket,
+            .prefix = prefix,
+        });
+        defer paginator.deinit();
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+
+        while (!paginator.done) {
+            var diagnostic: s3.ServiceError = undefined;
+            const result = paginator.next(
+                arena.allocator(),
+                .{ .diagnostic = &diagnostic },
+            ) catch |err| {
+                if (err == error.ServiceError) {
+                    defer diagnostic.deinit();
+                    scoped_log.err(
+                        "S3 ListObjects failed for s3://{s}/{s}: {s}: {s}",
+                        .{ bucket, prefix, diagnostic.code(), diagnostic.message() },
+                    );
+                } else {
+                    scoped_log.err(
+                        "S3 ListObjects failed for s3://{s}/{s}: {s}",
+                        .{ bucket, prefix, @errorName(err) },
+                    );
+                }
                 return S3Error.RequestFailed;
             };
-            defer result.deinit();
 
-            if (result.response.contents) |contents| {
+            if (result.contents) |contents| {
                 for (contents) |item| {
                     const item_key = item.key orelse continue;
 
-                    // Skip "directory" markers (keys ending with /)
                     if (isDirectoryMarker(item_key)) continue;
 
-                    // Calculate path suffix (relative to prefix)
-                    const path_suffix = calculatePathSuffix(item_key, prefix);
+                    const path_suffix = calculatePathSuffix(
+                        item_key,
+                        prefix,
+                    );
 
                     try objects.append(self.allocator, S3Object{
                         .bucket = try self.allocator.dupe(u8, bucket),
@@ -131,16 +166,6 @@ pub const S3Client = struct {
                     });
                 }
             }
-
-            // Check for more pages
-            if (result.response.is_truncated orelse false) {
-                if (result.response.next_continuation_token) |token| {
-                    if (continuation_token) |ct| self.allocator.free(ct);
-                    continuation_token = try self.allocator.dupe(u8, token);
-                    continue;
-                }
-            }
-            break;
         }
 
         return try objects.toOwnedSlice(self.allocator);
@@ -157,7 +182,10 @@ pub const S3Client = struct {
         destination: []const u8,
         options: DownloadOptions,
     ) !DownloadResult {
-        scoped_log.debug("downloadPrefixToDir s3://{s}/{s} -> {s}", .{ bucket, prefix, destination });
+        scoped_log.debug(
+            "downloadPrefixToDir s3://{s}/{s} -> {s}",
+            .{ bucket, prefix, destination },
+        );
 
         const objects = try self.listObjects(bucket, prefix);
         defer {
@@ -174,8 +202,6 @@ pub const S3Client = struct {
             const content = try self.getObject(obj.bucket, obj.key);
             defer self.allocator.free(content);
 
-            // Build destination path: join destination with path_suffix.
-            // When path_suffix is empty (single file case), destination is the file path.
             const dest_path = try fs_utils.joinPath(self.allocator, destination, obj.path_suffix);
             defer self.allocator.free(dest_path);
 
@@ -310,8 +336,6 @@ pub fn freeStringMap(allocator: Allocator, map: *std.StringHashMap([]const u8)) 
     }
     map.deinit();
 }
-
-const testing = std.testing;
 
 test "parseJsonToMap with string values" {
     const allocator = testing.allocator;

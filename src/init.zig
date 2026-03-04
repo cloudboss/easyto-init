@@ -8,7 +8,7 @@ const linux = std.os.linux;
 const posix = std.posix;
 const testing = std.testing;
 
-const aws_sdk = @import("aws_sdk");
+const aws = @import("aws");
 const k8s_expand = @import("k8s_expand");
 
 const asm_mod = @import("aws/asm.zig");
@@ -18,8 +18,8 @@ const ssm_mod = @import("aws/ssm.zig");
 const constants = @import("constants.zig");
 const container = @import("container.zig");
 const fs_utils = @import("fs.zig");
-const log_level = @import("log_level.zig");
 const mkdir_p = fs_utils.mkdir_p;
+const log_level = @import("log_level.zig");
 const network = @import("network.zig");
 const service = @import("service.zig");
 const Supervisor = service.Supervisor;
@@ -402,8 +402,12 @@ fn read_metadata(allocator: Allocator, path: []const u8) !Metadata {
 fn fetchUserData(aws_ctx: *AwsContext) !?[]const u8 {
     const imds_client = aws_ctx.getImds();
 
-    const user_data = imds_client.get("/latest/user-data") catch |err| {
-        if (err == error.HttpNotFound) {
+    var diagnostic: aws.imds.ServiceError = undefined;
+    const user_data = imds_client.getMetadata(
+        "/latest/user-data",
+        .{ .diagnostic = &diagnostic },
+    ) catch |err| {
+        if (err == error.HttpError and diagnostic.httpStatus() == 404) {
             return null;
         }
         std.log.err("failed to fetch user data from IMDS: {s}", .{@errorName(err)});
@@ -560,7 +564,7 @@ fn resolveEnvFrom(
             const imds_path = try std.fmt.allocPrint(allocator, "/latest/meta-data/{s}", .{imds.path});
             defer allocator.free(imds_path);
 
-            const value = imds_client.get(imds_path) catch |err| {
+            const value = imds_client.getMetadata(imds_path, .{}) catch |err| {
                 if (imds.optional orelse false) {
                     std.log.info("optional IMDS path {s} not found, skipping", .{imds.path});
                     continue;
@@ -947,14 +951,20 @@ fn handleEbsVolume(aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
         const imds_client = aws_ctx.getImds();
 
         // Get availability zone from IMDS
-        const az = imds_client.get("/latest/meta-data/placement/availability-zone") catch |err| {
+        const az = imds_client.getMetadata(
+            "/latest/meta-data/placement/availability-zone",
+            .{},
+        ) catch |err| {
             std.log.err("failed to get availability zone from IMDS: {s}", .{@errorName(err)});
             return err;
         };
         defer aws_ctx.allocator.free(az);
 
         // Get instance ID from IMDS
-        const instance_id = imds_client.get("/latest/meta-data/instance-id") catch |err| {
+        const instance_id = imds_client.getMetadata(
+            "/latest/meta-data/instance-id",
+            .{},
+        ) catch |err| {
             std.log.err("failed to get instance ID from IMDS: {s}", .{@errorName(err)});
             return err;
         };

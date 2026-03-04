@@ -8,7 +8,7 @@ const posix = std.posix;
 const linux = std.os.linux;
 const Allocator = std.mem.Allocator;
 
-const aws_sdk = @import("aws_sdk");
+const aws = @import("aws");
 const dhcpz = @import("dhcpz");
 const nlz = @import("nlz");
 
@@ -109,7 +109,7 @@ pub const Error = error{
 };
 
 /// Initialize network interfaces with retry/backoff.
-pub fn initializeNetwork(allocator: Allocator, imds_client: *aws_sdk.imds.ImdsClient) !void {
+pub fn initializeNetwork(allocator: Allocator, imds_client: *aws.ImdsClient) !void {
     const timeout_ns: u64 = 60 * std.time.ns_per_s;
     const start = std.time.nanoTimestamp();
     var backoff = RetryBackoff.init(2000);
@@ -135,7 +135,7 @@ pub fn initializeNetwork(allocator: Allocator, imds_client: *aws_sdk.imds.ImdsCl
     return Error.NetworkInitFailed;
 }
 
-fn initializeNetworkInner(allocator: Allocator, imds_client: *aws_sdk.imds.ImdsClient) !void {
+fn initializeNetworkInner(allocator: Allocator, imds_client: *aws.ImdsClient) !void {
     var socket = nlz.Socket.open() catch {
         std.log.err("failed to create netlink socket", .{});
         return Error.NetlinkError;
@@ -301,7 +301,7 @@ const SelectPrimaryResult = struct {
 
 fn selectPrimaryInterface(
     socket: *nlz.Socket,
-    imds_client: *aws_sdk.imds.ImdsClient,
+    imds_client: *aws.ImdsClient,
     interfaces: []const InterfaceInfo,
     persisted_state: *const PersistedNetworkState,
     allocator: Allocator,
@@ -355,9 +355,12 @@ fn selectPrimaryInterface(
     return Error.InvalidInterface;
 }
 
-fn discoverPrimaryMacViaImds(imds_client: *aws_sdk.imds.ImdsClient, allocator: Allocator) ![]const u8 {
+fn discoverPrimaryMacViaImds(imds_client: *aws.ImdsClient, allocator: Allocator) ![]const u8 {
     // Get list of MACs
-    const macs_list = imds_client.get("/latest/meta-data/network/interfaces/macs/") catch |err| {
+    const macs_list = imds_client.getMetadata(
+        "/latest/meta-data/network/interfaces/macs/",
+        .{},
+    ) catch |err| {
         std.log.err("failed to get MAC list from IMDS: {s}", .{@errorName(err)});
         return Error.NetworkInitFailed;
     };
@@ -377,7 +380,7 @@ fn discoverPrimaryMacViaImds(imds_client: *aws_sdk.imds.ImdsClient, allocator: A
             .{mac},
         ) catch continue;
 
-        const devnum = imds_client.get(path) catch continue;
+        const devnum = imds_client.getMetadata(path, .{}) catch continue;
         defer allocator.free(devnum);
 
         const trimmed = std.mem.trim(u8, devnum, " \t\r\n");
@@ -1180,8 +1183,8 @@ fn nextFamilyIndex(
     return max_idx +| 1;
 }
 
-fn setHostname(imds_client: *aws_sdk.imds.ImdsClient, allocator: Allocator) !void {
-    const hostname = imds_client.get("/latest/meta-data/local-hostname") catch |err| {
+fn setHostname(imds_client: *aws.ImdsClient, allocator: Allocator) !void {
+    const hostname = imds_client.getMetadata("/latest/meta-data/local-hostname", .{}) catch |err| {
         std.log.err("failed to get hostname from IMDS: {s}", .{@errorName(err)});
         return Error.NetworkInitFailed;
     };

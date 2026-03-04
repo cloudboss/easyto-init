@@ -2,8 +2,11 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const testing = std.testing;
 
-const aws_sdk = @import("aws_sdk");
+const aws = @import("aws");
+const ec2 = @import("ec2");
+const Filter = ec2.types.Filter;
 
 const backoff = @import("../backoff.zig");
 const vmspec = @import("../vmspec.zig");
@@ -13,20 +16,10 @@ const AwsTag = vmspec.AwsTag;
 const scoped_log = std.log.scoped(.aws_ec2);
 
 pub const Ec2Error = error{
-    /// Volume not found
-    VolumeNotFound,
-    /// Access denied
-    AccessDenied,
-    /// Request failed
     RequestFailed,
-    /// Timeout waiting for volume
+    ServiceError,
     Timeout,
-    /// Out of memory
-    OutOfMemory,
 };
-
-const services = aws_sdk.Services(.{.ec2}){};
-const Filter = services.ec2.Filter;
 
 /// Helper for building EC2 filter lists with automatic memory management.
 const FilterBuilder = struct {
@@ -57,22 +50,19 @@ const FilterBuilder = struct {
 
 pub const Ec2Client = struct {
     allocator: Allocator,
-    aws_client: aws_sdk.Client,
-    region: []const u8,
+    config: aws.Config,
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator, region: []const u8) Self {
-        const aws_client = aws_sdk.Client.init(allocator, .{});
+    pub fn init(allocator: Allocator, region: []const u8) !Self {
         return Self{
             .allocator = allocator,
-            .aws_client = aws_client,
-            .region = region,
+            .config = try aws.Config.load(allocator, .{ .region = region }),
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.aws_client.deinit();
+        self.config.deinit();
     }
 
     /// Ensure an EBS volume is attached to the instance.
@@ -85,19 +75,16 @@ pub const Ec2Client = struct {
         availability_zone: []const u8,
         instance_id: []const u8,
     ) !void {
-        // Check if already attached
         if (try self.isVolumeAttached(attachment, device, instance_id)) {
             scoped_log.debug("volume already attached at {s}", .{device});
             return;
         }
 
-        // Find an available volume matching the filters
         const volume_id = try self.waitForAvailableVolume(attachment, availability_zone);
         defer self.allocator.free(volume_id);
 
         scoped_log.info("attaching volume {s} to {s}", .{ volume_id, device });
 
-        // Attach the volume
         try self.attachVolume(volume_id, device, instance_id);
     }
 
@@ -108,10 +95,11 @@ pub const Ec2Client = struct {
         device: []const u8,
         instance_id: []const u8,
     ) !bool {
-        const options = aws_sdk.Options{
-            .client = self.aws_client,
-            .region = self.region,
-        };
+        var client = ec2.Client.init(self.allocator, &self.config);
+        defer client.deinit();
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
 
         var fb = FilterBuilder.init(self.allocator);
         defer fb.deinit();
@@ -120,15 +108,26 @@ pub const Ec2Client = struct {
         try fb.add("attachment.device", device);
         try self.addTagFilters(&fb, attachment.tags);
 
-        const result = aws_sdk.Request(services.ec2.describe_volumes).call(.{
-            .filters = fb.items(),
-        }, options) catch |err| {
+        var diagnostic: ec2.ServiceError = undefined;
+
+        const result = client.describeVolumes(
+            arena.allocator(),
+            .{ .filters = fb.items() },
+            .{ .diagnostic = &diagnostic },
+        ) catch |err| {
+            if (err == error.ServiceError) {
+                defer diagnostic.deinit();
+                scoped_log.err(
+                    "DescribeVolumes failed: {s}: {s}",
+                    .{ diagnostic.code(), diagnostic.message() },
+                );
+                return Ec2Error.ServiceError;
+            }
             scoped_log.err("DescribeVolumes failed: {s}", .{@errorName(err)});
             return Ec2Error.RequestFailed;
         };
-        defer result.deinit();
 
-        if (result.response.volumes) |volumes| {
+        if (result.volumes) |volumes| {
             return volumes.len > 0;
         }
 
@@ -170,10 +169,11 @@ pub const Ec2Client = struct {
         attachment: *const EbsVolumeAttachment,
         availability_zone: []const u8,
     ) !?[]const u8 {
-        const options = aws_sdk.Options{
-            .client = self.aws_client,
-            .region = self.region,
-        };
+        var client = ec2.Client.init(self.allocator, &self.config);
+        defer client.deinit();
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
 
         var fb = FilterBuilder.init(self.allocator);
         defer fb.deinit();
@@ -182,15 +182,23 @@ pub const Ec2Client = struct {
         try fb.add("availability-zone", availability_zone);
         try self.addTagFilters(&fb, attachment.tags);
 
-        const result = aws_sdk.Request(services.ec2.describe_volumes).call(.{
-            .filters = fb.items(),
-        }, options) catch |err| {
+        var diagnostic: ec2.ServiceError = undefined;
+
+        const result = client.describeVolumes(
+            arena.allocator(),
+            .{ .filters = fb.items() },
+            .{ .diagnostic = &diagnostic },
+        ) catch |err| {
+            if (err == error.ServiceError) {
+                defer diagnostic.deinit();
+                scoped_log.err("DescribeVolumes failed: {s}: {s}", .{ diagnostic.code(), diagnostic.message() });
+                return Ec2Error.ServiceError;
+            }
             scoped_log.debug("DescribeVolumes failed: {s}", .{@errorName(err)});
             return null;
         };
-        defer result.deinit();
 
-        if (result.response.volumes) |volumes| {
+        if (result.volumes) |volumes| {
             if (volumes.len > 0) {
                 if (volumes[0].volume_id) |vol_id| {
                     scoped_log.debug("found matching EBS volume: {s}", .{vol_id});
@@ -209,25 +217,38 @@ pub const Ec2Client = struct {
         device: []const u8,
         instance_id: []const u8,
     ) !void {
-        const options = aws_sdk.Options{
-            .client = self.aws_client,
-            .region = self.region,
-        };
+        var client = ec2.Client.init(self.allocator, &self.config);
+        defer client.deinit();
 
-        const result = aws_sdk.Request(services.ec2.attach_volume).call(.{
-            .device = device,
-            .instance_id = instance_id,
-            .volume_id = volume_id,
-        }, options) catch |err| {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+
+        var diagnostic: ec2.ServiceError = undefined;
+
+        _ = client.attachVolume(
+            arena.allocator(),
+            .{
+                .device = device,
+                .instance_id = instance_id,
+                .volume_id = volume_id,
+            },
+            .{ .diagnostic = &diagnostic },
+        ) catch |err| {
+            if (err == error.ServiceError) {
+                defer diagnostic.deinit();
+                scoped_log.err("AttachVolume failed: {s}: {s}", .{ diagnostic.code(), diagnostic.message() });
+                return Ec2Error.ServiceError;
+            }
             scoped_log.err("AttachVolume failed: {s}", .{@errorName(err)});
             return Ec2Error.RequestFailed;
         };
-        result.deinit();
 
-        scoped_log.info("attached volume {s} to instance {s} at {s}", .{ volume_id, instance_id, device });
+        scoped_log.info(
+            "attached volume {s} to instance {s} at {s}",
+            .{ volume_id, instance_id, device },
+        );
     }
 
-    /// Add tag filters to a FilterBuilder.
     fn addTagFilters(self: *Self, fb: *FilterBuilder, tags: []const AwsTag) !void {
         for (tags) |tag| {
             if (tag.value) |value| {
@@ -240,8 +261,6 @@ pub const Ec2Client = struct {
         }
     }
 };
-
-const testing = std.testing;
 
 test "FilterBuilder empty" {
     var fb = FilterBuilder.init(testing.allocator);

@@ -2,48 +2,37 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const testing = std.testing;
 
-const aws_sdk = @import("aws_sdk");
-
-const scoped_log = std.log.scoped(.aws_asm);
+const aws = @import("aws");
+const secretsmanager = @import("secretsmanager");
 
 const fs_utils = @import("../fs.zig");
 const s3 = @import("s3.zig");
 
+const scoped_log = std.log.scoped(.aws_asm);
+
 pub const SecretsManagerError = error{
-    /// Secret not found in Secrets Manager
-    SecretNotFound,
-    /// Access denied to secret
-    AccessDenied,
-    /// Secrets Manager request failed
-    RequestFailed,
-    /// Invalid JSON content
-    InvalidJson,
-    /// Secret has no value
     SecretEmpty,
-    /// Out of memory
-    OutOfMemory,
+    ServiceError,
+    RequestFailed,
 };
 
 pub const SecretsManagerClient = struct {
     allocator: Allocator,
-    aws_client: aws_sdk.Client,
-    region: []const u8,
+    config: aws.Config,
 
     const Self = @This();
-    const services = aws_sdk.Services(.{.secrets_manager}){};
 
-    pub fn init(allocator: Allocator, region: []const u8) Self {
-        const aws_client = aws_sdk.Client.init(allocator, .{});
+    pub fn init(allocator: Allocator, region: []const u8) !Self {
         return Self{
             .allocator = allocator,
-            .aws_client = aws_client,
-            .region = region,
+            .config = try aws.Config.load(allocator, .{ .region = region }),
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.aws_client.deinit();
+        self.config.deinit();
     }
 
     /// Fetch a secret value from Secrets Manager.
@@ -51,28 +40,39 @@ pub const SecretsManagerClient = struct {
     pub fn getSecretValue(self: *Self, secret_id: []const u8) ![]const u8 {
         scoped_log.debug("GetSecretValue {s}", .{secret_id});
 
-        const options = aws_sdk.Options{
-            .client = self.aws_client,
-            .region = self.region,
-        };
+        var client = secretsmanager.Client.init(self.allocator, &self.config);
+        defer client.deinit();
 
-        const result = aws_sdk.Request(services.secrets_manager.get_secret_value).call(.{
-            .secret_id = secret_id,
-        }, options) catch |err| {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+
+        var diagnostic: secretsmanager.ServiceError = undefined;
+
+        const result = client.getSecretValue(
+            arena.allocator(),
+            .{ .secret_id = secret_id },
+            .{ .diagnostic = &diagnostic },
+        ) catch |err| {
+            if (err == error.ServiceError) {
+                defer diagnostic.deinit();
+                scoped_log.err(
+                    "Secrets Manager GetSecretValue failed for {s}: {s}: {s}",
+                    .{ secret_id, diagnostic.code(), diagnostic.message() },
+                );
+                return SecretsManagerError.ServiceError;
+            }
             scoped_log.err(
                 "Secrets Manager GetSecretValue failed for {s}: {s}",
                 .{ secret_id, @errorName(err) },
             );
             return SecretsManagerError.RequestFailed;
         };
-        defer result.deinit();
 
-        // Check for string secret first, then binary
-        if (result.response.secret_string) |secret_string| {
+        if (result.secret_string) |secret_string| {
             return try self.allocator.dupe(u8, secret_string);
         }
 
-        if (result.response.secret_binary) |secret_binary| {
+        if (result.secret_binary) |secret_binary| {
             return try self.allocator.dupe(u8, secret_binary);
         }
 
@@ -86,7 +86,10 @@ pub const SecretsManagerClient = struct {
         defer self.allocator.free(content);
 
         return s3.parseJsonToMap(self.allocator, content) catch |err| {
-            scoped_log.err("Failed to parse JSON from secret {s}: {s}", .{ secret_id, @errorName(err) });
+            scoped_log.err(
+                "Failed to parse JSON from secret {s}: {s}",
+                .{ secret_id, @errorName(err) },
+            );
             return err;
         };
     }
@@ -128,15 +131,6 @@ pub const DownloadOptions = struct {
     uid: ?u32 = null,
     gid: ?u32 = null,
 };
-
-const testing = std.testing;
-
-test "SecretsManagerClient struct has expected fields" {
-    // Compile-time check that the struct has the expected shape
-    const T = SecretsManagerClient;
-    try testing.expect(@hasField(T, "allocator"));
-    try testing.expect(@hasField(T, "aws_client"));
-}
 
 test "DownloadOptions has secure defaults" {
     const opts = DownloadOptions{};
