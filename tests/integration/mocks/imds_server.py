@@ -70,6 +70,12 @@ class IMDSHandler(http.server.BaseHTTPRequestHandler):
     # Use HTTP/1.1 like real IMDS
     protocol_version = "HTTP/1.1"
 
+    def handle(self):
+        try:
+            super().handle()
+        except BrokenPipeError:
+            pass
+
     def log_message(self, fmt, *args):
         print(f"IMDS: {fmt % args}", file=sys.stderr, flush=True)
 
@@ -315,5 +321,7 @@ if __name__ == "__main__":
     else:
         print(f"Spot termination: disabled", file=sys.stderr, flush=True)
 
-    server = http.server.HTTPServer(("0.0.0.0", PORT), IMDSHandler)
+    server = http.server.ThreadingHTTPServer(
+        ("0.0.0.0", PORT), IMDSHandler,
+    )
     server.serve_forever()
