@@ -141,6 +141,34 @@ pub fn parse(allocator: Allocator, content: []const u8) !ParseResult {
     };
 }
 
+fn parseFlowSequence(
+    allocator: Allocator,
+    input: []const u8,
+    owned_strings: *std.ArrayListUnmanaged([]const u8),
+) ParseError!Value {
+    // Strip outer brackets
+    const inner = std.mem.trim(u8, input[1 .. input.len - 1], " \t");
+    if (inner.len == 0) {
+        const items = try allocator.alloc(Value, 0);
+        return Value{ .list = items };
+    }
+
+    var items = ArrayList(Value){};
+    errdefer items.deinit(allocator);
+
+    var it = std.mem.splitScalar(u8, inner, ',');
+    while (it.next()) |raw_item| {
+        const item = std.mem.trim(u8, raw_item, " \t\r\"'");
+        if (item.len > 0) {
+            const duped = try allocator.dupe(u8, item);
+            try owned_strings.append(allocator, duped);
+            try items.append(allocator, Value{ .string = duped });
+        }
+    }
+
+    return Value{ .list = try items.toOwnedSlice(allocator) };
+}
+
 fn stripInlineComment(s: []const u8) []const u8 {
     // Strip inline comments: " #" followed by comment text
     if (std.mem.indexOf(u8, s, " #")) |pos| {
@@ -172,7 +200,7 @@ fn parseLine(line: []const u8) Line {
 
     if (!is_comment) {
         if (std.mem.indexOf(u8, content, ": ")) |colon_pos| {
-            key = content[0..colon_pos];
+            key = std.mem.trim(u8, content[0..colon_pos], "\"'");
             const raw_value = std.mem.trim(u8, content[colon_pos + 2 ..], " \t\r");
             if (raw_value.len == 0) {
                 value = null;
@@ -181,7 +209,7 @@ fn parseLine(line: []const u8) Line {
                 if (value.?.len == 0) value = null;
             }
         } else if (content.len > 0 and content[content.len - 1] == ':') {
-            key = content[0 .. content.len - 1];
+            key = std.mem.trim(u8, content[0 .. content.len - 1], "\"'");
             value = null;
         } else if (std.mem.eql(u8, std.mem.trim(u8, content, " \t\r"), "|")) {
             is_block_scalar = true;
@@ -375,24 +403,43 @@ fn parseMap(
 
         if (line.key) |key| {
             if (line.indent == map_indent) {
-                const val = if (line.value) |v| blk: {
-                    // Check for block scalar indicator
-                    if (std.mem.eql(u8, std.mem.trim(u8, v, " \t\r"), "|")) {
-                        break :blk try parseBlockScalar(allocator, lines, i, map_indent, owned_strings);
-                    }
-                    break :blk Value{ .string = std.mem.trim(u8, v, " \t\r\"'") };
-                } else blk: {
-                    // Value is on subsequent lines
-                    break :blk try parseValue(allocator, lines, i + 1, line.indent + 2, owned_strings);
-                };
-
-                try entries.append(allocator, .{ .key = key, .value = val });
-
-                // Skip to next key at same indent
-                i += 1;
-                if (line.value == null or std.mem.eql(u8, std.mem.trim(u8, line.value.?, " \t\r"), "|")) {
-                    while (i < lines.len and lines[i].indent > map_indent) {
+                // Check for list at same indent as key (YAML allows this)
+                if (line.value == null and i + 1 < lines.len and
+                    lines[i + 1].is_list_item and lines[i + 1].indent == map_indent)
+                {
+                    const val = try parseList(allocator, lines, i + 1, map_indent, owned_strings);
+                    try entries.append(allocator, .{ .key = key, .value = val });
+                    i += 1;
+                    while (i < lines.len) {
+                        if (lines[i].indent < map_indent) break;
+                        if (lines[i].indent == map_indent and !lines[i].is_list_item) break;
                         i += 1;
+                    }
+                } else {
+                    const val = if (line.value) |v| blk: {
+                        // Check for block scalar indicator
+                        if (std.mem.eql(u8, std.mem.trim(u8, v, " \t\r"), "|")) {
+                            break :blk try parseBlockScalar(allocator, lines, i, map_indent, owned_strings);
+                        }
+                        const trimmed = std.mem.trim(u8, v, " \t\r");
+                        // Check for flow sequence [...]
+                        if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+                            break :blk try parseFlowSequence(allocator, trimmed, owned_strings);
+                        }
+                        break :blk Value{ .string = std.mem.trim(u8, v, " \t\r\"'") };
+                    } else blk: {
+                        // Value is on subsequent lines
+                        break :blk try parseValue(allocator, lines, i + 1, line.indent + 2, owned_strings);
+                    };
+
+                    try entries.append(allocator, .{ .key = key, .value = val });
+
+                    // Skip to next key at same indent
+                    i += 1;
+                    if (line.value == null or std.mem.eql(u8, std.mem.trim(u8, line.value.?, " \t\r"), "|")) {
+                        while (i < lines.len and lines[i].indent > map_indent) {
+                            i += 1;
+                        }
                     }
                 }
             } else {
@@ -928,4 +975,70 @@ test "parse multiple top-level keys with env and env-from" {
     // Check command
     const cmd = result.value.get("command").?.getList().?;
     try std.testing.expectEqual(@as(usize, 1), cmd.len);
+}
+
+test "parse flow sequence single item" {
+    const input = "command: [\"/bin/echo\"]";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("command").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqualStrings("/bin/echo", items[0].getString().?);
+}
+
+test "parse flow sequence multiple items" {
+    const input = "command: [\"/bin/sh\", \"-c\", \"echo hello\"]";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("command").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 3), items.len);
+    try std.testing.expectEqualStrings("/bin/sh", items[0].getString().?);
+    try std.testing.expectEqualStrings("-c", items[1].getString().?);
+    try std.testing.expectEqualStrings("echo hello", items[2].getString().?);
+}
+
+test "parse flow sequence empty" {
+    const input = "args: []";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("args").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 0), items.len);
+}
+
+test "parse flow sequence unquoted items" {
+    const input = "modules: [nfs, fuse]";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const items = result.value.get("modules").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqualStrings("nfs", items[0].getString().?);
+    try std.testing.expectEqualStrings("fuse", items[1].getString().?);
+}
+
+test "parse quoted keys" {
+    const input =
+        \\"command":
+        \\  - /bin/echo
+        \\"debug": true
+    ;
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    const cmd = result.value.get("command").?.getList().?;
+    try std.testing.expectEqual(@as(usize, 1), cmd.len);
+    try std.testing.expectEqualStrings("/bin/echo", cmd[0].getString().?);
+    try std.testing.expectEqualStrings("true", result.value.get("debug").?.getString().?);
+}
+
+test "parse quoted keys with inline values" {
+    const input = "\"name\": hello";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("hello", result.value.get("name").?.getString().?);
+}
+
+test "parse single-quoted keys" {
+    const input = "'name': hello";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("hello", result.value.get("name").?.getString().?);
 }
