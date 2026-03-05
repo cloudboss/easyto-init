@@ -2,7 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const testing = std.testing;
-const yaml = @import("yaml.zig");
 
 const constants = @import("constants.zig");
 const container = @import("container.zig");
@@ -10,6 +9,7 @@ const Config = container.Config;
 const ConfigFile = container.ConfigFile;
 const login = @import("login.zig");
 const string = @import("string.zig");
+const yaml = @import("yaml.zig");
 
 const default_command = [_][]const u8{constants.DIR_ET_BIN ++ "/sh"};
 
@@ -1598,7 +1598,7 @@ test "VmSpec.merge empty other into populated self" {
     try vmspec.merge(other);
 
     // Original values preserved
-    try testing.expect(vmspec.command != null);
+    try testing.expectEqualStrings("/bin/echo", vmspec.command.?[0]);
     try testing.expectEqual(@as(?bool, true), vmspec.debug);
 }
 
@@ -1803,4 +1803,66 @@ test "VmSpec.merge env-from" {
     try testing.expectEqual(@as(usize, 2), vmspec.@"env-from".?.len);
     try testing.expect(vmspec.@"env-from".?[0].s3 != null);
     try testing.expect(vmspec.@"env-from".?[1].ssm != null);
+}
+
+test "VmSpec.from_yaml parses user data with quoted keys" {
+    const yaml_content =
+        \\"args": null
+        \\"command":
+        \\- "/usr/bin/runsvdir"
+        \\- "/etc/service"
+        \\"debug": true
+        \\"disable-services": null
+        \\"env":
+        \\- "name": "KEIGHTS_INPUTS_SHA"
+        \\  "value": "abc123"
+        \\"env-from":
+        \\- "imds":
+        \\    "name": "HOSTNAME"
+        \\    "optional": null
+        \\    "path": "hostname"
+        \\"init-scripts":
+        \\- |
+        \\  #!/bin/sh -e
+        \\  echo hello
+        \\"modules":
+        \\- "br_netfilter"
+        \\- "overlay"
+        \\"replace-init": null
+        \\"security": null
+        \\"shutdown-grace-period": null
+        \\"sysctls":
+        \\- "name": "net.bridge.bridge-nf-call-iptables"
+        \\  "value": "1"
+        \\"working-dir": null
+    ;
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    try testing.expect(vmspec.args == null);
+
+    try testing.expectEqualStrings("/usr/bin/runsvdir", vmspec.command.?[0]);
+    try testing.expectEqualStrings("/etc/service", vmspec.command.?[1]);
+
+    try testing.expectEqual(@as(?bool, true), vmspec.debug);
+
+    try testing.expectEqualStrings("KEIGHTS_INPUTS_SHA", vmspec.env.?[0].name);
+    try testing.expectEqualStrings("abc123", vmspec.env.?[0].value);
+
+    const imds = vmspec.@"env-from".?[0].imds.?;
+    try testing.expectEqualStrings("HOSTNAME", imds.name);
+    try testing.expectEqualStrings("hostname", imds.path);
+
+    try testing.expect(
+        std.mem.startsWith(u8, vmspec.@"init-scripts".?[0], "#!/bin/sh -e"),
+    );
+
+    try testing.expectEqualStrings("br_netfilter", vmspec.modules.?[0]);
+    try testing.expectEqualStrings("overlay", vmspec.modules.?[1]);
+
+    try testing.expectEqualStrings(
+        "net.bridge.bridge-nf-call-iptables",
+        vmspec.sysctls.?[0].name,
+    );
+    try testing.expectEqualStrings("1", vmspec.sysctls.?[0].value);
 }
