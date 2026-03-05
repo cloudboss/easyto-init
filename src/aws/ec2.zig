@@ -26,12 +26,15 @@ const FilterBuilder = struct {
     allocator: Allocator,
     filters: std.ArrayListUnmanaged(Filter) = .empty,
     values: std.ArrayListUnmanaged([]const []const u8) = .empty,
+    names: std.ArrayListUnmanaged([]const u8) = .empty,
 
     fn init(allocator: Allocator) FilterBuilder {
         return .{ .allocator = allocator };
     }
 
     fn deinit(self: *FilterBuilder) void {
+        for (self.names.items) |n| self.allocator.free(n);
+        self.names.deinit(self.allocator);
         for (self.values.items) |arr| self.allocator.free(arr);
         self.values.deinit(self.allocator);
         self.filters.deinit(self.allocator);
@@ -41,6 +44,12 @@ const FilterBuilder = struct {
         const vals = try self.allocator.dupe([]const u8, &[_][]const u8{value});
         try self.values.append(self.allocator, vals);
         try self.filters.append(self.allocator, .{ .name = name, .values = vals });
+    }
+
+    /// Like add, but takes ownership of an allocated name.
+    fn addAlloc(self: *FilterBuilder, name: []const u8, value: []const u8) !void {
+        try self.names.append(self.allocator, name);
+        try self.add(name, value);
     }
 
     fn items(self: *FilterBuilder) []Filter {
@@ -253,8 +262,7 @@ pub const Ec2Client = struct {
         for (tags) |tag| {
             if (tag.value) |value| {
                 const name = try std.fmt.allocPrint(self.allocator, "tag:{s}", .{tag.key});
-                defer self.allocator.free(name);
-                try fb.add(name, value);
+                try fb.addAlloc(name, value);
             } else {
                 try fb.add("tag-key", tag.key);
             }
