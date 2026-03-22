@@ -163,8 +163,43 @@ pub const SsmClient = struct {
         return try parameters.toOwnedSlice(self.allocator);
     }
 
+    /// Fetch parameters at a path. If the path starts with `/`, first tries
+    /// GetParametersByPath (hierarchy lookup). If that returns no results,
+    /// or if the path doesn't start with `/`, falls back to GetParameter
+    /// (single parameter). Matches the Rust implementation's logic.
+    pub fn getParameters(self: *Self, path: []const u8) ![]SsmParameter {
+        var parameters: std.ArrayListUnmanaged(SsmParameter) = .empty;
+        errdefer {
+            for (parameters.items) |*param| param.deinit(self.allocator);
+            parameters.deinit(self.allocator);
+        }
+
+        if (std.mem.startsWith(u8, path, "/")) {
+            const by_path = try self.getParametersByPath(path);
+            defer self.allocator.free(by_path);
+            for (by_path) |param| {
+                try parameters.append(self.allocator, param);
+            }
+        }
+
+        if (parameters.items.len == 0) {
+            scoped_log.debug("no parameters under path {s}, trying as single parameter", .{path});
+            const value = try self.getParameter(path);
+            errdefer self.allocator.free(value);
+
+            try parameters.append(self.allocator, SsmParameter{
+                .name = try self.allocator.dupe(u8, path),
+                .relative_name = try self.allocator.dupe(u8, calculateRelativeName(path, path)),
+                .value = value,
+            });
+        }
+
+        return try parameters.toOwnedSlice(self.allocator);
+    }
+
     /// Download all parameters under a path to a destination directory.
     /// Each parameter's relative name (after the path prefix) determines its file location.
+    /// Falls back to fetching a single parameter if the path doesn't match a hierarchy.
     pub fn downloadPathToDir(
         self: *Self,
         path: []const u8,
@@ -173,7 +208,7 @@ pub const SsmClient = struct {
     ) !DownloadResult {
         scoped_log.debug("downloadPathToDir {s} -> {s}", .{ path, destination });
 
-        const parameters = try self.getParametersByPath(path);
+        const parameters = try self.getParameters(path);
         defer {
             for (parameters) |*param| {
                 var p = param.*;
@@ -185,11 +220,14 @@ pub const SsmClient = struct {
         for (parameters) |param| {
             scoped_log.debug("downloading SSM parameter {s}", .{param.name});
 
-            const dest_path = try fs_utils.joinPath(
-                self.allocator,
-                destination,
-                param.relative_name,
-            );
+            const dest_path = if (param.relative_name.len == 0)
+                try self.allocator.dupe(u8, destination)
+            else
+                try fs_utils.joinPath(
+                    self.allocator,
+                    destination,
+                    param.relative_name,
+                );
             defer self.allocator.free(dest_path);
 
             scoped_log.debug("writing {s} ({d} bytes)", .{ dest_path, param.value.len });
