@@ -1447,6 +1447,15 @@ test "VmSpec.from_yaml parses working-dir" {
     try testing.expectEqualStrings("/app", vmspec.@"working-dir".?);
 }
 
+test "VmSpec.from_yaml treats null working-dir as unset" {
+    const yaml_content = "working-dir: null";
+    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer vmspec.deinit();
+
+    // YAML null should be treated as unset, keeping the default "/"
+    try testing.expectEqualStrings("/", vmspec.@"working-dir".?);
+}
+
 test "VmSpec.from_yaml parses shutdown-grace-period" {
     const yaml_content = "shutdown-grace-period: 30";
     var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
@@ -1865,4 +1874,9 @@ test "VmSpec.from_yaml parses user data with quoted keys" {
         vmspec.sysctls.?[0].name,
     );
     try testing.expectEqualStrings("1", vmspec.sysctls.?[0].value);
+
+    // Fields set to YAML null should be treated as unset (keeping defaults)
+    try testing.expectEqual(@as(?bool, false), vmspec.@"replace-init");
+    try testing.expectEqual(@as(?u64, 10), vmspec.@"shutdown-grace-period");
+    try testing.expectEqualStrings("/", vmspec.@"working-dir".?);
 }

@@ -39,6 +39,7 @@ pub const Value = union(enum) {
     string: []const u8,
     list: []const Value,
     map: []const MapEntry,
+    @"null",
 
     pub fn getString(self: Value) ?[]const u8 {
         return switch (self) {
@@ -75,7 +76,7 @@ pub const Value = union(enum) {
     /// slices of the original input. Only list/map structures are freed.
     pub fn deinit(self: Value, allocator: Allocator) void {
         switch (self) {
-            .string => {},
+            .string, .@"null" => {},
             .list => |list| {
                 for (list) |item| {
                     item.deinit(allocator);
@@ -96,6 +97,29 @@ pub const MapEntry = struct {
     key: []const u8,
     value: Value,
 };
+
+fn isYamlNull(s: []const u8) bool {
+    return std.mem.eql(u8, s, "null") or
+        std.mem.eql(u8, s, "Null") or
+        std.mem.eql(u8, s, "NULL") or
+        std.mem.eql(u8, s, "~");
+}
+
+/// Strip matched outer quotes from a YAML value. Returns null if the value
+/// is an unquoted YAML null literal (null, Null, NULL, ~). Quoted strings
+/// like "null" are returned as the string "null", not null.
+fn stripYamlQuotes(s: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, s, " \t\r");
+    if (trimmed.len >= 2) {
+        if ((trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') or
+            (trimmed[0] == '\'' and trimmed[trimmed.len - 1] == '\''))
+        {
+            return trimmed[1 .. trimmed.len - 1];
+        }
+    }
+    if (isYamlNull(trimmed)) return null;
+    return trimmed;
+}
 
 const Line = struct {
     indent: usize,
@@ -158,11 +182,12 @@ fn parseFlowSequence(
 
     var it = std.mem.splitScalar(u8, inner, ',');
     while (it.next()) |raw_item| {
-        const item = std.mem.trim(u8, raw_item, " \t\r\"'");
-        if (item.len > 0) {
-            const duped = try allocator.dupe(u8, item);
-            try owned_strings.append(allocator, duped);
-            try items.append(allocator, Value{ .string = duped });
+        if (stripYamlQuotes(raw_item)) |item| {
+            if (item.len > 0) {
+                const duped = try allocator.dupe(u8, item);
+                try owned_strings.append(allocator, duped);
+                try items.append(allocator, Value{ .string = duped });
+            }
         }
     }
 
@@ -274,8 +299,8 @@ fn parseValue(
         return parseBlockScalar(allocator, lines, actual_start, base_indent, owned_strings);
     }
 
-    // Simple string value
-    return Value{ .string = std.mem.trim(u8, first.content, " \t\r\"'") };
+    // Simple string value (or null)
+    return if (stripYamlQuotes(first.content)) |s| Value{ .string = s } else .@"null";
 }
 
 fn parseList(
@@ -318,7 +343,7 @@ fn parseList(
 
                 // Add the inline key-value
                 const nested_value = if (line.value) |v|
-                    Value{ .string = std.mem.trim(u8, v, " \t\r\"'") }
+                    (if (stripYamlQuotes(v)) |s| Value{ .string = s } else .@"null")
                 else
                     try parseValue(allocator, lines, i + 1, line.indent + 2, owned_strings);
 
@@ -337,7 +362,7 @@ fn parseList(
                             try map_items.append(allocator, .{
                                 .key = k,
                                 .value = if (lines[j].value) |v|
-                                    Value{ .string = std.mem.trim(u8, v, " \t\r\"'") }
+                                    (if (stripYamlQuotes(v)) |s| Value{ .string = s } else .@"null")
                                 else
                                     try parseValue(allocator, lines, j + 1, lines[j].indent + 2, owned_strings),
                             });
@@ -363,7 +388,7 @@ fn parseList(
                     i = block_value.next_index;
                 } else {
                     // Simple value: - value
-                    try items.append(allocator, Value{ .string = std.mem.trim(u8, line.content, " \t\r\"'") });
+                    try items.append(allocator, if (stripYamlQuotes(line.content)) |s| Value{ .string = s } else .@"null");
                     i += 1;
                 }
             } else {
@@ -426,7 +451,7 @@ fn parseMap(
                         if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
                             break :blk try parseFlowSequence(allocator, trimmed, owned_strings);
                         }
-                        break :blk Value{ .string = std.mem.trim(u8, v, " \t\r\"'") };
+                        break :blk if (stripYamlQuotes(v)) |s| Value{ .string = s } else .@"null";
                     } else blk: {
                         // Value is on subsequent lines
                         break :blk try parseValue(allocator, lines, i + 1, line.indent + 2, owned_strings);
@@ -639,6 +664,66 @@ test "inline comments are stripped" {
     var result = try parse(std.testing.allocator, input);
     defer result.deinit();
     try std.testing.expectEqualStrings("hello", result.value.get("name").?.getString().?);
+}
+
+test "Value.getString returns null for YAML null literals" {
+    const cases = [_][]const u8{ "null", "Null", "NULL", "~" };
+    for (cases) |null_literal| {
+        const input = try std.fmt.allocPrint(std.testing.allocator, "key: {s}", .{null_literal});
+        defer std.testing.allocator.free(input);
+        var result = try parse(std.testing.allocator, input);
+        defer result.deinit();
+        const value = result.value.get("key").?;
+        try std.testing.expect(value.getString() == null);
+    }
+}
+
+test "quoted null is a string, not null" {
+    const cases = [_][]const u8{
+        "key: \"null\"",
+        "key: 'null'",
+        "key: \"Null\"",
+        "key: \"~\"",
+    };
+    for (cases) |input| {
+        var result = try parse(std.testing.allocator, input);
+        defer result.deinit();
+        const value = result.value.get("key").?;
+        try std.testing.expect(value.getString() != null);
+    }
+}
+
+test "null-like substrings are not treated as null" {
+    const cases = [_]struct { input: []const u8, expected: []const u8 }{
+        .{ .input = "key: nullable", .expected = "nullable" },
+        .{ .input = "key: nullify", .expected = "nullify" },
+        .{ .input = "key: not-null", .expected = "not-null" },
+        .{ .input = "key: NULL_VALUE", .expected = "NULL_VALUE" },
+        .{ .input = "key: ~foo", .expected = "~foo" },
+    };
+    for (cases) |case| {
+        var result = try parse(std.testing.allocator, case.input);
+        defer result.deinit();
+        const value = result.value.get("key").?.getString().?;
+        try std.testing.expectEqualStrings(case.expected, value);
+    }
+}
+
+test "null values in maps and lists" {
+    // Map with mix of null and non-null values
+    const input = "a: hello\nb: null\nc: world";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expectEqualStrings("hello", result.value.get("a").?.getString().?);
+    try std.testing.expect(result.value.get("b").?.getString() == null);
+    try std.testing.expectEqualStrings("world", result.value.get("c").?.getString().?);
+}
+
+test "null with quoted key" {
+    const input = "\"key\": null";
+    var result = try parse(std.testing.allocator, input);
+    defer result.deinit();
+    try std.testing.expect(result.value.get("key").?.getString() == null);
 }
 
 test "Value.getString returns null for non-string" {

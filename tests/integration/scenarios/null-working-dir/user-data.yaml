@@ -1,0 +1,23 @@
+disable-services:
+  - chrony
+  - ssh
+working-dir: null
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== null working-dir test ==="
+
+    fail() { echo "FAIL: ${1}"; exit 1; }
+
+    # When working-dir is the YAML null literal, it should be treated
+    # as unset, defaulting to "/". It must NOT be treated as the string
+    # "null", which would cause chdir to fail and crash the init process.
+    EXPECTED="/"
+    ACTUAL=$(pwd)
+
+    [ "${ACTUAL}" = "${EXPECTED}" ] || fail "working dir is '${ACTUAL}', expected '${EXPECTED}'"
+
+    echo "PASS"
