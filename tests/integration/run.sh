@@ -247,9 +247,6 @@ run_scenario()
     # Add LocalStack endpoint configuration if enabled
     if [ "${use_localstack}" = "1" ]; then
         kernel_cmdline="${kernel_cmdline} AWS_ENDPOINT_URL=http://10.0.2.2:${LOCALSTACK_PORT}"
-        kernel_cmdline="${kernel_cmdline} AWS_ACCESS_KEY_ID=test"
-        kernel_cmdline="${kernel_cmdline} AWS_SECRET_ACCESS_KEY=test"
-        kernel_cmdline="${kernel_cmdline} AWS_REGION=us-east-1"
     fi
 
     # Generate disk image if DISK_SIZE is configured
@@ -329,6 +326,14 @@ run_scenario()
     if grep -q "error(gpa):.*leaked" "${output_file}.clean"; then
         log "FAIL: ${scenario_name} (memory leak detected)"
         grep "error(gpa):.*leaked" "${output_file}.clean"
+        rm -f "${output_file}.clean"
+        return 1
+    fi
+
+    # Check for segfaults and kernel panics
+    if grep -q "segfault\|Kernel panic" "${output_file}.clean"; then
+        log "FAIL: ${scenario_name} (init crashed)"
+        grep "segfault\|Kernel panic" "${output_file}.clean" | head -3
         rm -f "${output_file}.clean"
         return 1
     fi
