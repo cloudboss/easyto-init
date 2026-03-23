@@ -86,7 +86,7 @@ $(DIR_OUT)/zig-out/bin/init: \
 		build.zig.zon \
 		$(shell find src -type f -name '*.zig')
 	@docker run --rm -t \
-		-v $(DIR_ROOT):/code \
+		-v $(DIR_ROOT):/code:Z \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build -Doptimize=ReleaseSafe $(ZIG_BUILD_FLAGS)"
 
@@ -109,7 +109,7 @@ $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz: \
 
 test: $(HAS_IMAGE_LOCAL)
 	@docker run --rm -t \
-		-v $(DIR_ROOT):/code \
+		-v $(DIR_ROOT):/code:Z \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build test $(ZIG_BUILD_FLAGS)"
 
@@ -122,7 +122,7 @@ test-integration: \
 		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
 		$(DIR_OUT)/vmlinuz
 	@docker run --rm -t \
-		-v $(DIR_ROOT):/code \
+		-v $(DIR_ROOT):/code:Z \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		--security-opt label=type:container_runtime_t \
@@ -140,7 +140,7 @@ test-integration-kvm: \
 		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
 		$(DIR_OUT)/vmlinuz
 	@docker run --rm -t \
-		-v $(DIR_ROOT):/code \
+		-v $(DIR_ROOT):/code:Z \
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		--group-add $(DOCKER_GID) \
 		--group-add $(KVM_GID) \
