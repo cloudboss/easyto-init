@@ -3,8 +3,8 @@
     .version = "0.0.0",
     .dependencies = .{
         .aws_sdk = .{
-            .url = "git+https://github.com/cloudboss/aws-sdk-zig#5085c45a4f8b69d753c9a28c490e161e1749a2a7",
-            .hash = "aws_sdk-0.0.1-ApQSL95CLxACpsb_defQ-PaT-3-tzINyW4E5wwU4Q17Q",
+            .url = "git+https://github.com/cloudboss/aws-sdk-zig#4be9ffd8e4e081f68504c31d0a8cb742c1b811a4",
+            .hash = "aws_sdk-0.0.1-ApQSL4OTMhDFbTJtcTNhB2oXNQ9J2ROPTvfV-Hvljt6x",
         },
         .dhcpz = .{
             .url = "git+https://github.com/cloudboss/dhcpz#01c0d2bb98427c77dc8c0cac2efe0553bf97fca7",
