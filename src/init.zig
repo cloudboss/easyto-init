@@ -142,19 +142,22 @@ pub fn run(allocator: Allocator) !void {
     defer metadata.deinit();
 
     std.log.info("parsing vmspec", .{});
-    var vmspec = try VmSpec.from_config_file(allocator, &metadata.parsed.value);
-    defer vmspec.deinit();
+    var vmspec_arena = std.heap.ArenaAllocator.init(allocator);
+    defer vmspec_arena.deinit();
+    const vmspec_alloc = vmspec_arena.allocator();
+
+    var vmspec = try VmSpec.from_config_file(vmspec_alloc, &metadata.parsed.value);
 
     // Merge user data if available
     if (user_vmspec_parsed) |p| {
         std.log.info("merging user data into vmspec", .{});
-        try vmspec.merge(p.value);
+        try vmspec.merge(vmspec_alloc, p.value);
     }
 
     // Resolve env-from sources
     if (vmspec.@"env-from") |env_from| {
         std.log.info("resolving env-from sources", .{});
-        resolveEnvFrom(allocator, &aws_ctx, &vmspec, env_from) catch |err| {
+        resolveEnvFrom(allocator, vmspec_alloc, &aws_ctx, &vmspec, env_from) catch |err| {
             std.log.err("unable to resolve environment variables from external sources", .{});
             return err;
         };
@@ -162,7 +165,7 @@ pub fn run(allocator: Allocator) !void {
 
     // Expand variable references in env values (e.g., $(VAR) syntax)
     if (vmspec.env) |env| {
-        try expandEnvValues(allocator, &vmspec, env);
+        try expandEnvValues(allocator, vmspec_alloc, &vmspec, env);
     }
 
     std.log.info("loading kernel modules", .{});
@@ -550,12 +553,11 @@ fn replaceInit(
 
 fn resolveEnvFrom(
     allocator: Allocator,
+    vmspec_alloc: Allocator,
     aws_ctx: *AwsContext,
     vmspec: *VmSpec,
     env_from: []const EnvFromSource,
 ) !void {
-    const arena_alloc = vmspec.arena.?.allocator();
-
     for (env_from) |source| {
         if (source.imds) |imds| {
             const imds_client = aws_ctx.getImds();
@@ -578,7 +580,7 @@ fn resolveEnvFrom(
             const trimmed = std.mem.trim(u8, value, " \t\r\n");
 
             // Add to environment
-            try addEnvVar(arena_alloc, vmspec, imds.name, trimmed);
+            try addEnvVar(vmspec_alloc, vmspec, imds.name, trimmed);
             std.log.info("resolved env {s} from IMDS path {s}", .{ imds.name, imds.path });
         }
 
@@ -606,7 +608,7 @@ fn resolveEnvFrom(
                 // Trim whitespace from the value
                 const trimmed = std.mem.trim(u8, value, " \t\r\n");
 
-                try addEnvVar(arena_alloc, vmspec, name, trimmed);
+                try addEnvVar(vmspec_alloc, vmspec, name, trimmed);
                 std.log.info("resolved env {s} from S3 s3://{s}/{s}", .{ name, s3.bucket, s3.key });
             } else {
                 // JSON map expanded to multiple env vars
@@ -635,7 +637,7 @@ fn resolveEnvFrom(
 
                 var map_it = env_map.iterator();
                 while (map_it.next()) |entry| {
-                    try addEnvVar(arena_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
+                    try addEnvVar(vmspec_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
                     std.log.info(
                         "resolved env {s} from S3 s3://{s}/{s}",
                         .{ entry.key_ptr.*, s3.bucket, s3.key },
@@ -662,7 +664,7 @@ fn resolveEnvFrom(
                 // Trim whitespace from the value
                 const trimmed = std.mem.trim(u8, value, " \t\r\n");
 
-                try addEnvVar(arena_alloc, vmspec, name, trimmed);
+                try addEnvVar(vmspec_alloc, vmspec, name, trimmed);
                 std.log.info("resolved env {s} from SSM parameter {s}", .{ name, ssm.path });
             } else {
                 // JSON map expanded to multiple env vars
@@ -685,7 +687,7 @@ fn resolveEnvFrom(
 
                 var map_it = env_map.iterator();
                 while (map_it.next()) |entry| {
-                    try addEnvVar(arena_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
+                    try addEnvVar(vmspec_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
                     std.log.info("resolved env {s} from SSM parameter {s}", .{ entry.key_ptr.*, ssm.path });
                 }
             }
@@ -709,7 +711,7 @@ fn resolveEnvFrom(
                 // Trim whitespace from the value
                 const trimmed = std.mem.trim(u8, value, " \t\r\n");
 
-                try addEnvVar(arena_alloc, vmspec, name, trimmed);
+                try addEnvVar(vmspec_alloc, vmspec, name, trimmed);
                 std.log.info("resolved env {s} from secret {s}", .{ name, sm.@"secret-id" });
             } else {
                 // JSON map expanded to multiple env vars
@@ -732,7 +734,7 @@ fn resolveEnvFrom(
 
                 var map_it = env_map.iterator();
                 while (map_it.next()) |entry| {
-                    try addEnvVar(arena_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
+                    try addEnvVar(vmspec_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
                     std.log.info("resolved env {s} from secret {s}", .{ entry.key_ptr.*, sm.@"secret-id" });
                 }
             }
@@ -740,9 +742,7 @@ fn resolveEnvFrom(
     }
 }
 
-fn expandEnvValues(allocator: Allocator, vmspec: *VmSpec, env: []const NameValue) !void {
-    const arena_alloc = vmspec.arena.?.allocator();
-
+fn expandEnvValues(allocator: Allocator, vmspec_alloc: Allocator, vmspec: *VmSpec, env: []const NameValue) !void {
     // Build mapping from current env
     var mapping = std.StringHashMap([]const u8).init(allocator);
     defer mapping.deinit();
@@ -754,7 +754,7 @@ fn expandEnvValues(allocator: Allocator, vmspec: *VmSpec, env: []const NameValue
     const context = [_]*const std.StringHashMap([]const u8){&mapping};
 
     // Expand values and update env
-    var new_env = try arena_alloc.alloc(NameValue, env.len);
+    var new_env = try vmspec_alloc.alloc(NameValue, env.len);
     for (env, 0..) |nv, i| {
         const expanded_value = try k8s_expand.expand(allocator, nv.value, &context);
         defer allocator.free(expanded_value);
@@ -762,7 +762,7 @@ fn expandEnvValues(allocator: Allocator, vmspec: *VmSpec, env: []const NameValue
         new_env[i] = NameValue{
             .name = nv.name,
             .value = if (!std.mem.eql(u8, expanded_value, nv.value))
-                try arena_alloc.dupe(u8, expanded_value)
+                try vmspec_alloc.dupe(u8, expanded_value)
             else
                 nv.value,
         };
@@ -1083,9 +1083,7 @@ test "addEnvVar adds to empty env" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var vmspec = VmSpec{
-        .arena = arena,
-    };
+    var vmspec = VmSpec{};
 
     try addEnvVar(arena.allocator(), &vmspec, "FOO", "bar");
 
@@ -1100,9 +1098,7 @@ test "addEnvVar appends new variable" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var vmspec = VmSpec{
-        .arena = arena,
-    };
+    var vmspec = VmSpec{};
 
     try addEnvVar(arena.allocator(), &vmspec, "FOO", "bar");
     try addEnvVar(arena.allocator(), &vmspec, "BAZ", "qux");
@@ -1118,9 +1114,7 @@ test "addEnvVar replaces existing variable" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    var vmspec = VmSpec{
-        .arena = arena,
-    };
+    var vmspec = VmSpec{};
 
     try addEnvVar(arena.allocator(), &vmspec, "FOO", "bar");
     try addEnvVar(arena.allocator(), &vmspec, "FOO", "updated");

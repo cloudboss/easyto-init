@@ -106,9 +106,6 @@ pub const VmSpec = struct {
     volumes: ?[]Volume = null,
     @"working-dir": ?[]const u8 = "/",
 
-    /// Arena allocator that owns all string allocations in this VmSpec.
-    arena: ?std.heap.ArenaAllocator = null,
-
     fn env_strings_to_name_values(allocator: Allocator, env: []const []const u8) ![]NameValue {
         var name_values = try ArrayList(NameValue).initCapacity(allocator, env.len);
         errdefer {
@@ -156,25 +153,20 @@ pub const VmSpec = struct {
     }
 
     pub fn from_config_file(allocator: Allocator, config_file: *const ConfigFile) !VmSpec {
-        var vmspec = VmSpec{
-            .arena = std.heap.ArenaAllocator.init(allocator),
-        };
-        errdefer vmspec.deinit();
-
-        const arena_alloc = vmspec.arena.?.allocator();
+        var vmspec = VmSpec{};
         const config = config_file.config orelse Config{};
 
         if (config.Cmd) |cmd| {
-            vmspec.args = try dupeStringSlice(arena_alloc, cmd);
+            vmspec.args = try dupeStringSlice(allocator, cmd);
         }
         if (config.Entrypoint) |ep| {
-            vmspec.command = try dupeStringSlice(arena_alloc, ep);
+            vmspec.command = try dupeStringSlice(allocator, ep);
         }
         if (config.Env) |env| {
-            vmspec.env = try VmSpec.env_strings_to_name_values(arena_alloc, env);
+            vmspec.env = try VmSpec.env_strings_to_name_values(allocator, env);
         }
         if (config.WorkingDir) |wd| {
-            vmspec.@"working-dir" = try arena_alloc.dupe(u8, wd);
+            vmspec.@"working-dir" = try allocator.dupe(u8, wd);
         }
 
         if (config.User != null) {
@@ -224,13 +216,6 @@ pub const VmSpec = struct {
             i += 1;
         }
         return result;
-    }
-
-    pub fn deinit(self: *VmSpec) void {
-        if (self.arena) |*arena| {
-            arena.deinit();
-            self.arena = null;
-        }
     }
 
     pub const ParsedYaml = yaml.Parsed(VmSpec);
@@ -386,15 +371,13 @@ pub const VmSpec = struct {
 
     /// Merge user data into this VmSpec.
     /// Fields from `other` override fields in `self` when present.
-    /// Strings are duped into self's arena.
-    pub fn merge(self: *VmSpec, other: VmSpec) !void {
-        const arena_alloc = self.arena.?.allocator();
-
+    /// Strings are duped using the provided allocator.
+    pub fn merge(self: *VmSpec, allocator: Allocator, other: VmSpec) !void {
         if (other.args) |args| {
-            self.args = try dupeStringSlice(arena_alloc, args);
+            self.args = try dupeStringSlice(allocator, args);
         }
         if (other.command) |command| {
-            self.command = try dupeStringSlice(arena_alloc, command);
+            self.command = try dupeStringSlice(allocator, command);
             if (other.args == null) {
                 self.args = null;
             }
@@ -403,19 +386,19 @@ pub const VmSpec = struct {
             self.debug = other.debug;
         }
         if (other.@"disable-services") |ds| {
-            self.@"disable-services" = try dupeStringSlice(arena_alloc, ds);
+            self.@"disable-services" = try dupeStringSlice(allocator, ds);
         }
         if (other.env) |env| {
-            self.env = try mergeNameValues(arena_alloc, self.env, env);
+            self.env = try mergeNameValues(allocator, self.env, env);
         }
         if (other.@"env-from") |env_from| {
-            self.@"env-from" = try dupeEnvFromSources(arena_alloc, env_from);
+            self.@"env-from" = try dupeEnvFromSources(allocator, env_from);
         }
         if (other.@"init-scripts") |scripts| {
-            self.@"init-scripts" = try dupeStringSlice(arena_alloc, scripts);
+            self.@"init-scripts" = try dupeStringSlice(allocator, scripts);
         }
         if (other.modules) |modules| {
-            self.modules = try dupeStringSlice(arena_alloc, modules);
+            self.modules = try dupeStringSlice(allocator, modules);
         }
         if (other.@"replace-init" != null and other.@"replace-init".?) {
             self.@"replace-init" = other.@"replace-init";
@@ -425,13 +408,13 @@ pub const VmSpec = struct {
             self.@"shutdown-grace-period" = other.@"shutdown-grace-period";
         }
         if (other.sysctls) |sysctls| {
-            self.sysctls = try mergeNameValues(arena_alloc, self.sysctls, sysctls);
+            self.sysctls = try mergeNameValues(allocator, self.sysctls, sysctls);
         }
         if (other.volumes) |volumes| {
-            self.volumes = try dupeVolumes(arena_alloc, volumes);
+            self.volumes = try dupeVolumes(allocator, volumes);
         }
         if (other.@"working-dir") |wd| {
-            self.@"working-dir" = try arena_alloc.dupe(u8, wd);
+            self.@"working-dir" = try allocator.dupe(u8, wd);
         }
     }
 };
@@ -1094,16 +1077,18 @@ test "VmSpec.from_yaml parses env-from with ssm" {
 }
 
 test "VmSpec.merge empty other into populated self" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     var base_command = [_][]const u8{"/bin/echo"};
     var vmspec = VmSpec{
         .command = &base_command,
         .debug = true,
-        .arena = std.heap.ArenaAllocator.init(testing.allocator),
     };
-    defer vmspec.deinit();
 
     const other = VmSpec{};
-    try vmspec.merge(other);
+    try vmspec.merge(alloc, other);
 
     // Original values preserved
     try testing.expectEqualStrings("/bin/echo", vmspec.command.?[0]);
@@ -1111,32 +1096,36 @@ test "VmSpec.merge empty other into populated self" {
 }
 
 test "VmSpec.merge overrides command and clears args" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     var base_command = [_][]const u8{"/bin/sh"};
     var base_args = [_][]const u8{ "-c", "echo hello" };
     var vmspec = VmSpec{
         .command = &base_command,
         .args = &base_args,
-        .arena = std.heap.ArenaAllocator.init(testing.allocator),
     };
-    defer vmspec.deinit();
 
     var other_command = [_][]const u8{"/bin/bash"};
     const other = VmSpec{
         .command = &other_command,
     };
-    try vmspec.merge(other);
+    try vmspec.merge(alloc, other);
 
     try testing.expectEqualStrings("/bin/bash", vmspec.command.?[0]);
     try testing.expect(vmspec.args == null);
 }
 
 test "VmSpec.merge preserves args when other provides args" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     var base_command = [_][]const u8{"/bin/sh"};
     var vmspec = VmSpec{
         .command = &base_command,
-        .arena = std.heap.ArenaAllocator.init(testing.allocator),
     };
-    defer vmspec.deinit();
 
     var other_command = [_][]const u8{"/bin/bash"};
     var other_args = [_][]const u8{ "-c", "echo test" };
@@ -1144,7 +1133,7 @@ test "VmSpec.merge preserves args when other provides args" {
         .command = &other_command,
         .args = &other_args,
     };
-    try vmspec.merge(other);
+    try vmspec.merge(alloc, other);
 
     try testing.expectEqualStrings("/bin/bash", vmspec.command.?[0]);
     try testing.expect(vmspec.args != null);
@@ -1152,22 +1141,22 @@ test "VmSpec.merge preserves args when other provides args" {
 }
 
 test "VmSpec.merge env combines and overrides" {
-    var vmspec = VmSpec{
-        .arena = std.heap.ArenaAllocator.init(testing.allocator),
-    };
-    defer vmspec.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
-    const arena_alloc = vmspec.arena.?.allocator();
-    var base_env = try ArrayList(NameValue).initCapacity(arena_alloc, 2);
-    try base_env.append(arena_alloc, .{
-        .name = try arena_alloc.dupe(u8, "PATH"),
-        .value = try arena_alloc.dupe(u8, "/bin"),
+    var vmspec = VmSpec{};
+
+    var base_env = try ArrayList(NameValue).initCapacity(alloc, 2);
+    try base_env.append(alloc, .{
+        .name = try alloc.dupe(u8, "PATH"),
+        .value = try alloc.dupe(u8, "/bin"),
     });
-    try base_env.append(arena_alloc, .{
-        .name = try arena_alloc.dupe(u8, "HOME"),
-        .value = try arena_alloc.dupe(u8, "/root"),
+    try base_env.append(alloc, .{
+        .name = try alloc.dupe(u8, "HOME"),
+        .value = try alloc.dupe(u8, "/root"),
     });
-    vmspec.env = try base_env.toOwnedSlice(arena_alloc);
+    vmspec.env = try base_env.toOwnedSlice(alloc);
 
     var other_env = [_]NameValue{
         .{ .name = "PATH", .value = "/usr/bin" },
@@ -1176,7 +1165,7 @@ test "VmSpec.merge env combines and overrides" {
     const other = VmSpec{
         .env = &other_env,
     };
-    try vmspec.merge(other);
+    try vmspec.merge(alloc, other);
 
     // Should have 3 items: HOME from base (not overridden), PATH and SHELL from other
     try testing.expectEqual(@as(usize, 3), vmspec.env.?.len);
@@ -1203,13 +1192,15 @@ test "VmSpec.merge env combines and overrides" {
 }
 
 test "VmSpec.merge security" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     var vmspec = VmSpec{
         .security = Security{
             .@"run-as-user-id" = 1000,
         },
-        .arena = std.heap.ArenaAllocator.init(testing.allocator),
     };
-    defer vmspec.deinit();
 
     const other = VmSpec{
         .security = Security{
@@ -1217,7 +1208,7 @@ test "VmSpec.merge security" {
             .@"readonly-root-fs" = true,
         },
     };
-    try vmspec.merge(other);
+    try vmspec.merge(alloc, other);
 
     try testing.expectEqual(@as(?u32, 1000), vmspec.security.@"run-as-user-id");
     try testing.expectEqual(@as(?u32, 1000), vmspec.security.@"run-as-group-id");
@@ -1225,16 +1216,18 @@ test "VmSpec.merge security" {
 }
 
 test "VmSpec.merge working-dir" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     var vmspec = VmSpec{
         .@"working-dir" = "/",
-        .arena = std.heap.ArenaAllocator.init(testing.allocator),
     };
-    defer vmspec.deinit();
 
     const other = VmSpec{
         .@"working-dir" = "/app",
     };
-    try vmspec.merge(other);
+    try vmspec.merge(alloc, other);
 
     try testing.expectEqualStrings("/app", vmspec.@"working-dir".?);
 }
@@ -1282,12 +1275,12 @@ test "VmSpec.from_yaml parses both env and env-from" {
 }
 
 test "VmSpec.merge env-from" {
-    var vmspec = VmSpec{
-        .arena = std.heap.ArenaAllocator.init(testing.allocator),
-    };
-    defer vmspec.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
-    // Parse env-from from YAML
+    var vmspec = VmSpec{};
+
     const yaml_content =
         \\env-from:
         \\  - s3:
@@ -1301,12 +1294,10 @@ test "VmSpec.merge env-from" {
     defer other_parsed.deinit();
     const other = other_parsed.value;
 
-    // Verify other has env-from
     try testing.expect(other.@"env-from" != null);
     try testing.expectEqual(@as(usize, 2), other.@"env-from".?.len);
 
-    // Merge into vmspec
-    try vmspec.merge(other);
+    try vmspec.merge(alloc, other);
 
     // Verify env-from was merged
     try testing.expect(vmspec.@"env-from" != null);
