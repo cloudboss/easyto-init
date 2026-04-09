@@ -111,20 +111,20 @@ pub fn run(allocator: Allocator) !void {
 
     // Parse user data early so we can enable debug logging before
     // NVMe linking and other operations.
-    var user_vmspec_parsed: ?VmSpec = null;
+    var user_vmspec_parsed: ?VmSpec.ParsedYaml = null;
     if (user_data) |ud| {
         std.log.info("parsing user data YAML", .{});
-        if (VmSpec.from_yaml(allocator, ud)) |user_vmspec_opt| {
-            user_vmspec_parsed = user_vmspec_opt;
+        if (VmSpec.from_yaml(allocator, ud)) |parsed| {
+            user_vmspec_parsed = parsed;
         } else |err| {
             std.log.err("unable to parse user data: {s}", .{@errorName(err)});
             return err;
         }
     }
-    defer if (user_vmspec_parsed) |*uv| uv.deinit();
+    defer if (user_vmspec_parsed) |p| p.deinit();
 
-    if (user_vmspec_parsed) |uv| {
-        if (uv.debug != null and uv.debug.?) {
+    if (user_vmspec_parsed) |p| {
+        if (p.value.debug != null and p.value.debug.?) {
             log_level.setLevel(.debug);
             std.log.debug("debug logging enabled", .{});
         }
@@ -146,9 +146,9 @@ pub fn run(allocator: Allocator) !void {
     defer vmspec.deinit();
 
     // Merge user data if available
-    if (user_vmspec_parsed) |user_vmspec| {
+    if (user_vmspec_parsed) |p| {
         std.log.info("merging user data into vmspec", .{});
-        try vmspec.merge(user_vmspec);
+        try vmspec.merge(p.value);
     }
 
     // Resolve env-from sources

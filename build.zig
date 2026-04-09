@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
     const dhcpz_dep = b.dependency("dhcpz", .{ .target = target });
     const k8s_expand_dep = b.dependency("k8s_expand", .{ .target = target, .optimize = optimize });
     const nlz_dep = b.dependency("nlz", .{ .target = target, .optimize = optimize });
+    const yaml_dep = b.dependency("yaml", .{ .target = target, .optimize = optimize });
     const zgpt_dep = b.dependency("zgpt", .{ .target = target, .optimize = optimize });
     const zblkpg_dep = b.dependency("zblkpg", .{ .target = target, .optimize = optimize });
 
@@ -29,6 +30,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "dhcpz", .module = dhcpz_dep.module("dhcpz") },
             .{ .name = "k8s_expand", .module = k8s_expand_dep.module("k8s_expand") },
             .{ .name = "nlz", .module = nlz_dep.module("nlz") },
+            .{ .name = "yaml", .module = yaml_dep.module("yaml") },
             .{ .name = "zgpt", .module = zgpt_dep.module("zgpt") },
             .{ .name = "zblkpg", .module = zblkpg_dep.module("zblkpg") },
         },
@@ -50,6 +52,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "easyto_init", .module = mod },
                 .{ .name = "k8s_expand", .module = k8s_expand_dep.module("k8s_expand") },
                 .{ .name = "nlz", .module = nlz_dep.module("nlz") },
+                .{ .name = "yaml", .module = yaml_dep.module("yaml") },
                 .{ .name = "zgpt", .module = zgpt_dep.module("zgpt") },
                 .{ .name = "zblkpg", .module = zblkpg_dep.module("zblkpg") },
             },

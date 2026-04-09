@@ -22,6 +22,10 @@
             .url = "git+https://github.com/cloudboss/zgpt#9dbc5851e341c6cb16cb23c7a7daabbaea103997",
             .hash = "zgpt-0.0.0--v5LmI7kAADRpolPmez-M4AEY42j4n_RWzPyXpi4Qa2K",
         },
+        .yaml = .{
+            .url = "git+https://github.com/cloudboss/yaml-zig#b80dddcf64265e0859de7781b2ab5d682d7155a8",
+            .hash = "yaml-0.0.0-CQq2NsGKCABwLlq5BNnTW9EIuBbOYNKLPRtWCmwqWPtn",
+        },
         .zblkpg = .{
             .url = "git+https://github.com/cloudboss/zblkpg#499a6a112ce77aa6b92e6e975f5707c8188ce262",
             .hash = "zblkpg-0.1.0-u34-N0WrAABMVzXZZ7jt0xyAKFlQIPcyyFOnCX9XaJ81",

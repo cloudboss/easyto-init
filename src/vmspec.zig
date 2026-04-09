@@ -3,13 +3,14 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const testing = std.testing;
 
+const yaml = @import("yaml");
+
 const constants = @import("constants.zig");
 const container = @import("container.zig");
 const Config = container.Config;
 const ConfigFile = container.ConfigFile;
 const login = @import("login.zig");
 const string = @import("string.zig");
-const yaml = @import("yaml.zig");
 
 const default_command = [_][]const u8{constants.DIR_ET_BIN ++ "/sh"};
 
@@ -163,7 +164,6 @@ pub const VmSpec = struct {
         const arena_alloc = vmspec.arena.?.allocator();
         const config = config_file.config orelse Config{};
 
-        // Dupe string arrays to arena
         if (config.Cmd) |cmd| {
             vmspec.args = try dupeStringSlice(arena_alloc, cmd);
         }
@@ -233,536 +233,20 @@ pub const VmSpec = struct {
         }
     }
 
-    /// Get the arena allocator, creating it if needed.
-    fn getArenaAllocator(self: *VmSpec, backing_allocator: Allocator) Allocator {
-        if (self.arena == null) {
-            self.arena = std.heap.ArenaAllocator.init(backing_allocator);
-        }
-        return self.arena.?.allocator();
-    }
+    pub const ParsedYaml = yaml.Parsed(VmSpec);
 
     /// Parse user data from YAML string.
     /// Returns null if the content is empty.
-    pub fn from_yaml(allocator: Allocator, content: []const u8) !?VmSpec {
+    /// Caller must call .deinit() on the returned ParsedYaml when done.
+    pub fn from_yaml(allocator: Allocator, content: []const u8) !?ParsedYaml {
         const trimmed = std.mem.trim(u8, content, " \t\r\n");
         if (trimmed.len == 0) {
             return null;
         }
 
-        var parsed = yaml.parse(allocator, content) catch |err| {
+        return yaml.parseFromSlice(VmSpec, allocator, content, .{}) catch |err| {
             std.log.err("failed to parse user data YAML: {s}", .{@errorName(err)});
-            return err;
-        };
-        defer parsed.deinit();
-
-        var vmspec = VmSpec{
-            .arena = std.heap.ArenaAllocator.init(allocator),
-        };
-        errdefer vmspec.deinit();
-
-        try fromYamlValue(&vmspec, parsed.value);
-        return vmspec;
-    }
-
-    fn fromYamlValue(vmspec: *VmSpec, value: yaml.Value) !void {
-        const arena_alloc = vmspec.arena.?.allocator();
-
-        const map = value.getMap() orelse {
-            std.log.err("user data is not a valid YAML map", .{});
             return error.InvalidYaml;
-        };
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "args")) {
-                vmspec.args = try parseStringList(arena_alloc, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "command")) {
-                vmspec.command = try parseStringList(arena_alloc, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "debug")) {
-                if (entry.value.getString()) |s| {
-                    vmspec.debug = std.mem.eql(u8, s, "true");
-                }
-            } else if (std.mem.eql(u8, entry.key, "disable-services")) {
-                vmspec.@"disable-services" = try parseStringList(arena_alloc, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "env")) {
-                vmspec.env = try parseNameValueList(arena_alloc, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "env-from")) {
-                vmspec.@"env-from" = try parseEnvFromList(arena_alloc, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "init-scripts")) {
-                vmspec.@"init-scripts" = try parseStringList(arena_alloc, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "modules")) {
-                vmspec.modules = try parseStringList(arena_alloc, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "replace-init")) {
-                if (entry.value.getString()) |s| {
-                    vmspec.@"replace-init" = std.mem.eql(u8, s, "true");
-                }
-            } else if (std.mem.eql(u8, entry.key, "security")) {
-                vmspec.security = try parseSecurity(entry.value);
-            } else if (std.mem.eql(u8, entry.key, "shutdown-grace-period")) {
-                if (entry.value.getString()) |s| {
-                    vmspec.@"shutdown-grace-period" = std.fmt.parseInt(u64, s, 10) catch 10;
-                }
-            } else if (std.mem.eql(u8, entry.key, "sysctls")) {
-                vmspec.sysctls = try parseNameValueList(arena_alloc, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "volumes")) {
-                vmspec.volumes = try parseVolumesList(arena_alloc, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "working-dir")) {
-                if (entry.value.getString()) |s| {
-                    vmspec.@"working-dir" = try arena_alloc.dupe(u8, s);
-                }
-            }
-        }
-    }
-
-    fn parseStringList(allocator: Allocator, value: yaml.Value) !?[][]const u8 {
-        const list = value.getList() orelse return null;
-        var result = try ArrayList([]const u8).initCapacity(allocator, list.len);
-        errdefer {
-            for (result.items) |s| allocator.free(s);
-            result.deinit(allocator);
-        }
-
-        for (list) |item| {
-            if (item.getString()) |s| {
-                try result.append(allocator, try allocator.dupe(u8, s));
-            }
-        }
-
-        return try result.toOwnedSlice(allocator);
-    }
-
-    fn parseNameValueList(allocator: Allocator, value: yaml.Value) !?[]NameValue {
-        const list = value.getList() orelse return null;
-        var result = try ArrayList(NameValue).initCapacity(allocator, list.len);
-        errdefer {
-            for (result.items) |*nv| nv.deinit(allocator);
-            result.deinit(allocator);
-        }
-
-        for (list) |item| {
-            const item_map = item.getMap() orelse continue;
-            var name: ?[]const u8 = null;
-            var val: ?[]const u8 = null;
-
-            for (item_map) |entry| {
-                if (std.mem.eql(u8, entry.key, "name")) {
-                    name = entry.value.getString();
-                } else if (std.mem.eql(u8, entry.key, "value")) {
-                    val = entry.value.getString();
-                }
-            }
-
-            if (name != null) {
-                try result.append(allocator, .{
-                    .name = try allocator.dupe(u8, name.?),
-                    .value = try allocator.dupe(u8, val orelse ""),
-                });
-            }
-        }
-
-        return try result.toOwnedSlice(allocator);
-    }
-
-    fn parseSecurity(value: yaml.Value) !Security {
-        var security = Security{};
-        const map = value.getMap() orelse return security;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "run-as-user-id")) {
-                if (entry.value.getString()) |s| {
-                    security.@"run-as-user-id" = std.fmt.parseInt(u32, s, 10) catch null;
-                }
-            } else if (std.mem.eql(u8, entry.key, "run-as-group-id")) {
-                if (entry.value.getString()) |s| {
-                    security.@"run-as-group-id" = std.fmt.parseInt(u32, s, 10) catch null;
-                }
-            } else if (std.mem.eql(u8, entry.key, "readonly-root-fs")) {
-                if (entry.value.getString()) |s| {
-                    security.@"readonly-root-fs" = std.mem.eql(u8, s, "true");
-                }
-            }
-        }
-
-        return security;
-    }
-
-    fn parseEnvFromList(allocator: Allocator, value: yaml.Value) !?[]EnvFromSource {
-        const list = value.getList() orelse return null;
-        var result = try ArrayList(EnvFromSource).initCapacity(allocator, list.len);
-        errdefer result.deinit(allocator);
-
-        for (list) |item| {
-            const item_map = item.getMap() orelse continue;
-            var source = EnvFromSource{};
-
-            for (item_map) |entry| {
-                if (std.mem.eql(u8, entry.key, "imds")) {
-                    source.imds = try parseImdsEnvSource(allocator, entry.value);
-                } else if (std.mem.eql(u8, entry.key, "s3")) {
-                    source.s3 = try parseS3EnvSource(allocator, entry.value);
-                } else if (std.mem.eql(u8, entry.key, "secrets-manager")) {
-                    source.@"secrets-manager" = try parseSecretsManagerEnvSource(allocator, entry.value);
-                } else if (std.mem.eql(u8, entry.key, "ssm")) {
-                    source.ssm = try parseSsmEnvSource(allocator, entry.value);
-                }
-            }
-
-            try result.append(allocator, source);
-        }
-
-        return try result.toOwnedSlice(allocator);
-    }
-
-    fn parseImdsEnvSource(allocator: Allocator, value: yaml.Value) !?ImdsEnvSource {
-        const map = value.getMap() orelse return null;
-        var name: ?[]const u8 = null;
-        var path: ?[]const u8 = null;
-        var optional: ?bool = null;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "name")) {
-                name = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "path")) {
-                path = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "optional")) {
-                if (entry.value.getString()) |s| {
-                    optional = std.mem.eql(u8, s, "true");
-                }
-            }
-        }
-
-        if (name == null or path == null) return null;
-
-        return ImdsEnvSource{
-            .name = try allocator.dupe(u8, name.?),
-            .path = try allocator.dupe(u8, path.?),
-            .optional = optional,
-        };
-    }
-
-    fn parseS3EnvSource(allocator: Allocator, value: yaml.Value) !?S3EnvSource {
-        const map = value.getMap() orelse return null;
-        var bucket: ?[]const u8 = null;
-        var key: ?[]const u8 = null;
-        var name: ?[]const u8 = null;
-        var optional: ?bool = null;
-        var base64_encode: ?bool = null;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "bucket")) {
-                bucket = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "key")) {
-                key = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "name")) {
-                name = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "optional")) {
-                if (entry.value.getString()) |s| {
-                    optional = std.mem.eql(u8, s, "true");
-                }
-            } else if (std.mem.eql(u8, entry.key, "base64-encode")) {
-                if (entry.value.getString()) |s| {
-                    base64_encode = std.mem.eql(u8, s, "true");
-                }
-            }
-        }
-
-        if (bucket == null or key == null) return null;
-
-        return S3EnvSource{
-            .bucket = try allocator.dupe(u8, bucket.?),
-            .key = try allocator.dupe(u8, key.?),
-            .name = if (name) |n| try allocator.dupe(u8, n) else null,
-            .optional = optional,
-            .@"base64-encode" = base64_encode,
-        };
-    }
-
-    fn parseSecretsManagerEnvSource(allocator: Allocator, value: yaml.Value) !?SecretsManagerEnvSource {
-        const map = value.getMap() orelse return null;
-        var name: ?[]const u8 = null;
-        var secret_id: ?[]const u8 = null;
-        var optional: ?bool = null;
-        var base64_encode: ?bool = null;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "name")) {
-                name = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "secret-id")) {
-                secret_id = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "optional")) {
-                if (entry.value.getString()) |s| {
-                    optional = std.mem.eql(u8, s, "true");
-                }
-            } else if (std.mem.eql(u8, entry.key, "base64-encode")) {
-                if (entry.value.getString()) |s| {
-                    base64_encode = std.mem.eql(u8, s, "true");
-                }
-            }
-        }
-
-        if (secret_id == null) return null;
-
-        return SecretsManagerEnvSource{
-            .name = if (name) |n| try allocator.dupe(u8, n) else null,
-            .@"secret-id" = try allocator.dupe(u8, secret_id.?),
-            .optional = optional,
-            .@"base64-encode" = base64_encode,
-        };
-    }
-
-    fn parseSsmEnvSource(allocator: Allocator, value: yaml.Value) !?SsmEnvSource {
-        const map = value.getMap() orelse return null;
-        var name: ?[]const u8 = null;
-        var path: ?[]const u8 = null;
-        var optional: ?bool = null;
-        var base64_encode: ?bool = null;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "name")) {
-                name = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "path")) {
-                path = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "optional")) {
-                if (entry.value.getString()) |s| {
-                    optional = std.mem.eql(u8, s, "true");
-                }
-            } else if (std.mem.eql(u8, entry.key, "base64-encode")) {
-                if (entry.value.getString()) |s| {
-                    base64_encode = std.mem.eql(u8, s, "true");
-                }
-            }
-        }
-
-        if (path == null) return null;
-
-        return SsmEnvSource{
-            .path = try allocator.dupe(u8, path.?),
-            .name = if (name) |n| try allocator.dupe(u8, n) else null,
-            .optional = optional,
-            .@"base64-encode" = base64_encode,
-        };
-    }
-
-    fn parseVolumesList(allocator: Allocator, value: yaml.Value) !?[]Volume {
-        const list = value.getList() orelse return null;
-        var result = try ArrayList(Volume).initCapacity(allocator, list.len);
-        errdefer result.deinit(allocator);
-
-        for (list) |item| {
-            const item_map = item.getMap() orelse continue;
-            var volume = Volume{};
-
-            for (item_map) |entry| {
-                if (std.mem.eql(u8, entry.key, "s3")) {
-                    volume.s3 = try parseS3VolumeSource(allocator, entry.value);
-                } else if (std.mem.eql(u8, entry.key, "ssm")) {
-                    volume.ssm = try parseSsmVolumeSource(allocator, entry.value);
-                } else if (std.mem.eql(u8, entry.key, "secrets-manager")) {
-                    volume.@"secrets-manager" = try parseSecretsManagerVolumeSource(allocator, entry.value);
-                } else if (std.mem.eql(u8, entry.key, "ebs")) {
-                    volume.ebs = try parseEbsVolumeSource(allocator, entry.value);
-                }
-            }
-
-            try result.append(allocator, volume);
-        }
-
-        return try result.toOwnedSlice(allocator);
-    }
-
-    fn parseS3VolumeSource(allocator: Allocator, value: yaml.Value) !?S3VolumeSource {
-        const map = value.getMap() orelse return null;
-        var bucket: ?[]const u8 = null;
-        var key_prefix: ?[]const u8 = null;
-        var optional: ?bool = null;
-        var mount_val: ?Mount = null;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "bucket")) {
-                bucket = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "key-prefix")) {
-                key_prefix = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "optional")) {
-                if (entry.value.getString()) |s| {
-                    optional = std.mem.eql(u8, s, "true");
-                }
-            } else if (std.mem.eql(u8, entry.key, "mount")) {
-                mount_val = try parseMount(allocator, entry.value);
-            }
-        }
-
-        if (bucket == null or key_prefix == null or mount_val == null) return null;
-
-        return S3VolumeSource{
-            .bucket = try allocator.dupe(u8, bucket.?),
-            .@"key-prefix" = try allocator.dupe(u8, key_prefix.?),
-            .optional = optional,
-            .mount = mount_val.?,
-        };
-    }
-
-    fn parseSsmVolumeSource(allocator: Allocator, value: yaml.Value) !?SsmVolumeSource {
-        const map = value.getMap() orelse return null;
-        var path: ?[]const u8 = null;
-        var optional: ?bool = null;
-        var mount_val: ?Mount = null;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "path")) {
-                path = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "optional")) {
-                if (entry.value.getString()) |s| {
-                    optional = std.mem.eql(u8, s, "true");
-                }
-            } else if (std.mem.eql(u8, entry.key, "mount")) {
-                mount_val = try parseMount(allocator, entry.value);
-            }
-        }
-
-        if (path == null or mount_val == null) return null;
-
-        return SsmVolumeSource{
-            .path = try allocator.dupe(u8, path.?),
-            .optional = optional,
-            .mount = mount_val.?,
-        };
-    }
-
-    fn parseSecretsManagerVolumeSource(allocator: Allocator, value: yaml.Value) !?SecretsManagerVolumeSource {
-        const map = value.getMap() orelse return null;
-        var secret_id: ?[]const u8 = null;
-        var optional: ?bool = null;
-        var mount_val: ?Mount = null;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "secret-id")) {
-                secret_id = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "optional")) {
-                if (entry.value.getString()) |s| {
-                    optional = std.mem.eql(u8, s, "true");
-                }
-            } else if (std.mem.eql(u8, entry.key, "mount")) {
-                mount_val = try parseMount(allocator, entry.value);
-            }
-        }
-
-        if (secret_id == null or mount_val == null) return null;
-
-        return SecretsManagerVolumeSource{
-            .@"secret-id" = try allocator.dupe(u8, secret_id.?),
-            .optional = optional,
-            .mount = mount_val.?,
-        };
-    }
-
-    fn parseEbsVolumeSource(allocator: Allocator, value: yaml.Value) !?EbsVolumeSource {
-        const map = value.getMap() orelse return null;
-        var device: ?[]const u8 = null;
-        var mount_val: ?Mount = null;
-        var attachment: ?EbsVolumeAttachment = null;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "device")) {
-                device = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "mount")) {
-                mount_val = try parseMount(allocator, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "attachment")) {
-                attachment = try parseEbsVolumeAttachment(allocator, entry.value);
-            }
-        }
-
-        if (device == null) return null;
-
-        return EbsVolumeSource{
-            .attachment = attachment,
-            .device = try allocator.dupe(u8, device.?),
-            .mount = mount_val,
-        };
-    }
-
-    fn parseEbsVolumeAttachment(allocator: Allocator, value: yaml.Value) !?EbsVolumeAttachment {
-        const map = value.getMap() orelse return null;
-        var tags: ?[]AwsTag = null;
-        var timeout: ?u64 = null;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "tags")) {
-                tags = try parseAwsTagList(allocator, entry.value);
-            } else if (std.mem.eql(u8, entry.key, "timeout")) {
-                if (entry.value.getString()) |s| {
-                    timeout = std.fmt.parseInt(u64, s, 10) catch null;
-                }
-            }
-        }
-
-        return EbsVolumeAttachment{
-            .tags = tags orelse &[_]AwsTag{},
-            .timeout = timeout,
-        };
-    }
-
-    fn parseAwsTagList(allocator: Allocator, value: yaml.Value) !?[]AwsTag {
-        const list = value.getList() orelse return null;
-        var result = try std.ArrayList(AwsTag).initCapacity(allocator, list.len);
-        errdefer result.deinit(allocator);
-
-        for (list) |item| {
-            const item_map = item.getMap() orelse continue;
-            var key: ?[]const u8 = null;
-            var tag_value: ?[]const u8 = null;
-
-            for (item_map) |entry| {
-                if (std.mem.eql(u8, entry.key, "key")) {
-                    key = entry.value.getString();
-                } else if (std.mem.eql(u8, entry.key, "value")) {
-                    tag_value = entry.value.getString();
-                }
-            }
-
-            if (key) |k| {
-                try result.append(allocator, AwsTag{
-                    .key = try allocator.dupe(u8, k),
-                    .value = if (tag_value) |v| try allocator.dupe(u8, v) else null,
-                });
-            }
-        }
-
-        return try result.toOwnedSlice(allocator);
-    }
-
-    fn parseMount(allocator: Allocator, value: yaml.Value) !?Mount {
-        const map = value.getMap() orelse return null;
-        var destination: ?[]const u8 = null;
-        var fs_type: ?[]const u8 = null;
-        var user_id: ?u32 = null;
-        var group_id: ?u32 = null;
-        var mode: ?[]const u8 = null;
-
-        for (map) |entry| {
-            if (std.mem.eql(u8, entry.key, "destination")) {
-                destination = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "fs-type")) {
-                fs_type = entry.value.getString();
-            } else if (std.mem.eql(u8, entry.key, "user-id")) {
-                if (entry.value.getString()) |s| {
-                    user_id = std.fmt.parseInt(u32, s, 10) catch null;
-                }
-            } else if (std.mem.eql(u8, entry.key, "group-id")) {
-                if (entry.value.getString()) |s| {
-                    group_id = std.fmt.parseInt(u32, s, 10) catch null;
-                }
-            } else if (std.mem.eql(u8, entry.key, "mode")) {
-                mode = entry.value.getString();
-            }
-        }
-
-        if (destination == null) return null;
-
-        return Mount{
-            .destination = try allocator.dupe(u8, destination.?),
-            .@"fs-type" = if (fs_type) |f| try allocator.dupe(u8, f) else null,
-            .@"user-id" = user_id,
-            .@"group-id" = group_id,
-            .mode = if (mode) |m| try allocator.dupe(u8, m) else null,
         };
     }
 
@@ -911,7 +395,6 @@ pub const VmSpec = struct {
         }
         if (other.command) |command| {
             self.command = try dupeStringSlice(arena_alloc, command);
-            // If command is overridden but args is not in other, clear args
             if (other.args == null) {
                 self.args = null;
             }
@@ -980,7 +463,7 @@ pub const S3EnvSource = struct {
     @"base64-encode": ?bool = null,
     bucket: []const u8,
     key: []const u8,
-    name: ?[]const u8,
+    name: ?[]const u8 = null,
     optional: ?bool = null,
 };
 
@@ -993,7 +476,7 @@ pub const SecretsManagerEnvSource = struct {
 
 pub const SsmEnvSource = struct {
     @"base64-encode": ?bool = null,
-    name: ?[]const u8,
+    name: ?[]const u8 = null,
     path: []const u8,
     optional: ?bool = null,
 };
@@ -1050,20 +533,20 @@ pub const AwsTag = struct {
 pub const S3VolumeSource = struct {
     bucket: []const u8,
     @"key-prefix": []const u8,
-    optional: ?bool,
+    optional: ?bool = null,
     mount: Mount,
 };
 
 pub const SecretsManagerVolumeSource = struct {
     @"secret-id": []const u8,
     mount: Mount,
-    optional: ?bool,
+    optional: ?bool = null,
 };
 
 pub const SsmVolumeSource = struct {
     path: []const u8,
     mount: Mount,
-    optional: ?bool,
+    optional: ?bool = null,
 };
 
 pub const Mount = struct {
@@ -1382,8 +865,9 @@ test "VmSpec.from_yaml parses command" {
         \\  - /bin/echo
         \\  - hello
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.command != null);
     try testing.expectEqual(@as(usize, 2), vmspec.command.?.len);
@@ -1399,8 +883,9 @@ test "VmSpec.from_yaml parses env" {
         \\  - name: BAZ
         \\    value: qux
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.env != null);
     try testing.expectEqual(@as(usize, 2), vmspec.env.?.len);
@@ -1415,8 +900,9 @@ test "VmSpec.from_yaml parses security" {
         \\  run-as-group-id: 1000
         \\  readonly-root-fs: true
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expectEqual(@as(?u32, 1000), vmspec.security.@"run-as-user-id");
     try testing.expectEqual(@as(?u32, 1000), vmspec.security.@"run-as-group-id");
@@ -1425,41 +911,46 @@ test "VmSpec.from_yaml parses security" {
 
 test "VmSpec.from_yaml parses debug flag" {
     const yaml_content = "debug: true";
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expectEqual(@as(?bool, true), vmspec.debug);
 }
 
 test "VmSpec.from_yaml parses replace-init flag" {
     const yaml_content = "replace-init: true";
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expectEqual(@as(?bool, true), vmspec.@"replace-init");
 }
 
 test "VmSpec.from_yaml parses working-dir" {
     const yaml_content = "working-dir: /app";
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expectEqualStrings("/app", vmspec.@"working-dir".?);
 }
 
-test "VmSpec.from_yaml treats null working-dir as unset" {
+test "VmSpec.from_yaml treats null working-dir as null" {
     const yaml_content = "working-dir: null";
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
-    // YAML null should be treated as unset, keeping the default "/"
-    try testing.expectEqualStrings("/", vmspec.@"working-dir".?);
+    // YAML null sets the optional to null; merge will skip it
+    try testing.expect(vmspec.@"working-dir" == null);
 }
 
 test "VmSpec.from_yaml parses shutdown-grace-period" {
     const yaml_content = "shutdown-grace-period: 30";
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expectEqual(@as(?u64, 30), vmspec.@"shutdown-grace-period");
 }
@@ -1470,8 +961,9 @@ test "VmSpec.from_yaml parses modules" {
         \\  - nvme
         \\  - xfs
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.modules != null);
     try testing.expectEqual(@as(usize, 2), vmspec.modules.?.len);
@@ -1485,8 +977,9 @@ test "VmSpec.from_yaml parses sysctls" {
         \\  - name: net.ipv4.ip_forward
         \\    value: 1
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.sysctls != null);
     try testing.expectEqual(@as(usize, 1), vmspec.sysctls.?.len);
@@ -1500,8 +993,9 @@ test "VmSpec.from_yaml parses init-scripts" {
         \\  - /etc/init.d/script1
         \\  - /etc/init.d/script2
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.@"init-scripts" != null);
     try testing.expectEqual(@as(usize, 2), vmspec.@"init-scripts".?.len);
@@ -1514,8 +1008,9 @@ test "VmSpec.from_yaml parses disable-services" {
         \\  - sshd
         \\  - network
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.@"disable-services" != null);
     try testing.expectEqual(@as(usize, 2), vmspec.@"disable-services".?.len);
@@ -1530,8 +1025,9 @@ test "VmSpec.from_yaml parses env-from with imds" {
         \\      path: /latest/meta-data/instance-id
         \\      optional: true
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.@"env-from" != null);
     try testing.expectEqual(@as(usize, 1), vmspec.@"env-from".?.len);
@@ -1549,8 +1045,9 @@ test "VmSpec.from_yaml parses env-from with s3" {
         \\      key: config/env.json
         \\      name: S3_CONFIG
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.@"env-from" != null);
     const s3 = vmspec.@"env-from".?[0].s3.?;
@@ -1566,8 +1063,9 @@ test "VmSpec.from_yaml parses env-from with secrets-manager" {
         \\      name: DB_PASSWORD
         \\      secret-id: prod/db/password
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.@"env-from" != null);
     const sm = vmspec.@"env-from".?[0].@"secrets-manager".?;
@@ -1584,8 +1082,9 @@ test "VmSpec.from_yaml parses env-from with ssm" {
         \\      name: API_KEY
         \\      base64-encode: true
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.@"env-from" != null);
     const ssm = vmspec.@"env-from".?[0].ssm.?;
@@ -1756,8 +1255,9 @@ test "VmSpec.from_yaml parses both env and env-from" {
         \\      secret-id: app/db/password
         \\      name: DB_PASS
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     // Check env was parsed
     try testing.expect(vmspec.env != null);
@@ -1797,8 +1297,9 @@ test "VmSpec.merge env-from" {
         \\      path: /app/config
         \\      name: CONFIG
     ;
-    var other = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer other.deinit();
+    const other_parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer other_parsed.deinit();
+    const other = other_parsed.value;
 
     // Verify other has env-from
     try testing.expect(other.@"env-from" != null);
@@ -1845,8 +1346,9 @@ test "VmSpec.from_yaml parses user data with quoted keys" {
         \\  "value": "1"
         \\"working-dir": null
     ;
-    var vmspec = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
-    defer vmspec.deinit();
+    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    defer parsed.deinit();
+    const vmspec = parsed.value;
 
     try testing.expect(vmspec.args == null);
 
@@ -1875,8 +1377,8 @@ test "VmSpec.from_yaml parses user data with quoted keys" {
     );
     try testing.expectEqualStrings("1", vmspec.sysctls.?[0].value);
 
-    // Fields set to YAML null should be treated as unset (keeping defaults)
-    try testing.expectEqual(@as(?bool, false), vmspec.@"replace-init");
-    try testing.expectEqual(@as(?u64, 10), vmspec.@"shutdown-grace-period");
-    try testing.expectEqualStrings("/", vmspec.@"working-dir".?);
+    // Fields set to YAML null are null; merge will skip them
+    try testing.expect(vmspec.@"replace-init" == null);
+    try testing.expect(vmspec.@"shutdown-grace-period" == null);
+    try testing.expect(vmspec.@"working-dir" == null);
 }
