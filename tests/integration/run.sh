@@ -267,6 +267,8 @@ run_scenario()
     set +e
     if [ -n "${VERBOSE}" ]; then
         # Show output in real-time while also capturing to file
+        # Strip terminal escape sequences from display to prevent
+        # screen resets that destroy scrollback history.
         timeout "${TIMEOUT}" qemu-system-x86_64 \
             -accel kvm -accel tcg \
             -cpu max \
@@ -278,7 +280,7 @@ run_scenario()
             ${nic_args} \
             ${disk_args} \
             -no-reboot \
-            2>&1 | tee "${output_file}"
+            2>&1 | tee "${output_file}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[()][0-9A-Z]//g; s/\x1b[=>cM]//g'
         # Get exit code from timeout via a temp file since PIPESTATUS isn't portable
         exit_code=0
         if ! grep -q "^PASS" "${output_file}" 2>/dev/null; then
