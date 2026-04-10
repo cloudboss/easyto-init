@@ -1,0 +1,179 @@
+#!/bin/sh
+# Measure boot time by running QEMU directly against a pre-built
+# initramfs. Builds once, starts mock IMDS once, then runs QEMU
+# N times and reports timing statistics.
+#
+# Usage: hack/bench-qemu [--runs N] [--scenario NAME]
+#
+# Requires: EASYTO_ASSETS_VERSION set in environment (or Makefile).
+# Set KVM=1 in environment to use KVM acceleration.
+
+set -eu
+
+SCRIPT_DIR=$(cd "$(dirname "${0}")" && pwd)
+PROJECT_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
+OUTPUT_DIR="${PROJECT_ROOT}/_output"
+INTEGRATION_DIR="${PROJECT_ROOT}/tests/integration"
+EASYTO_ASSETS_VERSION=${EASYTO_ASSETS_VERSION:?EASYTO_ASSETS_VERSION must be defined}
+
+RUNS=5
+SCENARIO="basic-boot"
+TIMEOUT=30
+IMDS_PORT=8080
+IMDS_PID=""
+
+EASYTO_ASSETS_RUNTIME="${OUTPUT_DIR}/easyto-assets-runtime-${EASYTO_ASSETS_VERSION}"
+KERNEL="${OUTPUT_DIR}/vmlinuz"
+INIT_BINARY="${INIT_BINARY:-${OUTPUT_DIR}/zig-out/bin/init}"
+
+die() { echo "ERROR: ${*}" >&2 ; exit 1 ; }
+
+while [ ${#} -gt 0 ]; do
+    case "${1}" in
+        --runs) RUNS="${2}" ; shift 2 ;;
+        --scenario) SCENARIO="${2}" ; shift 2 ;;
+        *) echo "Unknown arg: ${1}" >&2 ; exit 1 ;;
+    esac
+done
+
+BENCH_OUT="${OUTPUT_DIR}/bench.$$"
+mkdir -p "${BENCH_OUT}"
+
+cleanup() {
+    if [ -n "${IMDS_PID}" ]; then
+        kill "${IMDS_PID}" 2>/dev/null || true
+        wait "${IMDS_PID}" 2>/dev/null || true
+    fi
+    rm -rf "${BENCH_OUT}"
+}
+trap cleanup EXIT
+
+# Check prerequisites.
+[ -f "${INIT_BINARY}" ] || die "init binary not found: ${INIT_BINARY}"
+[ -f "${KERNEL}" ] || die "kernel not found: ${KERNEL}"
+if lsof -i :"${IMDS_PORT}" >/dev/null 2>&1; then
+    die "port ${IMDS_PORT} already in use (stale IMDS?)"
+fi
+command -v qemu-system-x86_64 >/dev/null || die "qemu-system-x86_64 not found"
+
+SCENARIO_DIR="${INTEGRATION_DIR}/scenarios/${SCENARIO}"
+[ -d "${SCENARIO_DIR}" ] || die "scenario not found: ${SCENARIO}"
+
+# Build initramfs.
+INITRAMFS="${BENCH_OUT}/initramfs.cpio.gz"
+OVERLAY=""
+if [ -d "${SCENARIO_DIR}/overlay" ]; then
+    OVERLAY="${SCENARIO_DIR}"
+fi
+echo "Building test image..."
+${INTEGRATION_DIR}/image/build.sh \
+    "${INIT_BINARY}" "${EASYTO_ASSETS_RUNTIME}" "${INITRAMFS}" "${OVERLAY}"
+
+# Read scenario config.
+nic_count=1
+config_file="${SCENARIO_DIR}/config"
+if [ -f "${config_file}" ]; then
+    val=$(grep "^NIC_COUNT=" "${config_file}" 2>/dev/null | cut -d= -f2) || true
+    [ -n "${val}" ] && nic_count="${val}"
+fi
+
+# Generate NIC args.
+nic_args=""
+i=0
+while [ "${i}" -lt "${nic_count}" ]; do
+    mac_suffix=$(printf "%02x" $((86 + i)))
+    nic_args="${nic_args} -device e1000,netdev=net${i},mac=52:54:00:12:34:${mac_suffix}"
+    nic_args="${nic_args} -netdev user,id=net${i}"
+    i=$((i + 1))
+done
+
+# Start mock IMDS.
+echo "Starting mock IMDS server..."
+python3 "${INTEGRATION_DIR}/mocks/imds_server.py" \
+    "${IMDS_PORT}" \
+    "${INTEGRATION_DIR}/scenarios" \
+    "${SCENARIO}" \
+    "${nic_count}" \
+    "0" \
+    > "${BENCH_OUT}/imds.log" 2>&1 &
+IMDS_PID=$!
+
+IMDS_READY=0
+for _wait in $(seq 1 50); do
+    if curl -s -o /dev/null \
+        "http://127.0.0.1:${IMDS_PORT}/latest/meta-data/instance-id" \
+        2>/dev/null; then
+        IMDS_READY=1
+        echo "Mock IMDS server ready (pid ${IMDS_PID})"
+        break
+    fi
+    sleep 0.1
+done
+if [ "${IMDS_READY}" = "0" ]; then
+    echo "IMDS server log:" >&2
+    cat "${BENCH_OUT}/imds.log" >&2
+    die "mock IMDS server failed to start on port ${IMDS_PORT}"
+fi
+
+kernel_cmdline="rdinit=/.easyto/sbin/init console=ttyS0 panic=-1"
+kernel_cmdline="${kernel_cmdline} EASYTO_TEST_MODE=1"
+kernel_cmdline="${kernel_cmdline} AWS_EC2_METADATA_SERVICE_ENDPOINT=http://10.0.2.2:${IMDS_PORT}"
+
+ACCEL="-accel kvm -accel tcg"
+if [ "${KVM:-}" = "1" ]; then
+    ACCEL="-accel kvm"
+fi
+
+RESULTS="${BENCH_OUT}/results"
+
+# Run QEMU N times
+echo "Running ${RUNS} iterations (scenario=${SCENARIO})..."
+run=1
+while [ "${run}" -le "${RUNS}" ]; do
+    LOG="${BENCH_OUT}/run-${run}.log"
+    START=$(date +%s%N)
+
+    # shellcheck disable=SC2086
+    timeout "${TIMEOUT}" qemu-system-x86_64 \
+        ${ACCEL} \
+        -cpu max \
+        -m 1024 \
+        -kernel "${KERNEL}" \
+        -initrd "${INITRAMFS}" \
+        -append "${kernel_cmdline}" \
+        -display none \
+        -serial "file:${LOG}" \
+        ${nic_args} \
+        -no-reboot \
+        2>/dev/null || true
+
+    END=$(date +%s%N)
+    ELAPSED_MS=$(( (END - START) / 1000000 ))
+    echo "${ELAPSED_MS}" >> "${RESULTS}"
+
+    if [ ! -s "${LOG}" ]; then
+        echo "ERROR: QEMU produced no output (run ${run})" >&2
+        echo "IMDS log:" >&2
+        cat "${BENCH_OUT}/imds.log" >&2
+        die "QEMU failed to start"
+    fi
+
+    BOOT_TIME=$(grep 'boot completed in' "${LOG}" \
+        | sed 's|.*boot completed in \([0-9]*\)ms.*|\1|' \
+        || echo "?")
+    printf "Run %d: wall-clock: %dms, easyto-init boot: %sms\n" \
+        "${run}" "${ELAPSED_MS}" "${BOOT_TIME}"
+
+    run=$((run + 1))
+done
+
+printf "\nResults (%d runs, scenario=%s):\n" "${RUNS}" "${SCENARIO}"
+sort -n "${RESULTS}" | awk '
+    { a[NR] = $1; sum += $1 }
+    END {
+        printf "  Min:    %dms\n", a[1]
+        printf "  Median: %dms\n", a[int(NR/2) + 1]
+        printf "  Max:    %dms\n", a[NR]
+        printf "  Mean:   %dms\n", sum/NR
+    }
+'
