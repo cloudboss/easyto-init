@@ -84,6 +84,7 @@ const Link = struct {
 };
 
 pub fn run(allocator: Allocator) !void {
+    const boot_start = std.time.milliTimestamp();
     std.log.info("easyto-init started", .{});
 
     std.log.info("mounting base filesystems", .{});
@@ -200,7 +201,10 @@ pub fn run(allocator: Allocator) !void {
     const readonly_root_fs = vmspec.security.@"readonly-root-fs" orelse false;
 
     if (replace_init) {
-        std.log.info("replacing init with command", .{});
+        std.log.info(
+            "easyto-init boot completed in {d}ms",
+            .{std.time.milliTimestamp() - boot_start},
+        );
         try replaceInit(
             command,
             args,
@@ -228,6 +232,10 @@ pub fn run(allocator: Allocator) !void {
 
         try supervisor.start();
         spot.startSpotTerminationMonitor();
+        std.log.info(
+            "easyto-init boot completed in {d}ms",
+            .{std.time.milliTimestamp() - boot_start},
+        );
         supervisor.wait();
 
         std.log.info("supervisor finished, shutting down", .{});
