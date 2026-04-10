@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
     const yaml_dep = b.dependency("yaml", .{ .target = target, .optimize = optimize });
     const zgpt_dep = b.dependency("zgpt", .{ .target = target, .optimize = optimize });
     const zblkpg_dep = b.dependency("zblkpg", .{ .target = target, .optimize = optimize });
+    const zest_dep = b.dependency("zest", .{});
 
     const mod = b.addModule("easyto_init", .{
         .root_source_file = b.path("src/root.zig"),
@@ -74,12 +75,20 @@ pub fn build(b: *std.Build) void {
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
+        .test_runner = .{
+            .path = zest_dep.path("src/root.zig"),
+            .mode = .simple,
+        },
     });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
+        .test_runner = .{
+            .path = zest_dep.path("src/root.zig"),
+            .mode = .simple,
+        },
     });
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
