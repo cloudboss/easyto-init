@@ -379,18 +379,18 @@ fn setup_test_mode() !void {
     std.log.info("test mode enabled", .{});
 }
 
-const Metadata = struct {
+pub const Metadata = struct {
     contents: []const u8,
     parsed: std.json.Parsed(container.ConfigFile),
     allocator: Allocator,
 
-    fn deinit(self: *Metadata) void {
+    pub fn deinit(self: *Metadata) void {
         self.parsed.deinit();
         self.allocator.free(self.contents);
     }
 };
 
-fn read_metadata(allocator: Allocator, path: []const u8) !Metadata {
+pub fn read_metadata(allocator: Allocator, path: []const u8) !Metadata {
     const contents = try std.fs.cwd().readFileAlloc(
         allocator,
         path,
@@ -410,7 +410,7 @@ fn read_metadata(allocator: Allocator, path: []const u8) !Metadata {
     };
 }
 
-fn fetchUserData(aws_ctx: *AwsContext) !?[]const u8 {
+pub fn fetchUserData(aws_ctx: *AwsContext) !?[]const u8 {
     const imds_client = aws_ctx.getImds();
 
     var diagnostic: aws.imds.ServiceError = undefined;
@@ -559,7 +559,7 @@ fn replaceInit(
     return error.ExecveFailed;
 }
 
-fn resolveEnvFrom(
+pub fn resolveEnvFrom(
     allocator: Allocator,
     vmspec_alloc: Allocator,
     aws_ctx: *AwsContext,
@@ -750,7 +750,12 @@ fn resolveEnvFrom(
     }
 }
 
-fn expandEnvValues(allocator: Allocator, vmspec_alloc: Allocator, vmspec: *VmSpec, env: []const NameValue) !void {
+pub fn expandEnvValues(
+    allocator: Allocator,
+    vmspec_alloc: Allocator,
+    vmspec: *VmSpec,
+    env: []const NameValue,
+) !void {
     // Build mapping from current env
     var mapping = std.StringHashMap([]const u8).init(allocator);
     defer mapping.deinit();
@@ -809,11 +814,11 @@ fn addEnvVar(allocator: Allocator, vmspec: *VmSpec, name: []const u8, value: []c
     }
 }
 
-const ExpandedCommand = struct {
+pub const ExpandedCommand = struct {
     command: []const []const u8,
     args: ?[]const []const u8,
 
-    fn deinit(self: ExpandedCommand, allocator: Allocator) void {
+    pub fn deinit(self: ExpandedCommand, allocator: Allocator) void {
         for (self.command) |s| allocator.free(s);
         allocator.free(self.command);
         if (self.args) |args| {
@@ -823,7 +828,7 @@ const ExpandedCommand = struct {
     }
 };
 
-fn processVolumes(aws_ctx: *AwsContext, volumes: []const Volume) !void {
+pub fn processVolumes(aws_ctx: *AwsContext, volumes: []const Volume) !void {
     for (volumes) |volume| {
         if (volume.s3) |s3| {
             try handleS3Volume(aws_ctx, &s3);
@@ -1033,7 +1038,7 @@ fn handleEbsVolume(aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
     std.log.info("EBS volume {s} mounted to {s}", .{ device, mnt.destination });
 }
 
-fn expandCommandAndArgs(
+pub fn expandCommandAndArgs(
     allocator: Allocator,
     command: []const []const u8,
     args: ?[]const []const u8,
