@@ -265,7 +265,8 @@ run_scenario()
     # Use -cpu max to enable SSE4.1/PCLMULQDQ required by AWS SDK's crc-fast dependency
     set +e
     if [ -n "${VERBOSE}" ]; then
-        # Show output in real-time while also capturing to file
+        # Show output in real time while also capturing to file, stripping terminal
+        # escape sequences to prevent screen resets that destroy scrollback history.
         timeout "${TIMEOUT}" qemu-system-x86_64 \
             -accel kvm -accel tcg \
             -cpu max \
@@ -275,8 +276,9 @@ run_scenario()
             -append "${kernel_cmdline}" \
             -nographic \
             ${nic_args} \
-            -no-reboot \
-            2>&1 | tee "${output_file}"
+            -no-reboot 2>&1 \
+            | tee "${output_file}" \
+            | sed 's|\x1b\[[0-9;?]*[a-zA-Z]||g; s|\x1b[()][0-9A-Z]||g; s|\x1b[=>cM]||g'
         # Get exit code from timeout via a temp file since PIPESTATUS isn't portable
         exit_code=0
         if ! grep -q "^PASS" "${output_file}" 2>/dev/null; then
