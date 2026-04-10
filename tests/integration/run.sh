@@ -6,6 +6,7 @@ PROJECT_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
 OUTPUT_DIR="${PROJECT_ROOT}/_output"
 EASYTO_ASSETS_VERSION=${EASYTO_ASSETS_VERSION:?EASYTO_ASSETS_VERSION must be defined}
 CTR_IMAGE_ALPINE=${CTR_IMAGE_ALPINE:?CTR_IMAGE_ALPINE must be defined}
+CTR_IMAGE_LOCALSTACK=${CTR_IMAGE_LOCALSTACK:?CTR_IMAGE_LOCALSTACK must be defined}
 
 # Create temp directory for this test run
 mkdir -p "${OUTPUT_DIR}"
@@ -163,7 +164,7 @@ start_localstack()
         ${NETWORK_ARG} \
         -e SERVICES=s3,ssm,secretsmanager,sts,ec2 \
         -e DEBUG=0 \
-        localstack/localstack:latest 2>&1)
+        ${CTR_IMAGE_LOCALSTACK} 2>&1)
 
     if [ -z "${LOCALSTACK_CONTAINER}" ] || echo "${LOCALSTACK_CONTAINER}" | grep -q "Error"; then
         die "Failed to start LocalStack: ${LOCALSTACK_CONTAINER}"

@@ -29,6 +29,7 @@ $(HAS_IMAGE_LOCAL): $(HAS_COMMAND_DOCKER) | $(DIR_OUT)/dockerbuild/
 # End override.
 
 CTR_IMAGE_ALPINE = ghcr.io/cloudboss/docker.io/library/alpine:3.23.2
+CTR_IMAGE_LOCALSTACK = ghcr.io/cloudboss/docker.io/localstack/localstack:4.14.0
 
 DIR_RELEASE = $(DIR_OUT)/release
 
@@ -130,6 +131,7 @@ test-integration: \
 		--group-add $(DOCKER_GID) \
 		--security-opt label=type:container_runtime_t \
 		-e CTR_IMAGE_ALPINE=$(CTR_IMAGE_ALPINE) \
+		-e CTR_IMAGE_LOCALSTACK=$(CTR_IMAGE_LOCALSTACK) \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
@@ -149,6 +151,7 @@ test-integration-kvm: \
 		--security-opt label=type:container_runtime_t \
 		--device=/dev/kvm \
 		-e CTR_IMAGE_ALPINE=$(CTR_IMAGE_ALPINE) \
+		-e CTR_IMAGE_LOCALSTACK=$(CTR_IMAGE_LOCALSTACK) \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
