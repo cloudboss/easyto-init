@@ -17,6 +17,7 @@ const s3_mod = @import("aws/s3.zig");
 const ssm_mod = @import("aws/ssm.zig");
 const constants = @import("constants.zig");
 const container = @import("container.zig");
+const dag = @import("dag.zig");
 const fs_utils = @import("fs.zig");
 const mkdir_p = fs_utils.mkdir_p;
 const log_level = @import("log_level.zig");
@@ -84,112 +85,23 @@ const Link = struct {
 };
 
 pub fn run(allocator: Allocator) !void {
+    // Pre-DAG serial phase.
+    try base_mounts();
+    try setup_test_mode();
     const boot_start = std.time.milliTimestamp();
     std.log.info("easyto-init started", .{});
-
-    std.log.info("mounting base filesystems", .{});
-    try base_mounts();
-
-    try setup_test_mode();
-
     std.log.info("creating base symlinks", .{});
     try base_links();
 
-    std.log.info("initializing AWS context", .{});
-    var aws_ctx = try AwsContext.init(allocator);
-    defer aws_ctx.deinit();
+    // Parallel DAG phase.
+    var ctx = dag.BootContext.init(allocator);
+    defer ctx.deinit();
+    var executor = dag.DagExecutor.init(&ctx);
+    try executor.run();
 
-    std.log.info("initializing network", .{});
-    try network.initializeNetwork(allocator, aws_ctx.getImds());
-
-    // Fetch user data from IMDS
-    std.log.info("fetching user data from IMDS", .{});
-    const user_data = fetchUserData(&aws_ctx) catch |err| blk: {
-        std.log.warn("failed to fetch user data: {s}, continuing without", .{@errorName(err)});
-        break :blk null;
-    };
-    defer if (user_data) |ud| allocator.free(ud);
-
-    // Parse user data early so we can enable debug logging before
-    // NVMe linking and other operations.
-    var user_vmspec_parsed: ?VmSpec.ParsedYaml = null;
-    if (user_data) |ud| {
-        std.log.info("parsing user data YAML", .{});
-        if (VmSpec.from_yaml(allocator, ud)) |parsed| {
-            user_vmspec_parsed = parsed;
-        } else |err| {
-            std.log.err("unable to parse user data: {s}", .{@errorName(err)});
-            return err;
-        }
-    }
-    defer if (user_vmspec_parsed) |p| p.deinit();
-
-    if (user_vmspec_parsed) |p| {
-        if (p.value.debug != null and p.value.debug.?) {
-            log_level.setLevel(.debug);
-            std.log.debug("debug logging enabled", .{});
-        }
-    }
-
-    std.log.info("starting uevent listener", .{});
-    try uevent.startUeventListener(allocator);
-
-    std.log.info("linking nvme devices", .{});
-    try system.link_nvme_devices(allocator);
-
-    std.log.info("reading metadata", .{});
-    const config_file_path = constants.DIR_ET ++ "/" ++ constants.FILE_METADATA;
-    var metadata = try read_metadata(allocator, config_file_path);
-    defer metadata.deinit();
-
-    std.log.info("parsing vmspec", .{});
-    var vmspec_arena = std.heap.ArenaAllocator.init(allocator);
-    defer vmspec_arena.deinit();
-    const vmspec_alloc = vmspec_arena.allocator();
-
-    var vmspec = try VmSpec.from_config_file(vmspec_alloc, &metadata.parsed.value);
-
-    // Merge user data if available
-    if (user_vmspec_parsed) |p| {
-        std.log.info("merging user data into vmspec", .{});
-        try vmspec.merge(vmspec_alloc, p.value);
-    }
-
-    // Resolve env-from sources
-    if (vmspec.@"env-from") |env_from| {
-        std.log.info("resolving env-from sources", .{});
-        resolveEnvFrom(allocator, vmspec_alloc, &aws_ctx, &vmspec, env_from) catch |err| {
-            std.log.err("unable to resolve environment variables from external sources", .{});
-            return err;
-        };
-    }
-
-    // Expand variable references in env values (e.g., $(VAR) syntax)
-    if (vmspec.env) |env| {
-        try expandEnvValues(allocator, vmspec_alloc, &vmspec, env);
-    }
-
-    std.log.info("loading kernel modules", .{});
-    try system.loadModules(vmspec.modules);
-
-    std.log.info("applying sysctls", .{});
-    try system.setSysctls(vmspec.sysctls);
-
-    std.log.info("resizing root volume", .{});
-    system.resizeRootVolume(allocator);
-
-    // Process volumes
-    if (vmspec.volumes) |volumes| {
-        std.log.info("processing volumes", .{});
-        try processVolumes(&aws_ctx, volumes);
-    }
-
-    std.log.info("running init scripts", .{});
-    try system.runInitScripts(vmspec.@"init-scripts", vmspec.env);
-
-    // Expand variables in command and args
-    const expanded = try expandCommandAndArgs(allocator, vmspec.full_command(), vmspec.command_args(), vmspec.env);
-    defer expanded.deinit(allocator);
+    // Post-DAG: start supervisor.
+    const vmspec = ctx.vmspec.?;
+    const expanded = ctx.expanded_command.?;
     const command = expanded.command;
     const args = expanded.args;
     const uid = vmspec.security.@"run-as-user-id" orelse 0;
@@ -197,7 +109,6 @@ pub fn run(allocator: Allocator) !void {
     const working_dir = vmspec.@"working-dir" orelse "/";
     const shutdown_grace_period = vmspec.@"shutdown-grace-period" orelse 10;
     const replace_init = vmspec.@"replace-init" orelse false;
-
     const readonly_root_fs = vmspec.security.@"readonly-root-fs" orelse false;
 
     if (replace_init) {
@@ -226,7 +137,7 @@ pub fn run(allocator: Allocator) !void {
             gid,
             shutdown_grace_period,
             vmspec.@"disable-services",
-            aws_ctx.getImds(),
+            ctx.aws_ctx.?.getImds(),
             readonly_root_fs,
         );
 
