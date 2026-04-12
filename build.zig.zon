@@ -15,8 +15,8 @@
             .hash = "k8s_expand-0.1.0-rv03TFp5AAD_p-llgyd3zv70VBNeahFuy47auNhFsh7h",
         },
         .nlz = .{
-            .url = "git+https://github.com/cloudboss/nlz#1726940b7627dad3386dde519bd725264f7adede",
-            .hash = "nlz-0.1.0-mbEQKzyQAQBVNb8u-R1Bs5A2bKtlp2_KML_ofCPI86NB",
+            .url = "git+https://github.com/cloudboss/nlz#f8cdf0bbf8e42e6f7d2690d9654dc96d65f6cc8a",
+            .hash = "nlz-0.1.0-mbEQK1LPAQB2oAFZhAGrVn6YYAVNdSs1Dc26M_x48C0K",
         },
         .zgpt = .{
             .url = "git+https://github.com/cloudboss/zgpt#9dbc5851e341c6cb16cb23c7a7daabbaea103997",
