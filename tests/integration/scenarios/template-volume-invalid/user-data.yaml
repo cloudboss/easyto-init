@@ -3,8 +3,9 @@ disable-services:
   - ssh
 volumes:
   - template:
-      content: |
-        {{#broken
+      content: "{{#section}}hello"
+      variables:
+        section: true
       mount:
         destination: /out.html
 command:

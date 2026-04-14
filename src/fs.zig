@@ -124,7 +124,7 @@ fn syncFd(fd: posix.fd_t) !void {
     }
 }
 
-fn chownPath(path: []const u8, uid: ?u32, gid: ?u32) !void {
+pub fn chownPath(path: []const u8, uid: ?u32, gid: ?u32) !void {
     // Need null-terminated path for syscall
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     if (path.len >= path_buf.len) {

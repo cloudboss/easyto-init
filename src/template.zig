@@ -6,9 +6,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
+const k8s_expand = @import("k8s_expand");
+const mustache = @import("mustache");
 const yaml = @import("yaml");
 
+const fs = @import("fs.zig");
 const vmspec = @import("vmspec.zig");
+const Mount = vmspec.Mount;
 const NameValue = vmspec.NameValue;
 const TemplateVolumeSource = vmspec.TemplateVolumeSource;
 
@@ -21,14 +25,90 @@ pub fn renderToFile(
     tmpl: *const TemplateVolumeSource,
     env: []const NameValue,
 ) !void {
-    _ = allocator;
-    _ = tmpl;
-    _ = env;
-    return error.NotImplemented;
+    const destination = tmpl.mount.destination;
+    const mode = try parseMode(tmpl.mount.mode, 0o644);
+
+    if (std.fs.path.dirname(destination)) |parent| {
+        try fs.mkdir_p(parent, 0o755);
+    }
+
+    if (tmpl.variables == null) {
+        try fs.atomicWriteFile(destination, tmpl.content, mode);
+        try applyOwnership(destination, tmpl.mount);
+        return;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var env_map = std.StringHashMap([]const u8).init(arena_allocator);
+    for (env) |nv| try env_map.put(nv.name, nv.value);
+    const context = [_]*const std.StringHashMap([]const u8){&env_map};
+
+    const json_value = try yamlToJson(arena_allocator, tmpl.variables.?, &context);
+
+    const parse_result = try mustache.parseText(
+        arena_allocator,
+        tmpl.content,
+        .{},
+        .{ .copy_strings = false },
+    );
+    const parsed_template = switch (parse_result) {
+        .success => |t| t,
+        .parse_error => |detail| return detail.parse_error,
+    };
+    const rendered = try mustache.allocRender(arena_allocator, parsed_template, json_value);
+
+    try fs.atomicWriteFile(destination, rendered, mode);
+    try applyOwnership(destination, tmpl.mount);
 }
 
-// The tests below define the contract for `renderToFile`. They currently
-// fail against the stub; Phase 3 makes them pass.
+fn yamlToJson(
+    allocator: Allocator,
+    v: yaml.Value,
+    context: k8s_expand.Context,
+) !std.json.Value {
+    return switch (v) {
+        .null => .null,
+        .boolean => |b| .{ .bool = b },
+        .integer => |i| .{ .integer = i },
+        .float => |f| .{ .float = f },
+        .string => |s| .{ .string = try k8s_expand.expand(allocator, s, context) },
+        .sequence => |seq| blk: {
+            var arr = std.json.Array.init(allocator);
+            try arr.ensureTotalCapacity(seq.len);
+            for (seq) |item| {
+                arr.appendAssumeCapacity(try yamlToJson(allocator, item, context));
+            }
+            break :blk .{ .array = arr };
+        },
+        .mapping => |m| blk: {
+            var obj = std.json.ObjectMap.init(allocator);
+            try obj.ensureTotalCapacity(m.keys.len);
+            for (m.keys, m.values) |k, vv| {
+                const key = switch (k) {
+                    .string => |s| s,
+                    else => return Error.NonStringMappingKey,
+                };
+                try obj.put(key, try yamlToJson(allocator, vv, context));
+            }
+            break :blk .{ .object = obj };
+        },
+    };
+}
+
+fn parseMode(s: ?[]const u8, default: std.fs.File.Mode) !std.fs.File.Mode {
+    const str = s orelse return default;
+    return std.fmt.parseInt(std.fs.File.Mode, str, 8);
+}
+
+fn applyOwnership(path: []const u8, mount: Mount) !void {
+    if (mount.@"user-id" == null and mount.@"group-id" == null) return;
+    try fs.chownPath(path, mount.@"user-id", mount.@"group-id");
+}
+
+// ---- tests ----
 
 fn buildSource(
     content: []const u8,
