@@ -70,6 +70,60 @@ pub fn writeFile(
     }
 }
 
+/// Atomically write content to `path`: write to a sibling tmp file, fsync it,
+/// rename into place, then fsync the parent directory. Does not create parent
+/// directories — caller is responsible. Mirrors the Rust port's `atomic_write`
+/// semantics in `easyto-init/src/fs.rs`.
+pub fn atomicWriteFile(path: []const u8, content: []const u8, mode: Mode) !void {
+    try atomicWriteFileAt(fs.cwd(), path, content, mode);
+}
+
+pub fn atomicWriteFileAt(dir: fs.Dir, path: []const u8, content: []const u8, mode: Mode) !void {
+    const basename = fs.path.basename(path);
+    if (basename.len == 0) return error.InvalidPath;
+    const dirname_opt = fs.path.dirname(path);
+
+    var tmp_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = if (dirname_opt) |d|
+        try std.fmt.bufPrint(&tmp_buf, "{s}/.{s}.tmp", .{ d, basename })
+    else
+        try std.fmt.bufPrint(&tmp_buf, ".{s}.tmp", .{basename});
+
+    const file = try dir.createFile(tmp_path, .{ .mode = mode, .truncate = true });
+    {
+        errdefer dir.deleteFile(tmp_path) catch {};
+        defer file.close();
+        try file.writeAll(content);
+        try file.sync();
+    }
+
+    dir.rename(tmp_path, path) catch |err| {
+        dir.deleteFile(tmp_path) catch {};
+        return err;
+    };
+
+    const parent_path: []const u8 = dirname_opt orelse ".";
+    var parent_dir = try dir.openDir(parent_path, .{ .iterate = true });
+    defer parent_dir.close();
+    syncFd(parent_dir.fd) catch |err| {
+        std.log.warn("fsync parent dir of {s}: {s}", .{ path, @errorName(err) });
+    };
+}
+
+fn syncFd(fd: posix.fd_t) !void {
+    const ret = linux.fsync(fd);
+    switch (posix.errno(ret)) {
+        .SUCCESS => return,
+        .INVAL => return error.NotSupported,
+        .IO => return error.InputOutput,
+        .NOSPC => return error.NoSpaceLeft,
+        .DQUOT => return error.DiskQuota,
+        .ROFS => return error.ReadOnlyFileSystem,
+        .BADF => return error.InvalidFileDescriptor,
+        else => |e| return posix.unexpectedErrno(e),
+    }
+}
+
 fn chownPath(path: []const u8, uid: ?u32, gid: ?u32) !void {
     // Need null-terminated path for syscall
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -207,4 +261,72 @@ test "mkdir_p with empty path is a no-op" {
 
     // Empty path should not create anything and should not error
     try mkdir_p_at(tmp_dir.dir.fd, "", 0o755);
+}
+
+test "atomicWriteFile creates file with content and mode" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try atomicWriteFileAt(tmp_dir.dir, "out.txt", "hello", 0o600);
+
+    const file = try tmp_dir.dir.openFile("out.txt", .{});
+    defer file.close();
+
+    var buf: [32]u8 = undefined;
+    const n = try file.readAll(&buf);
+    try std.testing.expectEqualStrings("hello", buf[0..n]);
+
+    const stat = try file.stat();
+    try std.testing.expectEqual(@as(Mode, 0o600), stat.mode & 0o777);
+}
+
+test "atomicWriteFile overwrites existing file" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try atomicWriteFileAt(tmp_dir.dir, "out.txt", "first", 0o644);
+    try atomicWriteFileAt(tmp_dir.dir, "out.txt", "second content", 0o644);
+
+    const file = try tmp_dir.dir.openFile("out.txt", .{});
+    defer file.close();
+
+    var buf: [64]u8 = undefined;
+    const n = try file.readAll(&buf);
+    try std.testing.expectEqualStrings("second content", buf[0..n]);
+}
+
+test "atomicWriteFile does not leave tmp file behind" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try atomicWriteFileAt(tmp_dir.dir, "out.txt", "data", 0o644);
+
+    try std.testing.expectError(error.FileNotFound, tmp_dir.dir.openFile(".out.txt.tmp", .{}));
+}
+
+test "atomicWriteFile errors when parent dir does not exist" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try std.testing.expectError(
+        error.FileNotFound,
+        atomicWriteFileAt(tmp_dir.dir, "missing/out.txt", "data", 0o644),
+    );
+}
+
+test "atomicWriteFile works with nested existing dir" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makePath("sub");
+    try atomicWriteFileAt(tmp_dir.dir, "sub/out.txt", "nested", 0o644);
+
+    const file = try tmp_dir.dir.openFile("sub/out.txt", .{});
+    defer file.close();
+
+    var buf: [32]u8 = undefined;
+    const n = try file.readAll(&buf);
+    try std.testing.expectEqualStrings("nested", buf[0..n]);
+
+    try std.testing.expectError(error.FileNotFound, tmp_dir.dir.openFile("sub/.out.txt.tmp", .{}));
 }

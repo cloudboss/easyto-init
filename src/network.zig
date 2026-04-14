@@ -21,6 +21,7 @@ const dhcpz = @import("dhcpz");
 const nlz = @import("nlz");
 
 const constants = @import("constants.zig");
+const fs = @import("fs.zig");
 
 pub const Error = error{
     NoPrimaryInterface,
@@ -591,9 +592,6 @@ fn writeResolvConf(ack: *dhcpz.v4.Message) !void {
     const dns = ack.options.get(.domain_name_server) orelse return;
     if (dns.len == 0) return;
 
-    const file = try std.fs.cwd().createFile(constants.FILE_ETC_RESOLV_CONF, .{});
-    defer file.close();
-
     var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     const w = fbs.writer();
@@ -612,7 +610,7 @@ fn writeResolvConf(ack: *dhcpz.v4.Message) !void {
         w.print("nameserver {}.{}.{}.{}\n", .{ s[0], s[1], s[2], s[3] }) catch {};
     }
 
-    try file.writeAll(fbs.getWritten());
+    try fs.atomicWriteFile(constants.FILE_ETC_RESOLV_CONF, fbs.getWritten(), 0o644);
 }
 
 fn subnetMaskToPrefix(mask: [4]u8) u8 {
