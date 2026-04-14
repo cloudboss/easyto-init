@@ -1,0 +1,4 @@
+optional template volume at /optional-invalid failed, skipping: UnexpectedEof
+optional template volume at /sys/optional-missing failed, skipping: AccessDenied
+optional template volume at /optional-badkey failed, skipping: NonStringMappingKey
+template volume rendered to /optional-ok

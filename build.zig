@@ -13,6 +13,7 @@ pub fn build(b: *std.Build) void {
     const aws_sdk_dep = b.dependency("aws_sdk", .{ .target = target, .optimize = optimize });
     const dhcpz_dep = b.dependency("dhcpz", .{ .target = target });
     const k8s_expand_dep = b.dependency("k8s_expand", .{ .target = target, .optimize = optimize });
+    const mustache_dep = b.dependency("mustache", .{ .target = target, .optimize = optimize });
     const nlz_dep = b.dependency("nlz", .{ .target = target, .optimize = optimize });
     const yaml_dep = b.dependency("yaml", .{ .target = target, .optimize = optimize });
     const zgpt_dep = b.dependency("zgpt", .{ .target = target, .optimize = optimize });
@@ -30,6 +31,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ec2", .module = aws_sdk_dep.module("ec2") },
             .{ .name = "dhcpz", .module = dhcpz_dep.module("dhcpz") },
             .{ .name = "k8s_expand", .module = k8s_expand_dep.module("k8s_expand") },
+            .{ .name = "mustache", .module = mustache_dep.module("mustache") },
             .{ .name = "nlz", .module = nlz_dep.module("nlz") },
             .{ .name = "yaml", .module = yaml_dep.module("yaml") },
             .{ .name = "zgpt", .module = zgpt_dep.module("zgpt") },
@@ -52,6 +54,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "dhcpz", .module = dhcpz_dep.module("dhcpz") },
                 .{ .name = "easyto_init", .module = mod },
                 .{ .name = "k8s_expand", .module = k8s_expand_dep.module("k8s_expand") },
+                .{ .name = "mustache", .module = mustache_dep.module("mustache") },
                 .{ .name = "nlz", .module = nlz_dep.module("nlz") },
                 .{ .name = "yaml", .module = yaml_dep.module("yaml") },
                 .{ .name = "zgpt", .module = zgpt_dep.module("zgpt") },

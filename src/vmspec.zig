@@ -252,6 +252,38 @@ pub const VmSpec = struct {
             else
                 null,
             .ebs = if (vol.ebs) |ebs| try dupeEbsVolumeSource(allocator, ebs) else null,
+            .template = if (vol.template) |t| try dupeTemplateVolumeSource(allocator, t) else null,
+        };
+    }
+
+    fn dupeTemplateVolumeSource(allocator: Allocator, src: TemplateVolumeSource) !TemplateVolumeSource {
+        return TemplateVolumeSource{
+            .content = try allocator.dupe(u8, src.content),
+            .variables = if (src.variables) |v| try dupeYamlValue(allocator, v) else null,
+            .optional = src.optional,
+            .mount = try dupeMount(allocator, src.mount),
+        };
+    }
+
+    fn dupeYamlValue(allocator: Allocator, v: yaml.Value) !yaml.Value {
+        return switch (v) {
+            .null => .null,
+            .boolean => |b| .{ .boolean = b },
+            .integer => |i| .{ .integer = i },
+            .float => |f| .{ .float = f },
+            .string => |s| .{ .string = try allocator.dupe(u8, s) },
+            .sequence => |seq| blk: {
+                const out = try allocator.alloc(yaml.Value, seq.len);
+                for (seq, 0..) |item, i| out[i] = try dupeYamlValue(allocator, item);
+                break :blk .{ .sequence = out };
+            },
+            .mapping => |m| blk: {
+                const keys = try allocator.alloc(yaml.Value, m.keys.len);
+                const vals = try allocator.alloc(yaml.Value, m.values.len);
+                for (m.keys, 0..) |k, i| keys[i] = try dupeYamlValue(allocator, k);
+                for (m.values, 0..) |vv, i| vals[i] = try dupeYamlValue(allocator, vv);
+                break :blk .{ .mapping = .{ .keys = keys, .values = vals } };
+            },
         };
     }
 
@@ -495,6 +527,14 @@ pub const Volume = struct {
     s3: ?S3VolumeSource = null,
     @"secrets-manager": ?SecretsManagerVolumeSource = null,
     ssm: ?SsmVolumeSource = null,
+    template: ?TemplateVolumeSource = null,
+};
+
+pub const TemplateVolumeSource = struct {
+    content: []const u8,
+    variables: ?yaml.Value = null,
+    optional: ?bool = null,
+    mount: Mount,
 };
 
 pub const EbsVolumeSource = struct {

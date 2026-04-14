@@ -1,0 +1,45 @@
+disable-services:
+  - chrony
+  - ssh
+volumes:
+  # Opened section tag with no matching close.
+  - template:
+      content: "{{#section}}hello"
+      variables:
+        foo: bar
+      optional: true
+      mount:
+        destination: /optional-invalid
+  # Destination under a non-writable virtual filesystem.
+  - template:
+      content: hello
+      optional: true
+      mount:
+        destination: /sys/optional-missing
+  # Non-string mapping key in variables.
+  - template:
+      content: "{{foo}}"
+      variables:
+        42: bar
+      optional: true
+      mount:
+        destination: /optional-badkey
+  # A healthy template, to confirm other volumes still process.
+  - template:
+      content: healthy
+      optional: true
+      mount:
+        destination: /optional-ok
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    echo "=== optional template volumes ==="
+    [ -f /optional-invalid ] && { echo "FAIL: /optional-invalid should not exist"; exit 1; }
+    [ -f /sys/optional-missing ] && { echo "FAIL: /sys/optional-missing should not exist"; exit 1; }
+    [ -f /optional-badkey ] && { echo "FAIL: /optional-badkey should not exist"; exit 1; }
+    [ -f /optional-ok ] || { echo "FAIL: /optional-ok missing"; exit 1; }
+    content=$(cat /optional-ok)
+    [ "$content" = "healthy" ] || { echo "FAIL: wrong content: $content"; exit 1; }
+    echo "PASS"

@@ -34,6 +34,10 @@
             .url = "git+https://github.com/cloudboss/zest#7b3397bf606b4ae60996438085e9bd84a5afa0be",
             .hash = "zest-0.1.0-2zk2niBDAADQEyo3Hw9t9FtL8Yks0GPHF08Vl8aGJ9qR",
         },
+        .mustache = .{
+            .url = "git+https://github.com/rjosephwright/mustache-zig?ref=zig-0.15#c32f2e263066e8581fa3f562fc84970f673e03af",
+            .hash = "mustache-0.0.1-sfmQ5OdyCQCwi5Qo902JL1-qZLeVOU8P1qwPt943mvo9",
+        },
     },
     .fingerprint = 0xb2e6bbb659318356,
     .paths = .{

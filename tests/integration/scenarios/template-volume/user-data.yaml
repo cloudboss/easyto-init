@@ -1,0 +1,32 @@
+disable-services:
+  - chrony
+  - ssh
+env:
+  - name: ABC
+    value: XYZ
+  - name: URL
+    value: https://example.com
+volumes:
+  - template:
+      content: |
+        <h1>{{header}}</h1>
+        <ul>
+        {{#items}}
+          <li>{{#url}}<a href="{{url}}">{{/url}}{{name}}{{#url}}</a>{{/url}}</li>
+        {{/items}}
+        </ul>
+      variables:
+        header: My $(ABC) list
+        items:
+          - name: Milk
+          - name: Eggs
+            url: $(URL)
+          - name: Bread
+      mount:
+        destination: /abc.html
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    cat /abc.html

@@ -104,8 +104,14 @@ pub fn resizeRootVolume(ctx: *BootContext) !void {
 }
 
 pub fn processVolumes(ctx: *BootContext) !void {
-    if (ctx.vmspec.?.volumes) |volumes| {
-        try init_mod.processVolumes(&ctx.aws_ctx.?, volumes);
+    const vmspec = ctx.vmspec.?;
+    if (vmspec.volumes) |volumes| {
+        try init_mod.processVolumes(
+            ctx.allocator,
+            &ctx.aws_ctx.?,
+            volumes,
+            vmspec.env orelse &.{},
+        );
     }
 }
 

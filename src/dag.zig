@@ -116,7 +116,7 @@ pub const task_descriptors = blk: {
     };
     descs[@intFromEnum(TaskId.process_volumes)] = .{
         .name = "process_volumes",
-        .deps = &.{ .network_init, .merge_vmspec },
+        .deps = &.{ .network_init, .merge_vmspec, .expand_env_values },
         .run_fn = &tasks.processVolumes,
     };
     descs[@intFromEnum(TaskId.run_init_scripts)] = .{

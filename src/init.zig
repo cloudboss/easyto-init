@@ -36,6 +36,8 @@ const Volume = vmspec_mod.Volume;
 const S3VolumeSource = vmspec_mod.S3VolumeSource;
 const SsmVolumeSource = vmspec_mod.SsmVolumeSource;
 const SecretsManagerVolumeSource = vmspec_mod.SecretsManagerVolumeSource;
+const TemplateVolumeSource = vmspec_mod.TemplateVolumeSource;
+const template = @import("template.zig");
 
 const Error = error{
     MountError,
@@ -739,7 +741,12 @@ pub const ExpandedCommand = struct {
     }
 };
 
-pub fn processVolumes(aws_ctx: *AwsContext, volumes: []const Volume) !void {
+pub fn processVolumes(
+    allocator: Allocator,
+    aws_ctx: *AwsContext,
+    volumes: []const Volume,
+    env: []const NameValue,
+) !void {
     for (volumes) |volume| {
         if (volume.s3) |s3| {
             try handleS3Volume(aws_ctx, &s3);
@@ -753,7 +760,32 @@ pub fn processVolumes(aws_ctx: *AwsContext, volumes: []const Volume) !void {
         if (volume.ebs) |ebs| {
             try handleEbsVolume(aws_ctx, &ebs);
         }
+        if (volume.template) |t| {
+            try handleTemplateVolume(allocator, &t, env);
+        }
     }
+}
+
+fn handleTemplateVolume(
+    allocator: Allocator,
+    volume: *const TemplateVolumeSource,
+    env: []const NameValue,
+) !void {
+    const destination = volume.mount.destination;
+    const optional = volume.optional orelse false;
+
+    std.log.info("processing template volume -> {s}", .{destination});
+
+    template.renderToFile(allocator, volume, env) catch |err| {
+        if (optional) {
+            std.log.info("optional template volume at {s} failed, skipping: {s}", .{ destination, @errorName(err) });
+            return;
+        }
+        std.log.err("failed to render template to {s}: {s}", .{ destination, @errorName(err) });
+        return err;
+    };
+
+    std.log.info("template volume rendered to {s}", .{destination});
 }
 
 fn handleSsmVolume(aws_ctx: *AwsContext, volume: *const SsmVolumeSource) !void {

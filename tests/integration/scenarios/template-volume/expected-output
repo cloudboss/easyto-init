@@ -1,0 +1,6 @@
+<h1>My XYZ list</h1>
+<ul>
+  <li>Milk</li>
+  <li><a href="https://example.com">Eggs</a></li>
+  <li>Bread</li>
+</ul>
