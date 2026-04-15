@@ -1,0 +1,12 @@
+name: easyto-init-test
+
+on:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  test-build:
+    uses: ./.github/workflows/common.yml
+    with:
+      version: v0.0.0
