@@ -45,6 +45,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = optimize != .Debug,
             .imports = &.{
                 .{ .name = "aws", .module = aws_sdk_dep.module("aws") },
                 .{ .name = "s3", .module = aws_sdk_dep.module("s3") },

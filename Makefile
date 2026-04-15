@@ -77,20 +77,24 @@ $(DIR_OUT)/vmlinuz: $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/
 		mv $$(ls $(DIR_OUT)/vmlinuz-*) $(DIR_OUT)/vmlinuz
 
 $(DIR_STG_INIT)/$(DIR_ET)/sbin/init: \
-		$(DIR_OUT)/zig-out/bin/init | $(DIR_STG_INIT)/$(DIR_ET)/sbin/
-	@install -m 0755 $(DIR_OUT)/zig-out/bin/init $(DIR_STG_INIT)/$(DIR_ET)/sbin/init
+		$(DIR_OUT)/zig-out-release/bin/init | $(DIR_STG_INIT)/$(DIR_ET)/sbin/
+	@install -m 0755 $(DIR_OUT)/zig-out-release/bin/init $(DIR_STG_INIT)/$(DIR_ET)/sbin/init
 
-ZIG_BUILD_FLAGS = --cache-dir $(DIR_OUT)/zig-cache --global-cache-dir $(DIR_OUT)/zig-cache --prefix $(DIR_OUT)/zig-out
+ZIG_BUILD_FLAGS = --cache-dir $(DIR_OUT)/zig-cache --global-cache-dir $(DIR_OUT)/zig-cache
 
-$(DIR_OUT)/zig-out/bin/init: \
-		$(HAS_IMAGE_LOCAL) \
-		build.zig \
-		build.zig.zon \
-		$(shell find src -type f -name '*.zig')
+ZIG_SOURCES = build.zig build.zig.zon $(shell find src -type f -name '*.zig')
+
+$(DIR_OUT)/zig-out/bin/init: $(HAS_IMAGE_LOCAL) $(ZIG_SOURCES)
 	@docker run --rm -t \
 		-v $(DIR_ROOT):/code:Z \
 		-w /code \
-		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build -Doptimize=ReleaseSafe $(ZIG_BUILD_FLAGS)"
+		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build -Doptimize=ReleaseSafe $(ZIG_BUILD_FLAGS) --prefix $(DIR_OUT)/zig-out"
+
+$(DIR_OUT)/zig-out-release/bin/init: $(HAS_IMAGE_LOCAL) $(ZIG_SOURCES)
+	@docker run --rm -t \
+		-v $(DIR_ROOT):/code:Z \
+		-w /code \
+		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build -Doptimize=ReleaseFast $(ZIG_BUILD_FLAGS) --prefix $(DIR_OUT)/zig-out-release"
 
 build: $(DIR_OUT)/zig-out/bin/init
 
