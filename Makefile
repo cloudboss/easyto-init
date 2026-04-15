@@ -13,7 +13,7 @@ endif
 
 # Override Makefile.inc for Zig build.
 ZIG_VERSION = 0.15.2
-CTR_IMAGE_BASE = alpine:3.23.2
+CTR_IMAGE_BASE = ghcr.io/cloudboss/docker.io/library/alpine:3.23.2
 CTR_IMAGE_BASE_SHA256 = $(shell echo -n $(CTR_IMAGE_BASE) | sha256sum | awk '{print $$1}')
 ZIG_VERSION_SHA256 = $(shell echo -n $(ZIG_VERSION) | sha256sum | awk '{print $$1}')
 DOCKERFILE_SHA256 = $(shell sha256sum Dockerfile.build | awk '{print $$1}')
@@ -33,6 +33,8 @@ $(HAS_IMAGE_LOCAL): $(HAS_COMMAND_DOCKER) | $(DIR_OUT)/dockerbuild/
 		$(DIR_OUT)/dockerbuild
 	@touch $(HAS_IMAGE_LOCAL)
 # End override.
+
+CTR_IMAGE_LOCALSTACK = ghcr.io/cloudboss/docker.io/localstack/localstack:4.14.0
 
 DIR_RELEASE = $(DIR_OUT)/release
 
@@ -127,6 +129,8 @@ test-integration: \
 		--group-add $(DOCKER_GID) \
 		--security-opt label=type:container_runtime_t \
 		-e INIT_BINARY=$(DIR_OUT)/zig-out/bin/init \
+		-e CTR_IMAGE_LOCALSTACK=$(CTR_IMAGE_LOCALSTACK) \
+		-e CTR_IMAGE_ALPINE=$(CTR_IMAGE_BASE) \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \
@@ -147,6 +151,8 @@ test-integration-kvm: \
 		--security-opt label=type:container_runtime_t \
 		--device=/dev/kvm \
 		-e INIT_BINARY=$(DIR_OUT)/zig-out/bin/init \
+		-e CTR_IMAGE_LOCALSTACK=$(CTR_IMAGE_LOCALSTACK) \
+		-e CTR_IMAGE_ALPINE=$(CTR_IMAGE_BASE) \
 		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
 		-e VERBOSE=$(VERBOSE) \
 		-e SCENARIO=$(SCENARIO) \

@@ -2,18 +2,18 @@
 set -eu
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-INIT_BINARY="$1"
-EASYTO_ASSETS_RUNTIME="$2"
-OUTPUT="$3"
-SCENARIO_DIR="${4:-}"
+CTR_IMAGE_ALPINE="${1}"
+INIT_BINARY="${2}"
+EASYTO_ASSETS_RUNTIME="${3}"
+OUTPUT="${4}"
+SCENARIO_DIR="${5:-}"
 
 # Cache in the main output directory (_output/)
 OUTPUT_DIR=$(cd "$(dirname "${OUTPUT}")/.." && pwd)
 
 # Generate cache key from alpine image and assets version
-ALPINE_IMAGE="alpine:3.20"
 ASSETS_VERSION=$(basename "${EASYTO_ASSETS_RUNTIME}")
-CACHE_KEY=$(echo "${ALPINE_IMAGE}:${ASSETS_VERSION}" | sha256sum | cut -c1-16)
+CACHE_KEY=$(echo "${CTR_IMAGE_ALPINE}:${ASSETS_VERSION}" | sha256sum | cut -c1-16)
 CACHE_FILE="${OUTPUT_DIR}/test-rootfs-${CACHE_KEY}.tar"
 
 ROOTFS_DIR=$(mktemp -d)
@@ -30,7 +30,7 @@ build_base_rootfs()
 
     # Use docker to get a minimal alpine rootfs with curl for IMDS testing
     log "Extracting alpine rootfs..."
-    container_id=$(docker create ${ALPINE_IMAGE} sh -c "apk add --no-cache curl && rm -rf /var/cache/apk/*")
+    container_id=$(docker create ${CTR_IMAGE_ALPINE} sh -c "apk add --no-cache curl && rm -rf /var/cache/apk/*")
     docker start -a "${container_id}" > /dev/null
     docker export "${container_id}" | fakeroot tar -xf - -C "${ROOTFS_DIR}"
     docker rm "${container_id}" > /dev/null
