@@ -28,6 +28,11 @@ pub fn fetchUserData(ctx: *BootContext) anyerror!void {
     };
 }
 
+pub fn writeUserData(ctx: *BootContext) !void {
+    const ud = ctx.user_data orelse return;
+    try init_mod.writeUserData(ud);
+}
+
 pub fn parseUserData(ctx: *BootContext) !void {
     const ud = ctx.user_data orelse return;
     if (VmSpec.from_yaml(ctx.allocator, ud)) |parsed| {

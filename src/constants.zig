@@ -22,6 +22,7 @@ pub const FILE_ETC_GROUP = "/etc/group";
 pub const FILE_ETC_PASSWD = "/etc/passwd";
 pub const FILE_ETC_RESOLV_CONF = "/etc/resolv.conf";
 pub const FILE_METADATA = "metadata.json";
+pub const FILE_USER_DATA = "user-data";
 pub const FILE_NETWORK_JSON = "network.json";
 
 pub const GROUP_NAME_WHEEL = "wheel";

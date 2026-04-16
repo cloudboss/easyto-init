@@ -352,6 +352,23 @@ pub fn fetchUserData(allocator: Allocator, aws_ctx: *AwsContext) !?[]const u8 {
     return try allocator.dupe(u8, raw);
 }
 
+pub fn writeUserData(user_data: []const u8) !void {
+    fs_utils.mkdir_p(constants.DIR_ET_VAR_LIB, 0o755) catch |err| {
+        std.log.err("failed to create {s}: {s}", .{ constants.DIR_ET_VAR_LIB, @errorName(err) });
+        return err;
+    };
+    const path = constants.DIR_ET_VAR_LIB ++ "/" ++ constants.FILE_USER_DATA;
+    const file = std.fs.createFileAbsolute(path, .{}) catch |err| {
+        std.log.err("failed to create {s}: {s}", .{ path, @errorName(err) });
+        return err;
+    };
+    defer file.close();
+    file.writeAll(user_data) catch |err| {
+        std.log.err("failed to write {s}: {s}", .{ path, @errorName(err) });
+        return err;
+    };
+}
+
 fn replaceInit(
     command: []const []const u8,
     args: ?[]const []const u8,

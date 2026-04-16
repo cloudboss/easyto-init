@@ -11,6 +11,7 @@ pub const TaskId = enum(u8) {
     aws_context_init,
     network_init,
     fetch_user_data,
+    write_user_data,
     parse_user_data,
     enable_debug_logging,
     start_uevent_listener,
@@ -53,6 +54,11 @@ pub const task_descriptors = blk: {
         .name = "fetch_user_data",
         .deps = &.{.network_init},
         .run_fn = &tasks.fetchUserData,
+    };
+    descs[@intFromEnum(TaskId.write_user_data)] = .{
+        .name = "write_user_data",
+        .deps = &.{.fetch_user_data},
+        .run_fn = &tasks.writeUserData,
     };
     descs[@intFromEnum(TaskId.parse_user_data)] = .{
         .name = "parse_user_data",
