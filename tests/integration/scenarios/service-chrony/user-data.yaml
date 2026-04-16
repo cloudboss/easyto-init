@@ -1,3 +1,15 @@
 disable-services:
   - ssh
-command: ["/test-entrypoint"]
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    i=0
+    while [ ${i} -lt 50 ]; do
+        ps | grep -q '[c]hronyd' 2>/dev/null && exit 0
+        sleep 0.1
+        i=$((i + 1))
+    done
+    echo "chronyd not running after 5 seconds"
+    exit 1
