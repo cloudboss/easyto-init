@@ -1,3 +1,20 @@
 disable-services:
   - chrony
-command: ["/test-entrypoint"]
+init-scripts:
+  - |
+    #!/bin/sh
+    mkdir -p /.easyto/var/empty
+    mkdir -p /.easyto/home/testuser
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    i=0
+    while [ ${i} -lt 50 ]; do
+        grep -q ':0016 ' /proc/net/tcp 2>/dev/null && exit 0
+        sleep 0.1
+        i=$((i + 1))
+    done
+    echo "sshd not listening on port 22 after 5 seconds"
+    exit 1
