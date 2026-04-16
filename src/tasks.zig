@@ -22,7 +22,7 @@ pub fn networkInit(ctx: *BootContext) !void {
 }
 
 pub fn fetchUserData(ctx: *BootContext) anyerror!void {
-    ctx.user_data = init_mod.fetchUserData(&ctx.aws_ctx.?) catch |err| blk: {
+    ctx.user_data = init_mod.fetchUserData(ctx.allocator, &ctx.aws_ctx.?) catch |err| blk: {
         std.log.warn("failed to fetch user data: {s}, continuing without", .{@errorName(err)});
         break :blk null;
     };

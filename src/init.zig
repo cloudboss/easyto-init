@@ -26,6 +26,7 @@ const service = @import("service.zig");
 const Supervisor = service.Supervisor;
 const spot = @import("spot.zig");
 const system = @import("system.zig");
+const template = @import("template.zig");
 const uevent = @import("uevent.zig");
 const vmspec_mod = @import("vmspec.zig");
 const VmSpec = vmspec_mod.VmSpec;
@@ -37,7 +38,6 @@ const S3VolumeSource = vmspec_mod.S3VolumeSource;
 const SsmVolumeSource = vmspec_mod.SsmVolumeSource;
 const SecretsManagerVolumeSource = vmspec_mod.SecretsManagerVolumeSource;
 const TemplateVolumeSource = vmspec_mod.TemplateVolumeSource;
-const template = @import("template.zig");
 
 const Error = error{
     MountError,
@@ -323,11 +323,11 @@ pub fn read_metadata(allocator: Allocator, path: []const u8) !Metadata {
     };
 }
 
-pub fn fetchUserData(aws_ctx: *AwsContext) !?[]const u8 {
+pub fn fetchUserData(allocator: Allocator, aws_ctx: *AwsContext) !?[]const u8 {
     const imds_client = aws_ctx.getImds();
 
     var diagnostic: aws.imds.ServiceError = undefined;
-    const user_data = imds_client.getMetadata(
+    const raw = imds_client.getMetadata(
         "/latest/user-data",
         .{ .diagnostic = &diagnostic },
     ) catch |err| {
@@ -337,19 +337,19 @@ pub fn fetchUserData(aws_ctx: *AwsContext) !?[]const u8 {
         std.log.err("failed to fetch user data from IMDS: {s}", .{@errorName(err)});
         return err;
     };
+    defer aws_ctx.allocator.free(raw);
 
-    if (user_data.len >= 2 and user_data[0] == 0x1f and user_data[1] == 0x8b) {
+    if (raw.len >= 2 and raw[0] == 0x1f and raw[1] == 0x8b) {
         std.log.debug("user data is gzip compressed, decompressing", .{});
-        defer aws_ctx.allocator.free(user_data);
-        var in: std.Io.Reader = .fixed(user_data);
-        var aw: std.Io.Writer.Allocating = .init(aws_ctx.allocator);
-        errdefer aw.deinit();
+        var in: std.Io.Reader = .fixed(raw);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        defer aw.deinit();
         var decomp: std.compress.flate.Decompress = .init(&in, .gzip, &.{});
         _ = try decomp.reader.streamRemaining(&aw.writer);
         return try aw.toOwnedSlice();
     }
 
-    return user_data;
+    return try allocator.dupe(u8, raw);
 }
 
 fn replaceInit(
