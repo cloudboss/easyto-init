@@ -338,6 +338,17 @@ pub fn fetchUserData(aws_ctx: *AwsContext) !?[]const u8 {
         return err;
     };
 
+    if (user_data.len >= 2 and user_data[0] == 0x1f and user_data[1] == 0x8b) {
+        std.log.debug("user data is gzip compressed, decompressing", .{});
+        defer aws_ctx.allocator.free(user_data);
+        var in: std.Io.Reader = .fixed(user_data);
+        var aw: std.Io.Writer.Allocating = .init(aws_ctx.allocator);
+        errdefer aw.deinit();
+        var decomp: std.compress.flate.Decompress = .init(&in, .gzip, &.{});
+        _ = try decomp.reader.streamRemaining(&aw.writer);
+        return try aw.toOwnedSlice();
+    }
+
     return user_data;
 }
 
