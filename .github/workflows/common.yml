@@ -75,8 +75,6 @@ jobs:
         run: tar xzf _output.tar.gz
       - name: Load build container image
         run: gunzip -c _output/docker-image.tar.gz | docker load
-      - name: Touch binary to prevent rebuild
-        run: touch _output/zig-out/bin/init
       - name: Build release
         run: make --debug release VERSION=${{ inputs.version }}
       - uses: actions/upload-artifact@v7
