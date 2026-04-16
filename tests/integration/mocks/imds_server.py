@@ -13,7 +13,9 @@ Emulates IMDSv2 behavior:
 
 import http.server
 import json
+import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +32,9 @@ SPOT_TERMINATION_DELAY = 0
 
 # Track server start time for spot termination simulation
 SERVER_START_TIME = time.time()
+
+# User data bytes, populated at startup if user-data-setup.sh is present.
+USER_DATA_BYTES: bytes | None = None
 
 # Generate MACs for each NIC (QEMU style: 52:54:00:12:34:XX)
 def generate_macs(count):
@@ -161,12 +166,15 @@ class IMDSHandler(http.server.BaseHTTPRequestHandler):
 
         # User data (content-type is application/octet-stream per AWS docs)
         if path == "latest/user-data":
-            user_data_file = SCENARIOS_DIR / SCENARIO / "user-data.yaml"
-            if user_data_file.is_file():
-                content = user_data_file.read_bytes()
-                self._send_text(200, content, "application/octet-stream")
+            if USER_DATA_BYTES is not None:
+                self._send_text(200, USER_DATA_BYTES, "application/octet-stream")
             else:
-                self._send_error_response(404, "Not Found")
+                user_data_file = SCENARIOS_DIR / SCENARIO / "user-data.yaml"
+                if user_data_file.is_file():
+                    content = user_data_file.read_bytes()
+                    self._send_text(200, content, "application/octet-stream")
+                else:
+                    self._send_error_response(404, "Not Found")
             return
 
         # Strip latest/meta-data/ prefix
@@ -311,6 +319,14 @@ if __name__ == "__main__":
     NIC_COUNT = int(sys.argv[4]) if len(sys.argv) > 4 else 1
     SPOT_TERMINATION_DELAY = int(sys.argv[5]) if len(sys.argv) > 5 else 0
     MACS = generate_macs(NIC_COUNT)
+
+    setup_script = SCENARIOS_DIR / SCENARIO / "user-data-setup.sh"
+    if setup_script.is_file():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(["sh", str(setup_script), tmpdir], check=True)
+            ud_file = Path(tmpdir) / "user-data.yaml"
+            if ud_file.is_file():
+                USER_DATA_BYTES = ud_file.read_bytes()
 
     print(f"Mock IMDS server starting on 0.0.0.0:{PORT}", file=sys.stderr, flush=True)
     print(f"Scenarios dir: {SCENARIOS_DIR}", file=sys.stderr, flush=True)
