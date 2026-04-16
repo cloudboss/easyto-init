@@ -1,2 +1,0 @@
-# Use LocalStack for S3
-USE_LOCALSTACK=1

@@ -1,2 +1,0 @@
-# Spot termination delay: IMDS will return termination notice after 10 seconds
-SPOT_TERMINATION_DELAY=10

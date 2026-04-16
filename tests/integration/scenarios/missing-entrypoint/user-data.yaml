@@ -1,6 +1,0 @@
-disable-services:
-  - chrony
-  - ssh
-command:
-  - /nonexistent/command
-  - --some-arg

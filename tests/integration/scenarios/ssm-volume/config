@@ -1,2 +1,0 @@
-# Use LocalStack for SSM Parameter Store
-USE_LOCALSTACK=1
