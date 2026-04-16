@@ -321,15 +321,15 @@ run_scenario()
         rm -f "${disk_img}"
     fi
 
+    # Strip carriage returns and terminal escape sequences for pattern matching and display.
+    tr -d '\r' < "${output_file}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b[()][0-9A-Z]//g; s/\x1b[=>cM]//g' > "${output_file}.clean"
+
     # Check results
     if [ ${exit_code} -eq 124 ]; then
         log "TIMEOUT: ${scenario_name} (${TIMEOUT}s exceeded)"
-        cat "${output_file}"
+        cat "${output_file}.clean"
         return 1
     fi
-
-    # Strip carriage returns from serial console output for pattern matching
-    tr -d '\r' < "${output_file}" > "${output_file}.clean"
 
     # Check for memory leaks
     if grep -q "error(gpa):.*leaked" "${output_file}.clean"; then
@@ -358,7 +358,7 @@ run_scenario()
             log "Expected pattern:"
             cat "${scenario_dir}/expected-output"
             log "Actual output:"
-            cat "${output_file}"
+            cat "${output_file}.clean"
             rm -f "${output_file}.clean"
             return 1
         fi
@@ -369,12 +369,12 @@ run_scenario()
     elif grep -q "^FAIL" "${output_file}.clean"; then
         log "FAIL: ${scenario_name}"
         grep "^FAIL" "${output_file}.clean"
-        cat "${output_file}"
+        cat "${output_file}.clean"
         rm -f "${output_file}.clean"
         return 1
     else
         log "UNKNOWN: ${scenario_name} (no PASS/FAIL marker)"
-        cat "${output_file}"
+        cat "${output_file}.clean"
         rm -f "${output_file}.clean"
         return 1
     fi
