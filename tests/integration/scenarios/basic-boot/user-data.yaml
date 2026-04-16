@@ -1,4 +1,16 @@
 disable-services:
   - chrony
   - ssh
-command: ["/test-entrypoint"]
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+
+    ud="/.easyto/var/lib/user-data"
+    [ -f "${ud}" ] || { echo "FAIL: ${ud} not found"; exit 1; }
+    grep -q "disable-services" "${ud}" || { echo "FAIL: ${ud} missing expected content"; exit 1; }
+    echo "user-data written: OK"
+
+    echo "PASS"
