@@ -349,13 +349,20 @@ run_scenario()
 
     # Check for expected-output file (for error-handling tests)
     if [ -f "${scenario_dir}/expected-output" ]; then
-        if grep -qf "${scenario_dir}/expected-output" "${output_file}.clean"; then
+        failed_line=""
+        while IFS= read -r line || [ -n "${line}" ]; do
+            if ! grep -qF "${line}" "${output_file}.clean"; then
+                failed_line="${line}"
+                break
+            fi
+        done < "${scenario_dir}/expected-output"
+        if [ -z "${failed_line}" ]; then
             log "PASS: ${scenario_name}"
             rm -f "${output_file}.clean"
             return 0
         else
-            log "FAIL: ${scenario_name} (expected output not found)"
-            log "Expected pattern:"
+            log "FAIL: ${scenario_name} (expected line not found: ${failed_line})"
+            log "Expected output:"
             cat "${scenario_dir}/expected-output"
             log "Actual output:"
             cat "${output_file}.clean"
