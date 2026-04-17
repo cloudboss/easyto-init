@@ -17,6 +17,7 @@ const NameValue = vmspec.NameValue;
 const TemplateVolumeSource = vmspec.TemplateVolumeSource;
 
 pub const Error = error{
+    InvalidVariableMapping,
     NonStringMappingKey,
 };
 
@@ -32,7 +33,12 @@ pub fn renderToFile(
         try fs.mkdir_p(parent, 0o755);
     }
 
-    if (tmpl.variables == null) {
+    const mapping: ?yaml.Value.Mapping = if (tmpl.variables) |v| switch (v) {
+        .mapping => |m| m,
+        else => return Error.InvalidVariableMapping,
+    } else null;
+
+    if (mapping == null or mapping.?.keys.len == 0) {
         try fs.atomicWriteFile(destination, tmpl.content, mode);
         try applyOwnership(destination, tmpl.mount);
         return;
@@ -46,7 +52,7 @@ pub fn renderToFile(
     for (env) |nv| try env_map.put(nv.name, nv.value);
     const context = [_]*const std.StringHashMap([]const u8){&env_map};
 
-    const json_value = try yamlToJson(arena_allocator, tmpl.variables.?, &context);
+    const json_value = try yamlToJson(arena_allocator, .{ .mapping = mapping.? }, &context);
 
     const parse_result = try mustache.parseText(
         arena_allocator,
@@ -151,6 +157,41 @@ test "renderToFile writes literal content when variables is null" {
     const actual = try readAllAlloc(testing.allocator, tmp_dir.dir, "out.txt");
     defer testing.allocator.free(actual);
     try testing.expectEqualStrings("hello world", actual);
+}
+
+test "renderToFile writes literal content when variables is empty mapping" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dest = try tmpDestPath(testing.allocator, tmp_dir, "out.txt");
+    defer testing.allocator.free(dest);
+
+    const variables: yaml.Value = .{
+        .mapping = .{ .keys = &.{}, .values = &.{} },
+    };
+
+    const src = buildSource("hello {{name}}", variables, dest);
+    try renderToFile(testing.allocator, &src, &.{});
+
+    const actual = try readAllAlloc(testing.allocator, tmp_dir.dir, "out.txt");
+    defer testing.allocator.free(actual);
+    try testing.expectEqualStrings("hello {{name}}", actual);
+}
+
+test "renderToFile errors when variables is not a mapping" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dest = try tmpDestPath(testing.allocator, tmp_dir, "out.txt");
+    defer testing.allocator.free(dest);
+
+    const variables: yaml.Value = .{ .string = "not a mapping" };
+
+    const src = buildSource("hello", variables, dest);
+    try testing.expectError(
+        Error.InvalidVariableMapping,
+        renderToFile(testing.allocator, &src, &.{}),
+    );
 }
 
 test "renderToFile substitutes scalar variable" {
