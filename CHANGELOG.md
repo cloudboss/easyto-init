@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.1] - 2026-04-17
+
+### Fixed
+
+- Template should render as literal string if `variables` is either null or an empty mapping.
+
 ## [0.4.0] - 2026-04-16
 
 The most user visible change is the addition of "template" pseudo-volumes to enable writing files from mustache templates with variable expansion or literal strings with no variables. The system was rewritten in Zig, which vastly improves compile times as well as binary size (this is largely due to not needing tokio and Rust's bloated AWS SDK), but *should* not change the behavior.
@@ -67,6 +73,7 @@ The most user visible change is the addition of "template" pseudo-volumes to ena
 
 Initial release
 
+[0.4.1]: https://github.com/cloudboss/easyto-init/releases/tag/v0.4.1
 [0.4.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.4.0
 [0.3.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.3.0
 [0.2.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.2.0
