@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0] - 2026-04-19
+
+### Changed
+
+- Update [easyto-assets](https://github.com/cloudboss/easyto-assets) to `v0.6.0`. This includes a kernel configuration trimmed specifically for EC2 Nitro, new support for XFS, and version updates to zlib, OpenSSL, and OpenSSH.
+- Update bench-qemu and integration test runner to use virtio-net-pci in QEMU.
+- Update bench-qemu to run in container from Makefile.
+
 ## [0.4.1] - 2026-04-17
 
 ### Fixed
@@ -73,6 +81,7 @@ The most user visible change is the addition of "template" pseudo-volumes to ena
 
 Initial release
 
+[0.5.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.5.0
 [0.4.1]: https://github.com/cloudboss/easyto-init/releases/tag/v0.4.1
 [0.4.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.4.0
 [0.3.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.3.0
