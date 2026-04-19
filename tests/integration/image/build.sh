@@ -92,6 +92,6 @@ fi
 
 # Create initramfs with fakeroot to preserve root ownership
 log "Creating initramfs..."
-(cd "${ROOTFS_DIR}" && fakeroot sh -c 'chown -R 0:0 . && find . -print0 | cpio --null -o -H newc' 2>/dev/null | gzip -9) > "${OUTPUT}"
+(cd "${ROOTFS_DIR}" && fakeroot sh -c 'chown -R 0:0 . && find . -print0 | cpio --null -o -H newc' 2>/dev/null | zstd -T0 -19) > "${OUTPUT}"
 
 log "Created ${OUTPUT}"

@@ -13,7 +13,8 @@ RUN apk add --no-cache \
     python3 \
     qemu-system-x86_64 \
     tar \
-    xz
+    xz \
+    zstd
 
 RUN curl -L -o /tmp/zig.tar.xz \
     "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" && \
