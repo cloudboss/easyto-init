@@ -20,7 +20,7 @@ KERNEL="${OUTPUT_DIR}/vmlinuz"
 INIT_BINARY="${INIT_BINARY:-${OUTPUT_DIR}/zig-out/bin/init}"
 
 # Test image
-INITRAMFS="${INTEGRATION_OUT}/initramfs.cpio.gz"
+INITRAMFS="${INTEGRATION_OUT}/initramfs.cpio.zst"
 
 # Mock IMDS server
 IMDS_PORT=8080
@@ -94,7 +94,7 @@ generate_qemu_nic_args()
     i=0
     while [ $i -lt "$nic_count" ]; do
         mac_suffix=$(printf "%02x" $((86 + i)))
-        echo "-device e1000,netdev=net${i},mac=52:54:00:12:34:${mac_suffix}"
+        echo "-device virtio-net-pci,netdev=net${i},mac=52:54:00:12:34:${mac_suffix}"
         echo "-netdev user,id=net${i}"
         i=$((i + 1))
     done

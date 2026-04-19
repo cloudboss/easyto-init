@@ -10,10 +10,8 @@
 
 set -eu
 
-SCRIPT_DIR=$(cd "$(dirname "${0}")" && pwd)
-PROJECT_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
-OUTPUT_DIR="${PROJECT_ROOT}/_output"
-INTEGRATION_DIR="${PROJECT_ROOT}/tests/integration"
+OUTPUT_DIR="_output"
+INTEGRATION_DIR="tests/integration"
 EASYTO_ASSETS_VERSION=${EASYTO_ASSETS_VERSION:?EASYTO_ASSETS_VERSION must be defined}
 
 RUNS=5
@@ -24,9 +22,13 @@ IMDS_PID=""
 
 EASYTO_ASSETS_RUNTIME="${OUTPUT_DIR}/easyto-assets-runtime-${EASYTO_ASSETS_VERSION}"
 KERNEL="${OUTPUT_DIR}/vmlinuz"
+CTR_IMAGE_ALPINE="${CTR_IMAGE_ALPINE:?CTR_IMAGE_ALPINE must be defined}"
 INIT_BINARY="${INIT_BINARY:-${OUTPUT_DIR}/zig-out/bin/init}"
 
 die() { echo "ERROR: ${*}" >&2 ; exit 1 ; }
+
+# Return current time in milliseconds because busybox `date` does not.
+now_ms() { awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime ; }
 
 while [ ${#} -gt 0 ]; do
     case "${1}" in
@@ -36,8 +38,7 @@ while [ ${#} -gt 0 ]; do
     esac
 done
 
-BENCH_OUT="${OUTPUT_DIR}/bench.$$"
-mkdir -p "${BENCH_OUT}"
+BENCH_OUT=$(mktemp -p ${OUTPUT_DIR} -d bench.XXXXXX)
 
 cleanup() {
     if [ -n "${IMDS_PID}" ]; then
@@ -51,23 +52,20 @@ trap cleanup EXIT
 # Check prerequisites.
 [ -f "${INIT_BINARY}" ] || die "init binary not found: ${INIT_BINARY}"
 [ -f "${KERNEL}" ] || die "kernel not found: ${KERNEL}"
-if lsof -i :"${IMDS_PORT}" >/dev/null 2>&1; then
-    die "port ${IMDS_PORT} already in use (stale IMDS?)"
-fi
 command -v qemu-system-x86_64 >/dev/null || die "qemu-system-x86_64 not found"
 
 SCENARIO_DIR="${INTEGRATION_DIR}/scenarios/${SCENARIO}"
 [ -d "${SCENARIO_DIR}" ] || die "scenario not found: ${SCENARIO}"
 
 # Build initramfs.
-INITRAMFS="${BENCH_OUT}/initramfs.cpio.gz"
+INITRAMFS="${BENCH_OUT}/initramfs.cpio.zst"
 OVERLAY=""
 if [ -d "${SCENARIO_DIR}/overlay" ]; then
     OVERLAY="${SCENARIO_DIR}"
 fi
 echo "Building test image..."
 ${INTEGRATION_DIR}/image/build.sh \
-    "${INIT_BINARY}" "${EASYTO_ASSETS_RUNTIME}" "${INITRAMFS}" "${OVERLAY}"
+    "${CTR_IMAGE_ALPINE}" "${INIT_BINARY}" "${EASYTO_ASSETS_RUNTIME}" "${INITRAMFS}" "${OVERLAY}"
 
 # Read scenario config.
 nic_count=1
@@ -82,7 +80,7 @@ nic_args=""
 i=0
 while [ "${i}" -lt "${nic_count}" ]; do
     mac_suffix=$(printf "%02x" $((86 + i)))
-    nic_args="${nic_args} -device e1000,netdev=net${i},mac=52:54:00:12:34:${mac_suffix}"
+    nic_args="${nic_args} -device virtio-net-pci,netdev=net${i},mac=52:54:00:12:34:${mac_suffix}"
     nic_args="${nic_args} -netdev user,id=net${i}"
     i=$((i + 1))
 done
@@ -131,7 +129,7 @@ echo "Running ${RUNS} iterations (scenario=${SCENARIO})..."
 run=1
 while [ "${run}" -le "${RUNS}" ]; do
     LOG="${BENCH_OUT}/run-${run}.log"
-    START=$(date +%s%N)
+    START=$(now_ms)
 
     # shellcheck disable=SC2086
     timeout "${TIMEOUT}" qemu-system-x86_64 \
@@ -147,8 +145,8 @@ while [ "${run}" -le "${RUNS}" ]; do
         -no-reboot \
         2>/dev/null || true
 
-    END=$(date +%s%N)
-    ELAPSED_MS=$(( (END - START) / 1000000 ))
+    END=$(now_ms)
+    ELAPSED_MS=$(( END - START ))
     echo "${ELAPSED_MS}" >> "${RESULTS}"
 
     if [ ! -s "${LOG}" ]; then

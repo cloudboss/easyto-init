@@ -39,7 +39,7 @@ CTR_IMAGE_LOCALSTACK = ghcr.io/cloudboss/docker.io/localstack/localstack:4.14.0
 DIR_RELEASE = $(DIR_OUT)/release
 
 EASYTO_ASSETS_RELEASES = https://github.com/cloudboss/easyto-assets/releases/download
-EASYTO_ASSETS_VERSION = v0.5.1
+EASYTO_ASSETS_VERSION = v0.6.0
 EASYTO_ASSETS_BUILD = easyto-assets-build-$(EASYTO_ASSETS_VERSION)
 EASYTO_ASSETS_BUILD_ARCHIVE = $(EASYTO_ASSETS_BUILD).tar.gz
 EASYTO_ASSETS_BUILD_URL = $(EASYTO_ASSETS_RELEASES)/$(EASYTO_ASSETS_VERSION)/$(EASYTO_ASSETS_BUILD_ARCHIVE)
@@ -170,6 +170,25 @@ test-integration-kvm: \
 		-e KEEP_LOGS=$(KEEP_LOGS) \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -c "./tests/integration/run.sh"
+
+bench-qemu: $(HAS_IMAGE_LOCAL) \
+		$(DIR_OUT)/zig-out/bin/init \
+		$(DIR_OUT)/vmlinuz \
+		$(EASYTO_ASSETS_RUNTIME_OUT)
+	@docker run --rm -t \
+		-v $(DIR_ROOT):/code:Z \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		--group-add $(DOCKER_GID) \
+		--group-add $(KVM_GID) \
+		--security-opt label=type:container_runtime_t \
+		--device=/dev/kvm \
+		-e CTR_IMAGE_ALPINE=$(CTR_IMAGE_BASE) \
+		-e EASYTO_ASSETS_VERSION=$(EASYTO_ASSETS_VERSION) \
+		-e INIT_BINARY=$(DIR_OUT)/zig-out/bin/init \
+		-e KVM=1 \
+		-e SCENARIO=$(SCENARIO) \
+		-w /code \
+		$(CTR_IMAGE_LOCAL) /bin/sh -c "./hack/bench-qemu"
 
 release: $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz
 
