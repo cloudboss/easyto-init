@@ -69,10 +69,17 @@ $(DIR_OUT)/$(EASYTO_ASSETS_BUILD_ARCHIVE): | $(HAS_COMMAND_CURL) $(DIR_OUT)
 $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE): | $(HAS_COMMAND_CURL) $(DIR_OUT)
 	@curl -L -o $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE) $(EASYTO_ASSETS_RUNTIME_URL)
 
-$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/: $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE)
-	@tar -zxf $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE) -C $(DIR_OUT)
+EASYTO_ASSETS_RUNTIME_OUT = $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/base.tar \
+	$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/boot.tar \
+	$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/chrony.tar \
+	$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/kernel.tar \
+	$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ssh.tar
 
-$(DIR_OUT)/vmlinuz: $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/
+$(EASYTO_ASSETS_RUNTIME_OUT) &: $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE)
+	@tar -zxf $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME_ARCHIVE) -C $(DIR_OUT)
+	@touch $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/*
+
+$(DIR_OUT)/vmlinuz: $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/kernel.tar
 	@tar -xf $(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/kernel.tar -C $(DIR_OUT) --strip-components=2 ./boot/ && \
 		mv $$(ls $(DIR_OUT)/vmlinuz-*) $(DIR_OUT)/vmlinuz
 
@@ -125,8 +132,8 @@ KVM_GID = $(shell getent group kvm | cut -d: -f3)
 test-integration: \
 		$(HAS_IMAGE_LOCAL) \
 		$(DIR_OUT)/zig-out/bin/init \
-		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
-		$(DIR_OUT)/vmlinuz
+		$(DIR_OUT)/vmlinuz \
+		$(EASYTO_ASSETS_RUNTIME_OUT)
 	@docker run --rm -t \
 		-v $(DIR_ROOT):/code:Z \
 		-v /var/run/docker.sock:/var/run/docker.sock \
@@ -145,8 +152,8 @@ test-integration: \
 test-integration-kvm: \
 		$(HAS_IMAGE_LOCAL) \
 		$(DIR_OUT)/zig-out/bin/init \
-		$(DIR_OUT)/$(EASYTO_ASSETS_RUNTIME)/ \
-		$(DIR_OUT)/vmlinuz
+		$(DIR_OUT)/vmlinuz \
+		$(EASYTO_ASSETS_RUNTIME_OUT)
 	@docker run --rm -t \
 		-v $(DIR_ROOT):/code:Z \
 		-v /var/run/docker.sock:/var/run/docker.sock \
