@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.1] - 2026-04-23
+
+### Fixed
+
+- Fix regression from Rust implementation: ensure `command` has `PATH` defined in its environment, and convert `command` to an absolute path when it is defined as relative before calling execve().
+
 ## [0.5.0] - 2026-04-19
 
 ### Changed
@@ -81,6 +87,7 @@ The most user visible change is the addition of "template" pseudo-volumes to ena
 
 Initial release
 
+[0.5.1]: https://github.com/cloudboss/easyto-init/releases/tag/v0.5.1
 [0.5.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.5.0
 [0.4.1]: https://github.com/cloudboss/easyto-init/releases/tag/v0.4.1
 [0.4.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.4.0
