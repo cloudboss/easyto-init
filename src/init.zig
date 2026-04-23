@@ -695,21 +695,26 @@ pub fn expandEnvValues(
     allocator: Allocator,
     vmspec_alloc: Allocator,
     vmspec: *VmSpec,
-    env: []const NameValue,
+    env: ?[]const NameValue,
 ) !void {
-    // Build mapping from current env
+    const env_slice: []const NameValue = env orelse &.{};
+
     var mapping = std.StringHashMap([]const u8).init(allocator);
     defer mapping.deinit();
 
-    for (env) |nv| {
+    for (env_slice) |nv| {
         try mapping.put(nv.name, nv.value);
     }
 
     const context = [_]*const std.StringHashMap([]const u8){&mapping};
 
-    // Expand values and update env
-    var new_env = try vmspec_alloc.alloc(NameValue, env.len);
-    for (env, 0..) |nv, i| {
+    // Guarantee PATH is always set in the resulting env: the env is
+    // used both to look up argv[0] and as the environment of the
+    // spawned process, so a default is appended when none is given.
+    const has_path = mapping.contains("PATH");
+    const out_len = env_slice.len + @as(usize, if (has_path) 0 else 1);
+    var new_env = try vmspec_alloc.alloc(NameValue, out_len);
+    for (env_slice, 0..) |nv, i| {
         const expanded_value = try k8s_expand.expand(allocator, nv.value, &context);
         defer allocator.free(expanded_value);
 
@@ -719,6 +724,12 @@ pub fn expandEnvValues(
                 try vmspec_alloc.dupe(u8, expanded_value)
             else
                 nv.value,
+        };
+    }
+    if (!has_path) {
+        new_env[env_slice.len] = NameValue{
+            .name = try vmspec_alloc.dupe(u8, "PATH"),
+            .value = try vmspec_alloc.dupe(u8, constants.ENV_PATH),
         };
     }
     vmspec.env = new_env;
@@ -1040,6 +1051,22 @@ pub fn expandCommandAndArgs(
         cmd_count += 1;
     }
 
+    // Resolve argv[0] against PATH when it is not already absolute,
+    // since execve (used at the end of init) does not search PATH.
+    // PATH is always present in env because expandEnvValues appends
+    // a default when none is provided.
+    if (expanded_command.len > 0 and
+        !std.mem.startsWith(u8, expanded_command[0], constants.DIR_ROOT))
+    {
+        const path_var = mapping.get("PATH").?;
+        if (try system.findExecutableInPath(allocator, path_var, expanded_command[0])) |resolved| {
+            allocator.free(expanded_command[0]);
+            expanded_command[0] = resolved;
+        } else {
+            return error.ExecutableNotFoundInPath;
+        }
+    }
+
     // Expand args if present
     var expanded_args: ?[]const []const u8 = null;
     if (args) |args_slice| {
@@ -1203,4 +1230,46 @@ test "ExpandedCommand.deinit frees args" {
     var args = [_][]const u8{ "-c", "echo hello" };
     const expanded = try expandCommandAndArgs(allocator, &command, &args, null);
     expanded.deinit(allocator);
+}
+
+test "expandCommandAndArgs resolves relative command[0] via PATH" {
+    const allocator = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var bin_dir = try tmp.dir.makeOpenPath("bin", .{});
+    defer bin_dir.close();
+    const f = try bin_dir.createFile("myprog", .{ .mode = 0o755 });
+    f.close();
+
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin_abs = try tmp.dir.realpath("bin", &abs_buf);
+
+    var env_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_value = try std.fmt.bufPrint(&env_buf, "{s}", .{bin_abs});
+
+    var command = [_][]const u8{"myprog"};
+    var env = [_]NameValue{
+        .{ .name = "PATH", .value = path_value },
+    };
+    const expanded = try expandCommandAndArgs(allocator, &command, null, &env);
+    defer expanded.deinit(allocator);
+
+    var expected_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const expected = try std.fmt.bufPrint(&expected_buf, "{s}/myprog", .{bin_abs});
+    try testing.expectEqualStrings(expected, expanded.command[0]);
+}
+
+test "expandCommandAndArgs leaves absolute command[0] unchanged" {
+    const allocator = testing.allocator;
+
+    var command = [_][]const u8{"/some/absolute/path"};
+    var env = [_]NameValue{
+        .{ .name = "PATH", .value = "/usr/bin:/bin" },
+    };
+    const expanded = try expandCommandAndArgs(allocator, &command, null, &env);
+    defer expanded.deinit(allocator);
+
+    try testing.expectEqualStrings("/some/absolute/path", expanded.command[0]);
 }

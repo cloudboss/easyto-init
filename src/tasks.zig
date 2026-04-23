@@ -91,9 +91,12 @@ pub fn resolveEnvFrom(ctx: *BootContext) !void {
 }
 
 pub fn expandEnvValues(ctx: *BootContext) !void {
-    if (ctx.vmspec.?.env) |env| {
-        try init_mod.expandEnvValues(ctx.allocator, ctx.vmspecAllocator(), &ctx.vmspec.?, env);
-    }
+    try init_mod.expandEnvValues(
+        ctx.allocator,
+        ctx.vmspecAllocator(),
+        &ctx.vmspec.?,
+        ctx.vmspec.?.env,
+    );
 }
 
 pub fn loadModules(ctx: *BootContext) !void {

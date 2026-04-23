@@ -1,0 +1,21 @@
+disable-services:
+  - chrony
+  - ssh
+command:
+  - sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+    echo "=== path-expansion test ==="
+    # argv[0] must have been resolved from "sh" to /bin/sh by init
+    # before execve, since execve (unlike execvpe) does not search PATH.
+    # The metadata.json baked into the test image sets PATH starting
+    # with /usr/local/sbin; the first directory in that PATH that
+    # actually contains an executable "sh" on alpine is /bin.
+    if [ "$0" != "/bin/sh" ]; then
+        echo "FAIL: expected argv[0] to be /bin/sh, got '$0'"
+        exit 1
+    fi
+    echo "argv[0] resolved to: $0"
+    echo "PASS"
