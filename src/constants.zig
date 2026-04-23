@@ -25,6 +25,8 @@ pub const FILE_METADATA = "metadata.json";
 pub const FILE_USER_DATA = "user-data";
 pub const FILE_NETWORK_JSON = "network.json";
 
+pub const ENV_PATH = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin";
+
 pub const GROUP_NAME_WHEEL = "wheel";
 
 pub const SSL_CERT_FILE = "amazon.pem";

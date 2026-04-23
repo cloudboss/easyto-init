@@ -394,6 +394,36 @@ pub fn poweroff() void {
     }
 }
 
+/// Search each colon-separated directory in `path_var` for `executable`.
+/// Returns an allocated absolute path for the first executable match, or
+/// null if none is found. Caller owns the returned slice.
+pub fn findExecutableInPath(
+    allocator: Allocator,
+    path_var: []const u8,
+    executable: []const u8,
+) !?[]u8 {
+    var iter = std.mem.splitScalar(u8, path_var, ':');
+    while (iter.next()) |dir| {
+        if (dir.len == 0) continue;
+        const candidate = try fmt.allocPrint(allocator, "{s}/{s}", .{ dir, executable });
+        errdefer allocator.free(candidate);
+        const st = std.fs.cwd().statFile(candidate) catch {
+            allocator.free(candidate);
+            continue;
+        };
+        if (st.kind == .directory) {
+            allocator.free(candidate);
+            continue;
+        }
+        if (st.mode & 0o111 == 0) {
+            allocator.free(candidate);
+            continue;
+        }
+        return candidate;
+    }
+    return null;
+}
+
 /// Load a kernel module using modprobe.
 pub fn loadModule(name: []const u8) !void {
     const modprobe_path = constants.DIR_ET_SBIN ++ "/modprobe";
@@ -962,4 +992,59 @@ test "device_has_numeric_suffix" {
     try testing.expect(device_has_numeric_suffix("sda") == false);
     try testing.expect(device_has_numeric_suffix("sda1") == true);
     try testing.expect(device_has_numeric_suffix("sda10") == true);
+}
+
+test "findExecutableInPath finds executable in first matching dir" {
+    const allocator = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var bin_dir = try tmp.dir.makeOpenPath("bin", .{});
+    defer bin_dir.close();
+    const f = try bin_dir.createFile("myprog", .{ .mode = 0o755 });
+    f.close();
+
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bin_abs = try tmp.dir.realpath("bin", &abs_buf);
+
+    const path_var = try fmt.allocPrint(allocator, "/nonexistent:{s}", .{bin_abs});
+    defer allocator.free(path_var);
+
+    const result = try findExecutableInPath(allocator, path_var, "myprog");
+    try testing.expect(result != null);
+    defer allocator.free(result.?);
+
+    const expected = try fmt.allocPrint(allocator, "{s}/myprog", .{bin_abs});
+    defer allocator.free(expected);
+    try testing.expectEqualStrings(expected, result.?);
+}
+
+test "findExecutableInPath returns null when not found" {
+    const allocator = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_abs = try tmp.dir.realpath(".", &abs_buf);
+
+    const result = try findExecutableInPath(allocator, tmp_abs, "nothere_xyzzy_12345");
+    try testing.expect(result == null);
+}
+
+test "findExecutableInPath rejects non-executable files" {
+    const allocator = testing.allocator;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("notexe", .{ .mode = 0o644 });
+    f.close();
+
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_abs = try tmp.dir.realpath(".", &abs_buf);
+
+    const result = try findExecutableInPath(allocator, tmp_abs, "notexe");
+    try testing.expect(result == null);
 }
