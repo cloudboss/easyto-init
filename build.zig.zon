@@ -1,42 +1,43 @@
 .{
     .name = .easyto_init,
     .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .aws_sdk = .{
-            .url = "git+https://github.com/cloudboss/aws-sdk-zig#4be9ffd8e4e081f68504c31d0a8cb742c1b811a4",
-            .hash = "aws_sdk-0.0.1-ApQSL4OTMhDFbTJtcTNhB2oXNQ9J2ROPTvfV-Hvljt6x",
+            .url = "git+https://github.com/cloudboss/aws-sdk-zig#4b8e0646cbe1622f8fd07daf7e22df3bfee7c1e0",
+            .hash = "aws_sdk-0.0.1-ApQSL-HdixBVxS0U-xc2jrtlR4oL90TbPgVBl9BoLpJi",
         },
         .dhcpz = .{
-            .url = "git+https://github.com/cloudboss/dhcpz#01c0d2bb98427c77dc8c0cac2efe0553bf97fca7",
-            .hash = "dhcpz-0.1.0-bVngA2F3AACD-8NjwKzcwX4qSwRnp7gr6EU5eKTvYazG",
+            .url = "git+https://github.com/cloudboss/dhcpz#65875af66ec7afde9a285db7cf221edf32ced3e9",
+            .hash = "dhcpz-0.1.0-bVngAyl5AABpL5J8B0z-CbydLP-Z2S7Bg64_59NYnyBD",
         },
         .k8s_expand = .{
-            .url = "git+https://github.com/cloudboss/k8s-expandz#6e2d98d06810aa348aa50e4d89905babbbda7ca0",
-            .hash = "k8s_expand-0.1.0-rv03TFp5AAD_p-llgyd3zv70VBNeahFuy47auNhFsh7h",
+            .url = "git+https://github.com/cloudboss/k8s-expandz#c64128682ebb66834dfea323fc5d87cc369750f4",
+            .hash = "k8s_expand-0.1.0-rv03TM96AAAknXbFLyW6d0IDLi--rVy0ptdm8RxzrNoV",
         },
         .nlz = .{
-            .url = "git+https://github.com/cloudboss/nlz#f8cdf0bbf8e42e6f7d2690d9654dc96d65f6cc8a",
-            .hash = "nlz-0.1.0-mbEQK1LPAQB2oAFZhAGrVn6YYAVNdSs1Dc26M_x48C0K",
+            .url = "git+https://github.com/cloudboss/nlz#e82121f263fbc7d884be695c25474fab52a41fcd",
+            .hash = "nlz-0.1.0-mbEQK4rQAQDyndmC9PPi8IrgiEBgW1eac2-S_ghO339D",
         },
         .zgpt = .{
-            .url = "git+https://github.com/cloudboss/zgpt#9dbc5851e341c6cb16cb23c7a7daabbaea103997",
-            .hash = "zgpt-0.0.0--v5LmI7kAADRpolPmez-M4AEY42j4n_RWzPyXpi4Qa2K",
+            .url = "git+https://github.com/cloudboss/zgpt#501a831a9cf07cdafe2d630a6ad2da2dc4374a3a",
+            .hash = "zgpt-0.0.0--v5LmJbiAACZX0lPoZpQDF0SB9bCy3pxO9go3t3HJaGA",
         },
         .yaml = .{
-            .url = "git+https://github.com/cloudboss/yaml-zig#b80dddcf64265e0859de7781b2ab5d682d7155a8",
-            .hash = "yaml-0.0.0-CQq2NsGKCABwLlq5BNnTW9EIuBbOYNKLPRtWCmwqWPtn",
+            .url = "git+https://github.com/cloudboss/yaml-zig#cde5c1d2e1dbf17119b8ee92e412850321864ebf",
+            .hash = "yaml-0.0.0-CQq2NrZUCQAlzDgEpzA77i2VP2pIV6E9FW4sZhuadFc0",
         },
         .zblkpg = .{
-            .url = "git+https://github.com/cloudboss/zblkpg#499a6a112ce77aa6b92e6e975f5707c8188ce262",
-            .hash = "zblkpg-0.1.0-u34-N0WrAABMVzXZZ7jt0xyAKFlQIPcyyFOnCX9XaJ81",
+            .url = "git+https://github.com/cloudboss/zblkpg#a016ce4df16f2570cf9667dbcfa67923657cd4ba",
+            .hash = "zblkpg-0.1.0-u34-NzyzAACO3RPMFGrrcFrZx4-bWcw6ple9j21A9hw1",
         },
         .zest = .{
-            .url = "git+https://github.com/cloudboss/zest#7b3397bf606b4ae60996438085e9bd84a5afa0be",
-            .hash = "zest-0.1.0-2zk2niBDAADQEyo3Hw9t9FtL8Yks0GPHF08Vl8aGJ9qR",
+            .url = "git+https://github.com/cloudboss/zest#a87952beff65fe25bec5fdbefc6573abe26c6e58",
+            .hash = "zest-0.1.0-2zk2njFJAADnAZaID9xfG02TgcdPO6EPtHe_5PuFvNH_",
         },
         .mustache = .{
-            .url = "git+https://github.com/rjosephwright/mustache-zig?ref=zig-0.15#c32f2e263066e8581fa3f562fc84970f673e03af",
-            .hash = "mustache-0.0.1-sfmQ5OdyCQCwi5Qo902JL1-qZLeVOU8P1qwPt943mvo9",
+            .url = "git+https://github.com/rjosephwright/mustache-zig?ref=zig-0.16#954a4c2205b31fdf5c5da7ed50fb2fb5530efeb7",
+            .hash = "mustache-0.0.1-sfmQ5Mp8CQCPAKSjd-6q-W6BB0tiAy7vI2Qju8SPO0JM",
         },
     },
     .fingerprint = 0xb2e6bbb659318356,

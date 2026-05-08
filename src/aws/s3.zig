@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
+const posix = std.posix;
 const testing = std.testing;
 
 const aws = @import("aws");
@@ -25,10 +27,15 @@ pub const S3Client = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator, region: []const u8) !Self {
+    pub fn init(
+        allocator: Allocator,
+        io: Io,
+        env_map: *const std.process.Environ.Map,
+        region: []const u8,
+    ) !Self {
         return Self{
             .allocator = allocator,
-            .config = try aws.Config.load(allocator, .{ .region = region }),
+            .config = try aws.Config.load(allocator, io, env_map, .{ .region = region }),
         };
     }
 
@@ -109,7 +116,7 @@ pub const S3Client = struct {
     pub fn listObjects(self: *Self, bucket: []const u8, prefix: []const u8) ![]S3Object {
         scoped_log.debug("ListObjects s3://{s}/{s}", .{ bucket, prefix });
 
-        var objects: std.ArrayListUnmanaged(S3Object) = .empty;
+        var objects: std.ArrayList(S3Object) = .empty;
         errdefer {
             for (objects.items) |*obj| obj.deinit(self.allocator);
             objects.deinit(self.allocator);
@@ -177,6 +184,7 @@ pub const S3Client = struct {
     /// the file is written directly to destination.
     pub fn downloadPrefixToDir(
         self: *Self,
+        io: Io,
         bucket: []const u8,
         prefix: []const u8,
         destination: []const u8,
@@ -208,6 +216,7 @@ pub const S3Client = struct {
             scoped_log.debug("writing {s} ({d} bytes)", .{ dest_path, content.len });
 
             fs_utils.writeFile(
+                io,
                 dest_path,
                 content,
                 options.file_mode,
@@ -226,8 +235,8 @@ pub const S3Client = struct {
 
 /// Options for downloading S3 objects to the filesystem.
 pub const DownloadOptions = struct {
-    file_mode: std.fs.File.Mode = 0o644,
-    dir_mode: std.fs.File.Mode = 0o755,
+    file_mode: posix.mode_t = 0o644,
+    dir_mode: posix.mode_t = 0o755,
     uid: ?u32 = null,
     gid: ?u32 = null,
 };

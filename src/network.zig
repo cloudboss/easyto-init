@@ -14,6 +14,7 @@ const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const testing = std.testing;
 
 const aws = @import("aws");
@@ -57,7 +58,7 @@ const Candidate = struct {
     }
 };
 
-pub fn initializeNetwork(allocator: Allocator, imds_client: *aws.ImdsClient) !void {
+pub fn initializeNetwork(allocator: Allocator, io: Io, imds_client: *aws.ImdsClient) !void {
     var socket = nlz.Socket.open() catch return Error.NetlinkError;
     defer socket.close();
 
@@ -99,9 +100,9 @@ pub fn initializeNetwork(allocator: Allocator, imds_client: *aws.ImdsClient) !vo
 
     var candidates = candidates_buf[0..candidate_count];
     if (candidate_count == 1) {
-        try configureSingleEni(allocator, &socket, &candidates[0]);
+        try configureSingleEni(allocator, io, &socket, &candidates[0]);
     } else {
-        try configureMultiEni(allocator, &socket, candidates, imds_client);
+        try configureMultiEni(allocator, io, &socket, candidates, imds_client);
     }
 
     setHostname(imds_client) catch |err| {
@@ -111,6 +112,7 @@ pub fn initializeNetwork(allocator: Allocator, imds_client: *aws.ImdsClient) !vo
 
 fn configureSingleEni(
     allocator: Allocator,
+    io: Io,
     socket: *nlz.Socket,
     primary: *Candidate,
 ) !void {
@@ -120,10 +122,10 @@ fn configureSingleEni(
 
     try bringUpAndWaitCarrier(allocator, socket, primary.ifindex);
 
-    var ack = try runDhcp(allocator, primary.name(), primary.mac);
+    var ack = try runDhcp(allocator, io, primary.name(), primary.mac);
     defer ack.deinit();
 
-    try applyLease(allocator, socket, primary.ifindex, &ack);
+    try applyLease(allocator, io, socket, primary.ifindex, &ack);
 }
 
 const DeviceNumberMap = struct {
@@ -142,6 +144,7 @@ const DeviceNumberMap = struct {
 
 fn configureMultiEni(
     allocator: Allocator,
+    io: Io,
     socket: *nlz.Socket,
     candidates: []Candidate,
     imds_client: *aws.ImdsClient,
@@ -158,10 +161,10 @@ fn configureMultiEni(
     // Bootstrap: bring up, DHCP, apply lease to get IMDS connectivity.
     try bringUpAndWaitCarrier(allocator, socket, bootstrap.ifindex);
 
-    var bootstrap_ack = try runDhcp(allocator, bootstrap.name(), bootstrap.mac);
+    var bootstrap_ack = try runDhcp(allocator, io, bootstrap.name(), bootstrap.mac);
     defer bootstrap_ack.deinit();
 
-    try applyLease(allocator, socket, bootstrap.ifindex, &bootstrap_ack);
+    try applyLease(allocator, io, socket, bootstrap.ifindex, &bootstrap_ack);
 
     // Get MAC -> device-number mapping for all interfaces from IMDS.
     const devmap = discoverDeviceNumbers(imds_client) catch |err| {
@@ -171,7 +174,7 @@ fn configureMultiEni(
         );
         if (!std.mem.eql(u8, bootstrap.name(), "eth0")) {
             try flushAndRename(allocator, socket, bootstrap, &bootstrap_ack, "eth0");
-            try applyLease(allocator, socket, bootstrap.ifindex, &bootstrap_ack);
+            try applyLease(allocator, io, socket, bootstrap.ifindex, &bootstrap_ack);
         }
         return;
     };
@@ -215,10 +218,10 @@ fn configureMultiEni(
     var primary = &candidates[pidx];
     try bringUpAndWaitCarrier(allocator, socket, primary.ifindex);
 
-    var primary_ack = try runDhcp(allocator, primary.name(), primary.mac);
+    var primary_ack = try runDhcp(allocator, io, primary.name(), primary.mac);
     defer primary_ack.deinit();
 
-    try applyLease(allocator, socket, primary.ifindex, &primary_ack);
+    try applyLease(allocator, io, socket, primary.ifindex, &primary_ack);
 }
 
 fn bringUpAndWaitCarrier(allocator: Allocator, socket: *nlz.Socket, ifindex: u32) !void {
@@ -418,25 +421,26 @@ fn discoverDeviceNumbers(imds_client: *aws.ImdsClient) !DeviceNumberMap {
 
 fn runDhcp(
     allocator: Allocator,
+    io: Io,
     iface_name: []const u8,
     mac: [6]u8,
 ) !dhcpz.v4.Message {
     const sock = try openDhcpSocket(iface_name);
-    defer posix.close(sock);
+    defer _ = linux.close(sock);
 
     var xid_bytes: [4]u8 = undefined;
-    std.crypto.random.bytes(&xid_bytes);
+    io.random(&xid_bytes);
     const xid = std.mem.readInt(u32, &xid_bytes, .little);
 
-    const start_ns = std.time.nanoTimestamp();
-    const deadline_ns = start_ns + @as(i128, dhcp_total_budget_ns);
+    const start = Io.Timestamp.now(io, .awake);
+    const deadline = start.addDuration(Io.Duration.fromNanoseconds(dhcp_total_budget_ns));
 
     var discover = try dhcpz.v4.createDiscover(allocator, xid, mac);
     defer discover.deinit();
     var dbuf: [1500]u8 = undefined;
     const dlen = discover.encode(&dbuf) catch return Error.DhcpProtocol;
 
-    var offer = try exchange(allocator, sock, dbuf[0..dlen], xid, .offer, deadline_ns);
+    var offer = try exchange(allocator, io, sock, dbuf[0..dlen], xid, .offer, deadline);
     defer offer.deinit();
 
     const server_id = offer.options.get(.server_identifier) orelse return Error.DhcpProtocol;
@@ -447,29 +451,36 @@ fn runDhcp(
     var rbuf: [1500]u8 = undefined;
     const rlen = request.encode(&rbuf) catch return Error.DhcpProtocol;
 
-    return try exchange(allocator, sock, rbuf[0..rlen], xid, .ack, deadline_ns);
+    return try exchange(allocator, io, sock, rbuf[0..rlen], xid, .ack, deadline);
 }
 
 fn exchange(
     allocator: Allocator,
+    io: Io,
     sock: posix.fd_t,
     packet: []const u8,
     xid: u32,
     want: dhcpz.v4.MessageType,
-    deadline_ns: i128,
+    deadline: Io.Timestamp,
 ) !dhcpz.v4.Message {
     var retransmit_ns: u64 = dhcp_initial_retransmit_ns;
     while (true) {
         try sendBroadcast(sock, packet);
 
-        const now = std.time.nanoTimestamp();
-        if (now >= deadline_ns) return Error.DhcpTimeout;
+        const now = Io.Timestamp.now(io, .awake);
+        if (now.durationTo(deadline).toNanoseconds() <= 0) return Error.DhcpTimeout;
 
-        const window_end = @min(now + @as(i128, retransmit_ns), deadline_ns);
-        if (try recvUntil(allocator, sock, xid, want, window_end)) |msg| {
+        const retransmit_dur = Io.Duration.fromNanoseconds(@intCast(retransmit_ns));
+        const window_end_candidate = now.addDuration(retransmit_dur);
+        const window_end = if (window_end_candidate.durationTo(deadline).toNanoseconds() < 0)
+            deadline
+        else
+            window_end_candidate;
+        if (try recvUntil(allocator, io, sock, xid, want, window_end)) |msg| {
             return msg;
         }
-        if (std.time.nanoTimestamp() >= deadline_ns) return Error.DhcpTimeout;
+        const after_now = Io.Timestamp.now(io, .awake);
+        if (after_now.durationTo(deadline).toNanoseconds() <= 0) return Error.DhcpTimeout;
 
         retransmit_ns = @min(retransmit_ns * 2, dhcp_max_retransmit_ns);
     }
@@ -481,25 +492,36 @@ fn sendBroadcast(sock: posix.fd_t, packet: []const u8) !void {
         .port = std.mem.nativeToBig(u16, dhcpz.v4.SERVER_PORT),
         .addr = 0xFFFFFFFF,
     };
-    _ = posix.sendto(sock, packet, 0, @ptrCast(&addr), @sizeOf(posix.sockaddr.in)) catch |err| {
-        std.log.warn("DHCP sendto failed: {s}", .{@errorName(err)});
+    const ret = linux.sendto(
+        sock,
+        packet.ptr,
+        packet.len,
+        0,
+        @ptrCast(&addr),
+        @sizeOf(posix.sockaddr.in),
+    );
+    const e = posix.errno(ret);
+    if (e != .SUCCESS) {
+        std.log.warn("DHCP sendto failed: {s}", .{@tagName(e)});
         return Error.SocketError;
-    };
+    }
 }
 
 fn recvUntil(
     allocator: Allocator,
+    io: Io,
     sock: posix.fd_t,
     xid: u32,
     want: dhcpz.v4.MessageType,
-    deadline_ns: i128,
+    deadline: Io.Timestamp,
 ) !?dhcpz.v4.Message {
     var buf: [1500]u8 = undefined;
     while (true) {
-        const now = std.time.nanoTimestamp();
-        if (now >= deadline_ns) return null;
+        const now = Io.Timestamp.now(io, .awake);
+        const remaining_ns = now.durationTo(deadline).toNanoseconds();
+        if (remaining_ns <= 0) return null;
 
-        const remaining_ms_i128 = @divFloor(deadline_ns - now, std.time.ns_per_ms);
+        const remaining_ms_i128 = @divFloor(remaining_ns, std.time.ns_per_ms);
         const remaining_ms: i32 = if (remaining_ms_i128 > std.math.maxInt(i32))
             std.math.maxInt(i32)
         else if (remaining_ms_i128 < 1)
@@ -515,10 +537,11 @@ fn recvUntil(
         const pr = posix.poll(&pfd, remaining_ms) catch return Error.SocketError;
         if (pr == 0) return null;
 
-        const n = posix.recvfrom(sock, &buf, 0, null, null) catch |err| {
-            if (err == error.WouldBlock) continue;
-            return Error.SocketError;
-        };
+        const ret = linux.recvfrom(sock, &buf, buf.len, 0, null, null);
+        const e = posix.errno(ret);
+        if (e == .AGAIN) continue;
+        if (e != .SUCCESS) return Error.SocketError;
+        const n: usize = @intCast(ret);
         if (n == 0) continue;
 
         var msg = dhcpz.v4.Message.decode(allocator, buf[0..n]) catch continue;
@@ -532,9 +555,10 @@ fn recvUntil(
 }
 
 fn openDhcpSocket(iface_name: []const u8) !posix.fd_t {
-    const sock = posix.socket(posix.AF.INET, posix.SOCK.DGRAM, posix.IPPROTO.UDP) catch
-        return Error.SocketError;
-    errdefer posix.close(sock);
+    const sock_ret = linux.socket(posix.AF.INET, posix.SOCK.DGRAM, posix.IPPROTO.UDP);
+    if (posix.errno(sock_ret) != .SUCCESS) return Error.SocketError;
+    const sock: posix.fd_t = @intCast(sock_ret);
+    errdefer _ = linux.close(sock);
 
     const one: c_int = 1;
     posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
@@ -555,14 +579,17 @@ fn openDhcpSocket(iface_name: []const u8) !posix.fd_t {
         .port = std.mem.nativeToBig(u16, dhcpz.v4.CLIENT_PORT),
         .addr = 0,
     };
-    posix.bind(sock, @ptrCast(&bind_addr), @sizeOf(posix.sockaddr.in)) catch
+    const bind_ret = linux.bind(sock, @ptrCast(&bind_addr), @sizeOf(posix.sockaddr.in));
+    if (posix.errno(bind_ret) != .SUCCESS) {
         return Error.SocketError;
+    }
 
     return sock;
 }
 
 fn applyLease(
     allocator: Allocator,
+    io: Io,
     socket: *nlz.Socket,
     ifindex: u32,
     ack: *dhcpz.v4.Message,
@@ -583,18 +610,17 @@ fn applyLease(
         return Error.NetlinkError;
     };
 
-    writeResolvConf(ack) catch |err| {
+    writeResolvConf(io, ack) catch |err| {
         std.log.warn("resolv.conf: {s}", .{@errorName(err)});
     };
 }
 
-fn writeResolvConf(ack: *dhcpz.v4.Message) !void {
+fn writeResolvConf(io: Io, ack: *dhcpz.v4.Message) !void {
     const dns = ack.options.get(.domain_name_server) orelse return;
     if (dns.len == 0) return;
 
     var buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    const w = fbs.writer();
+    var w: std.Io.Writer = .fixed(&buf);
 
     if (ack.options.get(.domain_name)) |dn| w.print("domain {s}\n", .{dn}) catch {};
 
@@ -610,7 +636,7 @@ fn writeResolvConf(ack: *dhcpz.v4.Message) !void {
         w.print("nameserver {}.{}.{}.{}\n", .{ s[0], s[1], s[2], s[3] }) catch {};
     }
 
-    try fs.atomicWriteFile(constants.FILE_ETC_RESOLV_CONF, fbs.getWritten(), 0o644);
+    try fs.atomicWriteFile(io, constants.FILE_ETC_RESOLV_CONF, w.buffered(), 0o644);
 }
 
 fn subnetMaskToPrefix(mask: [4]u8) u8 {

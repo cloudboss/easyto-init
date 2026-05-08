@@ -284,7 +284,7 @@ pub const Model = enum {
 };
 
 fn parseModel(mn: *const [40]u8) Error!Model {
-    const trimmed = std.mem.trimRight(u8, mn, &.{ ' ', 0 });
+    const trimmed = std.mem.trimEnd(u8, mn, &.{ ' ', 0 });
     if (std.mem.eql(u8, trimmed, AMZ_EBS_MN)) {
         return .AmazonElasticBlockStore;
     } else if (std.mem.eql(u8, trimmed, AMZ_INST_STORE_MN)) {

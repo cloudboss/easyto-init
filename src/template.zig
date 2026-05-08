@@ -4,6 +4,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
+const posix = std.posix;
 const testing = std.testing;
 
 const k8s_expand = @import("k8s_expand");
@@ -23,6 +25,7 @@ pub const Error = error{
 
 pub fn renderToFile(
     allocator: Allocator,
+    io: Io,
     tmpl: *const TemplateVolumeSource,
     env: []const NameValue,
 ) !void {
@@ -30,17 +33,17 @@ pub fn renderToFile(
     const mode = try parseMode(tmpl.mount.mode, 0o644);
 
     if (std.fs.path.dirname(destination)) |parent| {
-        try fs.mkdir_p(parent, 0o755);
+        try fs.mkdir_p(io, parent, 0o755);
     }
 
-    const mapping: ?yaml.Value.Mapping = if (tmpl.variables) |v| switch (v) {
-        .mapping => |m| m,
+    const mapping: ?yaml.Value.ObjectMap = if (tmpl.variables) |v| switch (v) {
+        .object => |m| m,
         else => return Error.InvalidVariableMapping,
     } else null;
 
-    if (mapping == null or mapping.?.keys.len == 0) {
-        try fs.atomicWriteFile(destination, tmpl.content, mode);
-        try applyOwnership(destination, tmpl.mount);
+    if (mapping == null or mapping.?.count() == 0) {
+        try fs.atomicWriteFile(io, destination, tmpl.content, mode);
+        try applyOwnership(io, destination, tmpl.mount);
         return;
     }
 
@@ -52,7 +55,7 @@ pub fn renderToFile(
     for (env) |nv| try env_map.put(nv.name, nv.value);
     const context = [_]*const std.StringHashMap([]const u8){&env_map};
 
-    const json_value = try yamlToJson(arena_allocator, .{ .mapping = mapping.? }, &context);
+    const json_value = try yamlToJson(arena_allocator, .{ .object = mapping.? }, &context);
 
     const parse_result = try mustache.parseText(
         arena_allocator,
@@ -66,8 +69,8 @@ pub fn renderToFile(
     };
     const rendered = try mustache.allocRender(arena_allocator, parsed_template, json_value);
 
-    try fs.atomicWriteFile(destination, rendered, mode);
-    try applyOwnership(destination, tmpl.mount);
+    try fs.atomicWriteFile(io, destination, rendered, mode);
+    try applyOwnership(io, destination, tmpl.mount);
 }
 
 fn yamlToJson(
@@ -77,41 +80,44 @@ fn yamlToJson(
 ) !std.json.Value {
     return switch (v) {
         .null => .null,
-        .boolean => |b| .{ .bool = b },
+        .bool => |b| .{ .bool = b },
         .integer => |i| .{ .integer = i },
         .float => |f| .{ .float = f },
         .string => |s| .{ .string = try k8s_expand.expand(allocator, s, context) },
-        .sequence => |seq| blk: {
+        .array => |seq| blk: {
             var arr = std.json.Array.init(allocator);
-            try arr.ensureTotalCapacity(seq.len);
-            for (seq) |item| {
+            try arr.ensureTotalCapacity(seq.items.len);
+            for (seq.items) |item| {
                 arr.appendAssumeCapacity(try yamlToJson(allocator, item, context));
             }
             break :blk .{ .array = arr };
         },
-        .mapping => |m| blk: {
-            var obj = std.json.ObjectMap.init(allocator);
-            try obj.ensureTotalCapacity(m.keys.len);
-            for (m.keys, m.values) |k, vv| {
-                const key = switch (k) {
+        .object => |m| blk: {
+            var obj: std.json.ObjectMap = .empty;
+            try obj.ensureTotalCapacity(allocator, m.count());
+            var it = m.iterator();
+            while (it.next()) |entry| {
+                const key = switch (entry.key_ptr.*) {
                     .string => |s| s,
                     else => return Error.NonStringMappingKey,
                 };
-                try obj.put(key, try yamlToJson(allocator, vv, context));
+                try obj.put(allocator, key, try yamlToJson(allocator, entry.value_ptr.*, context));
             }
             break :blk .{ .object = obj };
         },
     };
 }
 
-fn parseMode(s: ?[]const u8, default: std.fs.File.Mode) !std.fs.File.Mode {
+fn parseMode(s: ?[]const u8, default: posix.mode_t) !posix.mode_t {
     const str = s orelse return default;
-    return std.fmt.parseInt(std.fs.File.Mode, str, 8);
+    return std.fmt.parseInt(posix.mode_t, str, 8);
 }
 
-fn applyOwnership(path: []const u8, mount: Mount) !void {
+fn applyOwnership(io: Io, path: []const u8, mount: Mount) !void {
     if (mount.@"user-id" == null and mount.@"group-id" == null) return;
-    try fs.chownPath(path, mount.@"user-id", mount.@"group-id");
+    const file = try Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    try file.setOwner(io, mount.@"user-id", mount.@"group-id");
 }
 
 // ---- tests ----
@@ -128,10 +134,26 @@ fn buildSource(
     };
 }
 
-fn readAllAlloc(allocator: Allocator, dir: std.fs.Dir, path: []const u8) ![]u8 {
-    const file = try dir.openFile(path, .{});
-    defer file.close();
-    return try file.readToEndAlloc(allocator, 1 << 20);
+fn makeMapping(
+    allocator: Allocator,
+    keys: []const yaml.Value,
+    vals: []const yaml.Value,
+) !yaml.Value {
+    std.debug.assert(keys.len == vals.len);
+    var m: yaml.Value.ObjectMap = .empty;
+    try m.ensureTotalCapacity(allocator, keys.len);
+    for (keys, vals) |k, v| try m.put(allocator, k, v);
+    return .{ .object = m };
+}
+
+fn makeArray(allocator: Allocator, items: []const yaml.Value) !yaml.Value {
+    var arr: yaml.Value.Array = .empty;
+    try arr.appendSlice(allocator, items);
+    return .{ .array = arr };
+}
+
+fn readAllAlloc(allocator: Allocator, io: Io, dir: Io.Dir, path: []const u8) ![]u8 {
+    return try dir.readFileAlloc(io, path, allocator, .limited(1 << 20));
 }
 
 fn tmpDestPath(
@@ -139,7 +161,7 @@ fn tmpDestPath(
     tmp_dir: std.testing.TmpDir,
     rel: []const u8,
 ) ![]u8 {
-    const dir_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", allocator);
     defer allocator.free(dir_path);
     return try std.fs.path.join(allocator, &.{ dir_path, rel });
 }
@@ -152,9 +174,9 @@ test "renderToFile writes literal content when variables is null" {
     defer testing.allocator.free(dest);
 
     const src = buildSource("hello world", null, dest);
-    try renderToFile(testing.allocator, &src, &.{});
+    try renderToFile(testing.allocator, testing.io, &src, &.{});
 
-    const actual = try readAllAlloc(testing.allocator, tmp_dir.dir, "out.txt");
+    const actual = try readAllAlloc(testing.allocator, testing.io, tmp_dir.dir, "out.txt");
     defer testing.allocator.free(actual);
     try testing.expectEqualStrings("hello world", actual);
 }
@@ -166,14 +188,14 @@ test "renderToFile writes literal content when variables is empty mapping" {
     const dest = try tmpDestPath(testing.allocator, tmp_dir, "out.txt");
     defer testing.allocator.free(dest);
 
-    const variables: yaml.Value = .{
-        .mapping = .{ .keys = &.{}, .values = &.{} },
-    };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const variables = try makeMapping(arena.allocator(), &.{}, &.{});
 
     const src = buildSource("hello {{name}}", variables, dest);
-    try renderToFile(testing.allocator, &src, &.{});
+    try renderToFile(testing.allocator, testing.io, &src, &.{});
 
-    const actual = try readAllAlloc(testing.allocator, tmp_dir.dir, "out.txt");
+    const actual = try readAllAlloc(testing.allocator, testing.io, tmp_dir.dir, "out.txt");
     defer testing.allocator.free(actual);
     try testing.expectEqualStrings("hello {{name}}", actual);
 }
@@ -190,7 +212,7 @@ test "renderToFile errors when variables is not a mapping" {
     const src = buildSource("hello", variables, dest);
     try testing.expectError(
         Error.InvalidVariableMapping,
-        renderToFile(testing.allocator, &src, &.{}),
+        renderToFile(testing.allocator, testing.io, &src, &.{}),
     );
 }
 
@@ -203,14 +225,14 @@ test "renderToFile substitutes scalar variable" {
 
     const keys = [_]yaml.Value{.{ .string = "name" }};
     const vals = [_]yaml.Value{.{ .string = "world" }};
-    const variables: yaml.Value = .{
-        .mapping = .{ .keys = &keys, .values = &vals },
-    };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const variables = try makeMapping(arena.allocator(), &keys, &vals);
 
     const src = buildSource("hello {{name}}", variables, dest);
-    try renderToFile(testing.allocator, &src, &.{});
+    try renderToFile(testing.allocator, testing.io, &src, &.{});
 
-    const actual = try readAllAlloc(testing.allocator, tmp_dir.dir, "out.txt");
+    const actual = try readAllAlloc(testing.allocator, testing.io, tmp_dir.dir, "out.txt");
     defer testing.allocator.free(actual);
     try testing.expectEqualStrings("hello world", actual);
 }
@@ -222,25 +244,26 @@ test "renderToFile iterates mustache section over sequence of maps" {
     const dest = try tmpDestPath(testing.allocator, tmp_dir, "out.txt");
     defer testing.allocator.free(dest);
 
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
     const item1_keys = [_]yaml.Value{.{ .string = "name" }};
     const item1_vals = [_]yaml.Value{.{ .string = "Milk" }};
     const item2_keys = [_]yaml.Value{.{ .string = "name" }};
     const item2_vals = [_]yaml.Value{.{ .string = "Eggs" }};
     const items = [_]yaml.Value{
-        .{ .mapping = .{ .keys = &item1_keys, .values = &item1_vals } },
-        .{ .mapping = .{ .keys = &item2_keys, .values = &item2_vals } },
+        try makeMapping(aa, &item1_keys, &item1_vals),
+        try makeMapping(aa, &item2_keys, &item2_vals),
     };
 
     const top_keys = [_]yaml.Value{.{ .string = "items" }};
-    const top_vals = [_]yaml.Value{.{ .sequence = &items }};
-    const variables: yaml.Value = .{
-        .mapping = .{ .keys = &top_keys, .values = &top_vals },
-    };
+    const top_vals = [_]yaml.Value{try makeArray(aa, &items)};
+    const variables = try makeMapping(aa, &top_keys, &top_vals);
 
     const src = buildSource("{{#items}}- {{name}}\n{{/items}}", variables, dest);
-    try renderToFile(testing.allocator, &src, &.{});
+    try renderToFile(testing.allocator, testing.io, &src, &.{});
 
-    const actual = try readAllAlloc(testing.allocator, tmp_dir.dir, "out.txt");
+    const actual = try readAllAlloc(testing.allocator, testing.io, tmp_dir.dir, "out.txt");
     defer testing.allocator.free(actual);
     try testing.expectEqualStrings("- Milk\n- Eggs\n", actual);
 }
@@ -252,17 +275,17 @@ test "renderToFile expands dollar-paren vars inside variables" {
     const dest = try tmpDestPath(testing.allocator, tmp_dir, "out.txt");
     defer testing.allocator.free(dest);
 
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
     const keys = [_]yaml.Value{.{ .string = "greeting" }};
     const vals = [_]yaml.Value{.{ .string = "Hello, $(NAME)!" }};
-    const variables: yaml.Value = .{
-        .mapping = .{ .keys = &keys, .values = &vals },
-    };
+    const variables = try makeMapping(arena.allocator(), &keys, &vals);
 
     const env = [_]NameValue{.{ .name = "NAME", .value = "Claude" }};
     const src = buildSource("{{greeting}}", variables, dest);
-    try renderToFile(testing.allocator, &src, &env);
+    try renderToFile(testing.allocator, testing.io, &src, &env);
 
-    const actual = try readAllAlloc(testing.allocator, tmp_dir.dir, "out.txt");
+    const actual = try readAllAlloc(testing.allocator, testing.io, tmp_dir.dir, "out.txt");
     defer testing.allocator.free(actual);
     try testing.expectEqualStrings("Hello, Claude!", actual);
 }
@@ -274,16 +297,16 @@ test "renderToFile leaves unresolved dollar-paren unchanged" {
     const dest = try tmpDestPath(testing.allocator, tmp_dir, "out.txt");
     defer testing.allocator.free(dest);
 
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
     const keys = [_]yaml.Value{.{ .string = "val" }};
     const vals = [_]yaml.Value{.{ .string = "$(MISSING)" }};
-    const variables: yaml.Value = .{
-        .mapping = .{ .keys = &keys, .values = &vals },
-    };
+    const variables = try makeMapping(arena.allocator(), &keys, &vals);
 
     const src = buildSource("{{val}}", variables, dest);
-    try renderToFile(testing.allocator, &src, &.{});
+    try renderToFile(testing.allocator, testing.io, &src, &.{});
 
-    const actual = try readAllAlloc(testing.allocator, tmp_dir.dir, "out.txt");
+    const actual = try readAllAlloc(testing.allocator, testing.io, tmp_dir.dir, "out.txt");
     defer testing.allocator.free(actual);
     try testing.expectEqualStrings("$(MISSING)", actual);
 }
@@ -295,16 +318,16 @@ test "renderToFile errors on non-string mapping key" {
     const dest = try tmpDestPath(testing.allocator, tmp_dir, "out.txt");
     defer testing.allocator.free(dest);
 
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
     const keys = [_]yaml.Value{.{ .integer = 42 }};
     const vals = [_]yaml.Value{.{ .string = "x" }};
-    const variables: yaml.Value = .{
-        .mapping = .{ .keys = &keys, .values = &vals },
-    };
+    const variables = try makeMapping(arena.allocator(), &keys, &vals);
 
     const src = buildSource("{{val}}", variables, dest);
     try testing.expectError(
         Error.NonStringMappingKey,
-        renderToFile(testing.allocator, &src, &.{}),
+        renderToFile(testing.allocator, testing.io, &src, &.{}),
     );
 }
 
@@ -315,22 +338,21 @@ test "renderToFile expands dollar-paren inside nested sequence" {
     const dest = try tmpDestPath(testing.allocator, tmp_dir, "out.txt");
     defer testing.allocator.free(dest);
 
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
     const item1_keys = [_]yaml.Value{.{ .string = "url" }};
     const item1_vals = [_]yaml.Value{.{ .string = "$(URL)" }};
-    const items = [_]yaml.Value{
-        .{ .mapping = .{ .keys = &item1_keys, .values = &item1_vals } },
-    };
+    const items = [_]yaml.Value{try makeMapping(aa, &item1_keys, &item1_vals)};
     const top_keys = [_]yaml.Value{.{ .string = "items" }};
-    const top_vals = [_]yaml.Value{.{ .sequence = &items }};
-    const variables: yaml.Value = .{
-        .mapping = .{ .keys = &top_keys, .values = &top_vals },
-    };
+    const top_vals = [_]yaml.Value{try makeArray(aa, &items)};
+    const variables = try makeMapping(aa, &top_keys, &top_vals);
 
     const env = [_]NameValue{.{ .name = "URL", .value = "https://example.com" }};
     const src = buildSource("{{#items}}{{url}}{{/items}}", variables, dest);
-    try renderToFile(testing.allocator, &src, &env);
+    try renderToFile(testing.allocator, testing.io, &src, &env);
 
-    const actual = try readAllAlloc(testing.allocator, tmp_dir.dir, "out.txt");
+    const actual = try readAllAlloc(testing.allocator, testing.io, tmp_dir.dir, "out.txt");
     defer testing.allocator.free(actual);
     try testing.expectEqualStrings("https://example.com", actual);
 }

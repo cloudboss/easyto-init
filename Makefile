@@ -12,7 +12,7 @@ include $(DIR_OUT)/Makefile.inc
 endif
 
 # Override Makefile.inc for Zig build.
-ZIG_VERSION = 0.15.2
+ZIG_VERSION = 0.16.0
 CTR_IMAGE_BASE = ghcr.io/cloudboss/docker.io/library/alpine:3.23.2
 CTR_IMAGE_BASE_SHA256 = $(shell echo -n $(CTR_IMAGE_BASE) | sha256sum | awk '{print $$1}')
 ZIG_VERSION_SHA256 = $(shell echo -n $(ZIG_VERSION) | sha256sum | awk '{print $$1}')

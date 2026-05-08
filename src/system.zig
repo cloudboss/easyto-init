@@ -1,6 +1,7 @@
 const std = @import("std");
 const linux = std.os.linux;
 const fmt = std.fmt;
+const Io = std.Io;
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
@@ -38,8 +39,9 @@ pub fn remountRootReadonly() !void {
     }
 }
 
-pub fn link_nvme_devices(allocator: Allocator) !void {
-    var dir = std.fs.openDirAbsolute(
+pub fn link_nvme_devices(allocator: Allocator, io: Io) !void {
+    var dir = Io.Dir.openDirAbsolute(
+        io,
         SYS_BLOCK_PATH,
         .{ .iterate = true },
     ) catch |err| {
@@ -49,16 +51,17 @@ pub fn link_nvme_devices(allocator: Allocator) !void {
         );
         return err;
     };
-    defer dir.close();
+    defer dir.close(io);
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         const device_name = entry.name;
         std.log.debug("found block device: {s}", .{device_name});
 
-        linkNvmeDevice(allocator, device_name, null) catch {};
+        linkNvmeDevice(allocator, io, device_name, null) catch {};
 
         var partitions = disk_partitions(
             allocator,
+            io,
             device_name,
         ) catch continue;
         defer {
@@ -68,6 +71,7 @@ pub fn link_nvme_devices(allocator: Allocator) !void {
         for (partitions.items) |partition| {
             linkNvmeDevice(
                 allocator,
+                io,
                 partition.name,
                 partition.part_num,
             ) catch {};
@@ -87,7 +91,12 @@ const PartitionInfo = struct {
 
 /// Link a single device to its EC2 device name via symlink.
 /// Used by the uevent listener for hotplugged NVMe devices.
-pub fn linkNvmeDevice(allocator: Allocator, device_name: []const u8, part_num: ?[]const u8) !void {
+pub fn linkNvmeDevice(
+    allocator: Allocator,
+    io: Io,
+    device_name: []const u8,
+    part_num: ?[]const u8,
+) !void {
     var dev_path_buf: [128]u8 = undefined;
     const dev_path = try fmt.bufPrint(
         &dev_path_buf,
@@ -95,11 +104,11 @@ pub fn linkNvmeDevice(allocator: Allocator, device_name: []const u8, part_num: ?
         .{ constants.DIR_DEV, device_name },
     );
 
-    const file = std.fs.openFileAbsolute(dev_path, .{}) catch |err| {
+    const file = Io.Dir.openFileAbsolute(io, dev_path, .{}) catch |err| {
         std.log.err("unable to open {s}: {s}", .{ dev_path, @errorName(err) });
         return err;
     };
-    defer file.close();
+    defer file.close(io);
 
     var errno: usize = 0;
     var nvme_info = nvme.Nvme.from_fd(allocator, file.handle, &errno) catch |err| {
@@ -139,19 +148,28 @@ pub fn linkNvmeDevice(allocator: Allocator, device_name: []const u8, part_num: ?
 
     std.log.debug("linking {s} to {s}", .{ device_name, link_path });
 
-    std.posix.symlink(device_name, link_path) catch |err| {
-        if (err != error.PathAlreadyExists) {
-            std.log.err(
-                "unable to link {s} to {s}: {s}",
-                .{ device_name, link_path, @errorName(err) },
-            );
-            return err;
-        }
-    };
+    var device_z_buf: [posix.PATH_MAX]u8 = undefined;
+    var link_z_buf: [posix.PATH_MAX]u8 = undefined;
+    if (device_name.len >= device_z_buf.len or link_path.len >= link_z_buf.len) {
+        return error.NameTooLong;
+    }
+    @memcpy(device_z_buf[0..device_name.len], device_name);
+    device_z_buf[device_name.len] = 0;
+    @memcpy(link_z_buf[0..link_path.len], link_path);
+    link_z_buf[link_path.len] = 0;
+    const sym_errno = posix.errno(linux.symlink(@ptrCast(&device_z_buf), @ptrCast(&link_z_buf)));
+    if (sym_errno != .SUCCESS and sym_errno != .EXIST) {
+        std.log.err(
+            "unable to link {s} to {s}: {s}",
+            .{ device_name, link_path, @tagName(sym_errno) },
+        );
+        return error.SymlinkFailed;
+    }
 }
 
 fn disk_partitions(
     allocator: Allocator,
+    io: Io,
     device: []const u8,
 ) !std.ArrayList(PartitionInfo) {
     var path_buf: [128]u8 = undefined;
@@ -161,7 +179,8 @@ fn disk_partitions(
         .{ SYS_BLOCK_PATH, device },
     );
 
-    var dir = std.fs.openDirAbsolute(
+    var dir = Io.Dir.openDirAbsolute(
+        io,
         sys_device_path,
         .{ .iterate = true },
     ) catch |err| {
@@ -171,12 +190,12 @@ fn disk_partitions(
         );
         return err;
     };
-    defer dir.close();
+    defer dir.close(io);
     var iter = dir.iterate();
 
     var partitions: std.ArrayList(PartitionInfo) = .empty;
 
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         if (entry.kind != .directory) continue;
         if (!std.mem.startsWith(u8, entry.name, device)) continue;
 
@@ -187,10 +206,7 @@ fn disk_partitions(
             .{entry.name},
         ) catch continue;
 
-        const pt_file = dir.openFile(pt_path, .{}) catch continue;
-        defer pt_file.close();
-
-        const raw = pt_file.readToEndAlloc(allocator, 32) catch continue;
+        const raw = dir.readFileAlloc(io, pt_path, allocator, .limited(32)) catch continue;
         const part_num = std.mem.trim(u8, raw, " \t\r\n");
         // Dupe the trimmed slice so we can free the raw buffer.
         const pn = allocator.dupe(u8, part_num) catch {
@@ -227,65 +243,63 @@ pub fn device_has_numeric_suffix(device: []const u8) bool {
 
 /// Check if a device has a filesystem using blkid.
 /// Returns true if filesystem detected, false if no filesystem.
-pub fn deviceHasFilesystem(device: []const u8) !bool {
+pub fn deviceHasFilesystem(io: Io, device: []const u8) !bool {
     const blkid_path = constants.DIR_ET_SBIN ++ "/blkid";
 
-    var child = std.process.Child.init(
-        &[_][]const u8{ blkid_path, device },
-        std.heap.page_allocator,
-    );
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-
-    child.spawn() catch |err| {
-        std.log.err("failed to run blkid for {s}: {s}", .{ device, @errorName(err) });
+    var child = std.process.spawn(io, .{
+        .argv = &[_][]const u8{ blkid_path, device },
+        .stdout = .pipe,
+        .stderr = .pipe,
+    }) catch |err| {
+        std.log.err("failed to spawn blkid for {s}: {s}", .{ device, @errorName(err) });
         return err;
     };
 
-    const result = child.wait() catch |err| {
+    const result = child.wait(io) catch |err| {
         std.log.err("failed to wait for blkid {s}: {s}", .{ device, @errorName(err) });
         return err;
     };
 
-    return switch (result.Exited) {
+    return switch (result.exited) {
         0 => true, // Filesystem detected
         2 => false, // No filesystem found
         else => {
-            std.log.err("blkid {s} failed with exit code {d}", .{ device, result.Exited });
+            std.log.err("blkid {s} failed with exit code {d}", .{ device, result.exited });
             return error.BlkidFailed;
         },
     };
 }
 
 /// Wait for a device to exist with exponential backoff.
-pub fn waitForDevice(device: []const u8, timeout_secs: u64) !void {
+pub fn waitForDevice(io: Io, device: []const u8, timeout_secs: u64) !void {
     const timeout_ns: u64 = timeout_secs * std.time.ns_per_s;
-    const start_time = std.time.nanoTimestamp();
+    const start_time = Io.Timestamp.now(io, .awake);
 
     var retry = backoff.RetryBackoff.init(10000);
 
     while (true) {
         // Check if device exists
-        if (std.fs.accessAbsolute(device, .{})) {
+        if (Io.Dir.accessAbsolute(io, device, .{})) {
             std.log.debug("device {s} is available", .{device});
             return;
         } else |_| {}
 
-        const elapsed: u64 = @intCast(std.time.nanoTimestamp() - start_time);
+        const elapsed_dur = start_time.durationTo(Io.Timestamp.now(io, .awake));
+        const elapsed: u64 = @intCast(elapsed_dur.toNanoseconds());
         if (elapsed > timeout_ns) {
             std.log.err("timeout waiting for device {s} to exist", .{device});
             return error.DeviceTimeout;
         }
 
         std.log.debug("waiting for device {s} to exist", .{device});
-        retry.wait();
+        retry.wait(io);
     }
 }
 
 /// Create a filesystem on a device if it doesn't have one.
-pub fn createFilesystem(device: []const u8, fs_type: []const u8) !void {
+pub fn createFilesystem(io: Io, device: []const u8, fs_type: []const u8) !void {
     // Check if device already has a filesystem
-    const has_fs = deviceHasFilesystem(device) catch |err| {
+    const has_fs = deviceHasFilesystem(io, device) catch |err| {
         std.log.err("unable to check if {s} has a filesystem: {s}", .{ device, @errorName(err) });
         return err;
     };
@@ -307,7 +321,7 @@ pub fn createFilesystem(device: []const u8, fs_type: []const u8) !void {
     };
 
     // Check if mkfs tool exists
-    std.fs.accessAbsolute(mkfs_path, .{}) catch |err| {
+    Io.Dir.accessAbsolute(io, mkfs_path, .{}) catch |err| {
         if (err == error.FileNotFound) {
             std.log.err("unsupported filesystem {s} for {s}", .{ fs_type, device });
             return error.UnsupportedFilesystem;
@@ -318,27 +332,22 @@ pub fn createFilesystem(device: []const u8, fs_type: []const u8) !void {
 
     std.log.info("creating {s} filesystem on {s}", .{ fs_type, device });
 
-    var child = std.process.Child.init(
-        &[_][]const u8{ mkfs_path, device },
-        std.heap.page_allocator,
-    );
-    child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-
-    child.spawn() catch |err| {
-        std.log.err("unable to run {s}: {s}", .{ mkfs_path, @errorName(err) });
+    var child = std.process.spawn(io, .{
+        .argv = &[_][]const u8{ mkfs_path, device },
+    }) catch |err| {
+        std.log.err("unable to spawn {s}: {s}", .{ mkfs_path, @errorName(err) });
         return err;
     };
 
-    const result = child.wait() catch |err| {
+    const result = child.wait(io) catch |err| {
         std.log.err("failed to wait for {s}: {s}", .{ mkfs_path, @errorName(err) });
         return err;
     };
 
-    if (result.Exited != 0) {
+    if (result.exited != 0) {
         std.log.err(
             "mkfs.{s} {s} failed with exit code {d}",
-            .{ fs_type, device, result.Exited },
+            .{ fs_type, device, result.exited },
         );
         return error.MkfsFailed;
     }
@@ -347,11 +356,11 @@ pub fn createFilesystem(device: []const u8, fs_type: []const u8) !void {
 }
 
 /// Mount a device to a destination.
-pub fn mountDevice(device: []const u8, destination: []const u8, fs_type: []const u8) !void {
+pub fn mountDevice(io: Io, device: []const u8, destination: []const u8, fs_type: []const u8) !void {
     const fs_utils = @import("fs.zig");
 
     // Create mount point if it doesn't exist
-    fs_utils.mkdir_p(destination, 0o755) catch |err| {
+    fs_utils.mkdir_p(io, destination, 0o755) catch |err| {
         std.log.err("failed to create mount point {s}: {s}", .{ destination, @errorName(err) });
         return err;
     };
@@ -399,6 +408,7 @@ pub fn poweroff() void {
 /// null if none is found. Caller owns the returned slice.
 pub fn findExecutableInPath(
     allocator: Allocator,
+    io: Io,
     path_var: []const u8,
     executable: []const u8,
 ) !?[]u8 {
@@ -407,7 +417,7 @@ pub fn findExecutableInPath(
         if (dir.len == 0) continue;
         const candidate = try fmt.allocPrint(allocator, "{s}/{s}", .{ dir, executable });
         errdefer allocator.free(candidate);
-        const st = std.fs.cwd().statFile(candidate) catch {
+        const st = Io.Dir.cwd().statFile(io, candidate, .{}) catch {
             allocator.free(candidate);
             continue;
         };
@@ -415,7 +425,7 @@ pub fn findExecutableInPath(
             allocator.free(candidate);
             continue;
         }
-        if (st.mode & 0o111 == 0) {
+        if (st.permissions.toMode() & 0o111 == 0) {
             allocator.free(candidate);
             continue;
         }
@@ -425,27 +435,24 @@ pub fn findExecutableInPath(
 }
 
 /// Load a kernel module using modprobe.
-pub fn loadModule(name: []const u8) !void {
+pub fn loadModule(io: Io, name: []const u8) !void {
     const modprobe_path = constants.DIR_ET_SBIN ++ "/modprobe";
 
-    var child = std.process.Child.init(
-        &[_][]const u8{ modprobe_path, name },
-        std.heap.page_allocator,
-    );
-    child.stderr_behavior = .Pipe;
-
-    child.spawn() catch |err| {
-        std.log.err("failed to run modprobe for {s}: {s}", .{ name, @errorName(err) });
+    var child = std.process.spawn(io, .{
+        .argv = &[_][]const u8{ modprobe_path, name },
+        .stderr = .pipe,
+    }) catch |err| {
+        std.log.err("failed to spawn modprobe for {s}: {s}", .{ name, @errorName(err) });
         return err;
     };
 
-    const result = child.wait() catch |err| {
+    const result = child.wait(io) catch |err| {
         std.log.err("failed to wait for modprobe {s}: {s}", .{ name, @errorName(err) });
         return err;
     };
 
-    if (result.Exited != 0) {
-        std.log.err("modprobe {s} failed with exit code {d}", .{ name, result.Exited });
+    if (result.exited != 0) {
+        std.log.err("modprobe {s} failed with exit code {d}", .{ name, result.exited });
         return error.ModuleLoadFailed;
     }
 
@@ -453,24 +460,24 @@ pub fn loadModule(name: []const u8) !void {
 }
 
 /// Load all kernel modules from the given slice.
-pub fn loadModules(modules: ?[]const []const u8) !void {
+pub fn loadModules(io: Io, modules: ?[]const []const u8) !void {
     const items = modules orelse return;
     for (items) |module| {
-        try loadModule(module);
+        try loadModule(io, module);
     }
 }
 
 /// Run all init scripts in order.
 /// Each script is written to a temp file, made executable, run, then removed.
-pub fn runInitScripts(scripts: ?[]const []const u8, env: ?[]const NameValue) !void {
+pub fn runInitScripts(io: Io, scripts: ?[]const []const u8, env: ?[]const NameValue) !void {
     const items = scripts orelse return;
     for (items, 0..) |script, i| {
-        try runInitScript(script, i, env);
+        try runInitScript(io, script, i, env);
     }
 }
 
 /// Run a single init script.
-fn runInitScript(script: []const u8, index: usize, env: ?[]const NameValue) !void {
+fn runInitScript(io: Io, script: []const u8, index: usize, env: ?[]const NameValue) !void {
     // Build script path: /.easyto/run/init-{index}
     var path_buf: [128]u8 = undefined;
     const path_len = fmt.bufPrint(
@@ -486,22 +493,24 @@ fn runInitScript(script: []const u8, index: usize, env: ?[]const NameValue) !voi
     std.log.info("running init script {s}", .{path});
 
     // Write script to file with executable permissions
-    const file = std.fs.createFileAbsolute(path, .{ .mode = 0o755 }) catch |err| {
+    const file = Io.Dir.createFileAbsolute(io, path, .{
+        .permissions = .fromMode(0o755),
+    }) catch |err| {
         std.log.err(
             "failed to create init script {s}: {s}",
             .{ path, @errorName(err) },
         );
         return err;
     };
-    file.writeAll(script) catch |err| {
+    file.writeStreamingAll(io, script) catch |err| {
         std.log.err(
             "failed to write init script {s}: {s}",
             .{ path, @errorName(err) },
         );
-        file.close();
+        file.close(io);
         return err;
     };
-    file.close();
+    file.close(io);
 
     // Create null-terminated path for execve
     var path_z_buf: [129]u8 = undefined;
@@ -551,7 +560,7 @@ fn runInitScript(script: []const u8, index: usize, env: ?[]const NameValue) !voi
             "fork failed for init script: {s}",
             .{@tagName(pid_err)},
         );
-        std.fs.deleteFileAbsolute(path) catch {};
+        Io.Dir.deleteFileAbsolute(io, path) catch {};
         return error.ForkFailed;
     }
 
@@ -580,12 +589,12 @@ fn runInitScript(script: []const u8, index: usize, env: ?[]const NameValue) !voi
         if (wait_err == .SUCCESS) break;
         if (wait_err == .INTR) continue;
         std.log.err("waitpid failed for init script: {s}", .{@tagName(wait_err)});
-        std.fs.deleteFileAbsolute(path) catch {};
+        Io.Dir.deleteFileAbsolute(io, path) catch {};
         return error.WaitFailed;
     }
 
     // Remove the script file
-    std.fs.deleteFileAbsolute(path) catch |err| {
+    Io.Dir.deleteFileAbsolute(io, path) catch |err| {
         std.log.warn("failed to remove init script {s}: {s}", .{ path, @errorName(err) });
     };
 
@@ -607,20 +616,20 @@ fn runInitScript(script: []const u8, index: usize, env: ?[]const NameValue) !voi
 
 /// Write a sysctl value to /proc/sys.
 /// Converts dotted key (e.g., "net.ipv4.ip_forward") to path (/proc/sys/net/ipv4/ip_forward).
-pub fn sysctl(key: []const u8, value: []const u8) !void {
+pub fn sysctl(io: Io, key: []const u8, value: []const u8) !void {
     var path_buf: [256]u8 = undefined;
     const path = procPathFromDotted(&path_buf, key) catch |err| {
         std.log.err("sysctl key too long: {s}", .{key});
         return err;
     };
 
-    const file = std.fs.openFileAbsolute(path, .{ .mode = .write_only }) catch |err| {
+    const file = Io.Dir.openFileAbsolute(io, path, .{ .mode = .write_only }) catch |err| {
         std.log.err("failed to open {s}: {s}", .{ path, @errorName(err) });
         return err;
     };
-    defer file.close();
+    defer file.close(io);
 
-    file.writeAll(value) catch |err| {
+    file.writeStreamingAll(io, value) catch |err| {
         std.log.err("failed to write to {s}: {s}", .{ path, @errorName(err) });
         return err;
     };
@@ -629,10 +638,10 @@ pub fn sysctl(key: []const u8, value: []const u8) !void {
 }
 
 /// Apply all sysctls from the given slice.
-pub fn setSysctls(sysctls: ?[]const NameValue) !void {
+pub fn setSysctls(io: Io, sysctls: ?[]const NameValue) !void {
     const items = sysctls orelse return;
     for (items) |nv| {
-        try sysctl(nv.name, nv.value);
+        try sysctl(io, nv.name, nv.value);
     }
 }
 
@@ -665,8 +674,8 @@ const RootDevices = struct {
 /// Resize root EBS volume partition and filesystem if the
 /// underlying disk was expanded. Gracefully skips if no block
 /// device is found (e.g., when booting from initramfs).
-pub fn resizeRootVolume(allocator: Allocator) void {
-    resizeRootVolumeImpl(allocator) catch |err| {
+pub fn resizeRootVolume(allocator: Allocator, io: Io) void {
+    resizeRootVolumeImpl(allocator, io) catch |err| {
         std.log.debug(
             "skipping root volume resize: {s}",
             .{@errorName(err)},
@@ -674,10 +683,11 @@ pub fn resizeRootVolume(allocator: Allocator) void {
     };
 }
 
-fn resizeRootVolumeImpl(allocator: Allocator) !void {
+fn resizeRootVolumeImpl(allocator: Allocator, io: Io) !void {
     var part_buf: [64]u8 = undefined;
     var disk_buf: [64]u8 = undefined;
     const devices = try findRootDevices(
+        io,
         &part_buf,
         &disk_buf,
     );
@@ -695,6 +705,7 @@ fn resizeRootVolumeImpl(allocator: Allocator) !void {
 
     var gpt_ctx = GptContext.init(
         allocator,
+        io,
         disk_path,
     ) catch |err| {
         std.log.err(
@@ -717,7 +728,7 @@ fn resizeRootVolumeImpl(allocator: Allocator) !void {
         .{first_usable},
     );
 
-    const disk_sectors = try diskSectors(devices.disk);
+    const disk_sectors = try diskSectors(io, devices.disk);
 
     // Calculate last usable sector from actual disk size.
     // Formula from growpart: accounts for backup GPT
@@ -806,15 +817,17 @@ fn resizeRootVolumeImpl(allocator: Allocator) !void {
         .{ constants.DIR_DEV, devices.partition },
     );
     std.log.debug("growing root filesystem", .{});
-    try growFilesystem(part_path);
+    try growFilesystem(io, part_path);
 }
 
 fn findRootDevices(
+    io: Io,
     part_buf: []u8,
     disk_buf: []u8,
 ) !RootDevices {
     const mounts_path = constants.DIR_PROC ++ "/mounts";
-    const file = std.fs.openFileAbsolute(
+    const file = Io.Dir.openFileAbsolute(
+        io,
         mounts_path,
         .{},
     ) catch |err| {
@@ -824,10 +837,12 @@ fn findRootDevices(
         );
         return err;
     };
-    defer file.close();
+    defer file.close(io);
 
     var read_buf: [8192]u8 = undefined;
-    const bytes_read = try file.read(&read_buf);
+    var rbuf: [4096]u8 = undefined;
+    var reader = file.reader(io, &rbuf);
+    const bytes_read = try reader.interface.readSliceShort(&read_buf);
     const content = read_buf[0..bytes_read];
 
     var partition_name: ?[]const u8 = null;
@@ -858,7 +873,8 @@ fn findRootDevices(
     };
     std.log.debug("root partition: {s}", .{part_name});
 
-    var dir = std.fs.openDirAbsolute(
+    var dir = Io.Dir.openDirAbsolute(
+        io,
         SYS_BLOCK_PATH,
         .{ .iterate = true },
     ) catch |err| {
@@ -868,10 +884,10 @@ fn findRootDevices(
         );
         return err;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (try iter.next()) |dir_entry| {
+    while (try iter.next(io)) |dir_entry| {
         var abs_buf: [384]u8 = undefined;
         const abs_path = fmt.bufPrint(
             &abs_buf,
@@ -883,7 +899,8 @@ fn findRootDevices(
             },
         ) catch continue;
 
-        std.fs.accessAbsolute(
+        Io.Dir.accessAbsolute(
+            io,
             abs_path,
             .{},
         ) catch continue;
@@ -900,18 +917,19 @@ fn findRootDevices(
     return error.ParentDiskNotFound;
 }
 
-fn diskSectors(device: []const u8) !i64 {
+fn diskSectors(io: Io, device: []const u8) !i64 {
     var path_buf: [256]u8 = undefined;
     const path = try fmt.bufPrint(
         &path_buf,
         "{s}/{s}/size",
         .{ SYS_BLOCK_PATH, device },
     );
-    return intFromFile(path);
+    return intFromFile(io, path);
 }
 
-fn intFromFile(path: []const u8) !i64 {
-    const file = std.fs.openFileAbsolute(
+fn intFromFile(io: Io, path: []const u8) !i64 {
+    const file = Io.Dir.openFileAbsolute(
+        io,
         path,
         .{},
     ) catch |err| {
@@ -921,10 +939,12 @@ fn intFromFile(path: []const u8) !i64 {
         );
         return err;
     };
-    defer file.close();
+    defer file.close(io);
 
     var buf: [64]u8 = undefined;
-    const bytes_read = try file.read(&buf);
+    var rbuf: [128]u8 = undefined;
+    var reader = file.reader(io, &rbuf);
+    const bytes_read = try reader.interface.readSliceShort(&buf);
     const content = std.mem.trim(
         u8,
         buf[0..bytes_read],
@@ -939,26 +959,23 @@ fn intFromFile(path: []const u8) !i64 {
     };
 }
 
-fn growFilesystem(device_path: []const u8) !void {
+fn growFilesystem(io: Io, device_path: []const u8) !void {
     const resize2fs =
         constants.DIR_ET_SBIN ++ "/resize2fs";
 
-    var child = std.process.Child.init(
-        &[_][]const u8{ resize2fs, device_path },
-        std.heap.page_allocator,
-    );
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-
-    child.spawn() catch |err| {
+    var child = std.process.spawn(io, .{
+        .argv = &[_][]const u8{ resize2fs, device_path },
+        .stdout = .pipe,
+        .stderr = .pipe,
+    }) catch |err| {
         std.log.err(
-            "failed to run resize2fs for {s}: {s}",
+            "failed to spawn resize2fs for {s}: {s}",
             .{ device_path, @errorName(err) },
         );
         return err;
     };
 
-    const result = child.wait() catch |err| {
+    const result = child.wait(io) catch |err| {
         std.log.err(
             "failed to wait for resize2fs {s}: {s}",
             .{ device_path, @errorName(err) },
@@ -966,10 +983,10 @@ fn growFilesystem(device_path: []const u8) !void {
         return err;
     };
 
-    if (result.Exited != 0) {
+    if (result.exited != 0) {
         std.log.err(
             "resize2fs {s} failed with exit code {d}",
-            .{ device_path, result.Exited },
+            .{ device_path, result.exited },
         );
         return error.ResizeFsFailed;
     }
@@ -996,22 +1013,26 @@ test "device_has_numeric_suffix" {
 
 test "findExecutableInPath finds executable in first matching dir" {
     const allocator = testing.allocator;
+    const io = testing.io;
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var bin_dir = try tmp.dir.makeOpenPath("bin", .{});
-    defer bin_dir.close();
-    const f = try bin_dir.createFile("myprog", .{ .mode = 0o755 });
-    f.close();
+    var bin_dir = try tmp.dir.createDirPathOpen(io, "bin", .{});
+    defer bin_dir.close(io);
+    const f = try bin_dir.createFile(io, "myprog", .{
+        .permissions = .fromMode(0o755),
+    });
+    f.close(io);
 
     var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const bin_abs = try tmp.dir.realpath("bin", &abs_buf);
+    const bin_abs_len = try tmp.dir.realPathFile(io, "bin", &abs_buf);
+    const bin_abs = abs_buf[0..bin_abs_len];
 
     const path_var = try fmt.allocPrint(allocator, "/nonexistent:{s}", .{bin_abs});
     defer allocator.free(path_var);
 
-    const result = try findExecutableInPath(allocator, path_var, "myprog");
+    const result = try findExecutableInPath(allocator, io, path_var, "myprog");
     try testing.expect(result != null);
     defer allocator.free(result.?);
 
@@ -1022,29 +1043,35 @@ test "findExecutableInPath finds executable in first matching dir" {
 
 test "findExecutableInPath returns null when not found" {
     const allocator = testing.allocator;
+    const io = testing.io;
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
     var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_abs = try tmp.dir.realpath(".", &abs_buf);
+    const tmp_abs_len = try tmp.dir.realPathFile(io, ".", &abs_buf);
+    const tmp_abs = abs_buf[0..tmp_abs_len];
 
-    const result = try findExecutableInPath(allocator, tmp_abs, "nothere_xyzzy_12345");
+    const result = try findExecutableInPath(allocator, io, tmp_abs, "nothere_xyzzy_12345");
     try testing.expect(result == null);
 }
 
 test "findExecutableInPath rejects non-executable files" {
     const allocator = testing.allocator;
+    const io = testing.io;
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("notexe", .{ .mode = 0o644 });
-    f.close();
+    const f = try tmp.dir.createFile(io, "notexe", .{
+        .permissions = .fromMode(0o644),
+    });
+    f.close(io);
 
     var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_abs = try tmp.dir.realpath(".", &abs_buf);
+    const tmp_abs_len = try tmp.dir.realPathFile(io, ".", &abs_buf);
+    const tmp_abs = abs_buf[0..tmp_abs_len];
 
-    const result = try findExecutableInPath(allocator, tmp_abs, "notexe");
+    const result = try findExecutableInPath(allocator, io, tmp_abs, "notexe");
     try testing.expect(result == null);
 }

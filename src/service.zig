@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const linux = std.os.linux;
 const posix = std.posix;
 const testing = std.testing;
@@ -13,11 +14,15 @@ const ServiceDef = services_mod.ServiceDef;
 const vmspec = @import("vmspec.zig");
 const NameValue = vmspec.NameValue;
 
-const SIGPOWEROFF: u6 = 38;
+const SIGPOWEROFF: posix.SIG = @enumFromInt(38);
 const PF_KTHREAD: u32 = 0x00200000;
 const FLAGS_FIELD_INDEX: usize = 8;
 
 var shutdown_requested = std.atomic.Value(bool).init(false);
+
+fn ioSleep(io: Io, nanoseconds: u64) void {
+    Io.sleep(io, Io.Duration.fromNanoseconds(@intCast(nanoseconds)), .awake) catch {};
+}
 
 /// Request a graceful shutdown.
 pub fn requestShutdown() void {
@@ -37,6 +42,8 @@ const ServiceState = struct {
 
 pub const Supervisor = struct {
     allocator: Allocator,
+    io: Io,
+    env_map: *const std.process.Environ.Map,
     command: []const []const u8,
     args: ?[]const []const u8,
     env: ?[]const NameValue,
@@ -52,6 +59,8 @@ pub const Supervisor = struct {
 
     pub fn init(
         allocator: Allocator,
+        io: Io,
+        env_map: *const std.process.Environ.Map,
         command: []const []const u8,
         args: ?[]const []const u8,
         env: ?[]const NameValue,
@@ -65,6 +74,8 @@ pub const Supervisor = struct {
     ) Supervisor {
         return Supervisor{
             .allocator = allocator,
+            .io = io,
+            .env_map = env_map,
             .command = command,
             .args = args,
             .env = env,
@@ -83,6 +94,7 @@ pub const Supervisor = struct {
 
         const enabled_services = services_mod.findEnabledServices(
             self.allocator,
+            self.io,
             self.disable_services,
             self.imds_client,
         ) catch |err| {
@@ -130,24 +142,25 @@ pub const Supervisor = struct {
 
     fn startService(self: *Supervisor, svc: *ServiceState) !void {
         if (svc.def.init_fn) |init_fn| {
-            try init_fn(self.allocator);
+            try init_fn(self.allocator, self.io);
         }
 
         const thread = try std.Thread.spawn(.{}, serviceLoop, .{ self, svc });
         svc.thread = thread;
     }
 
-    fn serviceLoop(_: *Supervisor, svc: *ServiceState) void {
+    fn serviceLoop(self: *Supervisor, svc: *ServiceState) void {
+        const io = self.io;
         var first_start = true;
 
         while (!shutdown_requested.load(.acquire)) {
             if (!first_start) {
-                std.Thread.sleep(5 * std.time.ns_per_s);
+                ioSleep(io, 5 * std.time.ns_per_s);
                 if (shutdown_requested.load(.acquire)) return;
             }
             first_start = false;
 
-            const pid = spawnServiceProcess(svc.def.args) catch |err| {
+            const pid = spawnServiceProcess(self.env_map, svc.def.args) catch |err| {
                 std.log.err("failed to spawn {s}: {s}", .{ svc.def.name, @errorName(err) });
                 continue;
             };
@@ -171,7 +184,7 @@ pub const Supervisor = struct {
                     break;
                 }
 
-                std.Thread.sleep(100 * std.time.ns_per_ms);
+                ioSleep(io, 100 * std.time.ns_per_ms);
             }
         }
     }
@@ -209,9 +222,9 @@ pub const Supervisor = struct {
                     self.waitServiceThreads();
                     return;
                 }
-                std.Thread.sleep(10 * std.time.ns_per_ms);
+                ioSleep(self.io, 10 * std.time.ns_per_ms);
             } else if (result == 0) {
-                std.Thread.sleep(10 * std.time.ns_per_ms);
+                ioSleep(self.io, 10 * std.time.ns_per_ms);
             }
 
             if (shutdown_requested.load(.acquire) and !main_exited) {
@@ -242,11 +255,12 @@ pub const Supervisor = struct {
         self.signal_all(posix.SIG.TERM);
 
         const grace_ns = self.shutdown_grace_period * std.time.ns_per_s;
-        const start_time = std.time.nanoTimestamp();
+        const start_time = Io.Timestamp.now(self.io, .awake);
 
         while (true) {
-            const elapsed: u64 = @intCast(std.time.nanoTimestamp() - start_time);
-            if (elapsed >= grace_ns) {
+            const elapsed_dur = start_time.durationTo(Io.Timestamp.now(self.io, .awake));
+            const elapsed_ns: u64 = @intCast(elapsed_dur.toNanoseconds());
+            if (elapsed_ns >= grace_ns) {
                 break;
             }
 
@@ -260,7 +274,7 @@ pub const Supervisor = struct {
             }
 
             if (result == 0) {
-                std.Thread.sleep(100 * std.time.ns_per_ms);
+                ioSleep(self.io, 100 * std.time.ns_per_ms);
             }
         }
 
@@ -278,9 +292,8 @@ pub const Supervisor = struct {
         std.log.info("all processes terminated", .{});
     }
 
-    fn signal_all(self: *Supervisor, sig: u6) void {
-        _ = self;
-        const pids = get_all_pids() catch |err| {
+    fn signal_all(self: *Supervisor, sig: posix.SIG) void {
+        const pids = get_all_pids(self.io) catch |err| {
             std.log.err("failed to enumerate pids: {s}", .{@errorName(err)});
             return;
         };
@@ -350,10 +363,18 @@ pub const Supervisor = struct {
     }
 
     fn exec_child(self: *Supervisor, argv: []?[*:0]const u8, envp: []?[*:0]const u8) noreturn {
-        posix.chdir(self.working_dir) catch |err| {
-            std.log.err("chdir to {s} failed: {s}", .{ self.working_dir, @errorName(err) });
+        var wd_buf: [posix.PATH_MAX]u8 = undefined;
+        if (self.working_dir.len >= wd_buf.len) {
+            std.log.err("working_dir too long", .{});
             linux.exit(1);
-        };
+        }
+        @memcpy(wd_buf[0..self.working_dir.len], self.working_dir);
+        wd_buf[self.working_dir.len] = 0;
+        const chdir_e = posix.errno(linux.chdir(@ptrCast(&wd_buf)));
+        if (chdir_e != .SUCCESS) {
+            std.log.err("chdir to {s} failed: {s}", .{ self.working_dir, @tagName(chdir_e) });
+            linux.exit(1);
+        }
 
         if (self.gid != 0) {
             const ret = linux.setgid(self.gid);
@@ -396,14 +417,9 @@ pub const Supervisor = struct {
         defer env_map.deinit();
 
         // First, add all parent environment variables
-        const parent_env = std.os.environ;
-        for (parent_env) |env_ptr| {
-            const env_str = std.mem.span(env_ptr);
-            if (std.mem.indexOf(u8, env_str, "=")) |eq_pos| {
-                const name = env_str[0..eq_pos];
-                const value = env_str[eq_pos + 1 ..];
-                try env_map.put(name, value);
-            }
+        var parent_iter = self.env_map.iterator();
+        while (parent_iter.next()) |entry| {
+            try env_map.put(entry.key_ptr.*, entry.value_ptr.*);
         }
 
         // Override with vmspec.env values
@@ -475,7 +491,10 @@ pub const Supervisor = struct {
     }
 };
 
-fn spawnServiceProcess(args: []const []const u8) !posix.pid_t {
+fn spawnServiceProcess(
+    env_map: *const std.process.Environ.Map,
+    args: []const []const u8,
+) !posix.pid_t {
     const pid_result = linux.fork();
     const pid_err = posix.errno(pid_result);
     if (pid_err != .SUCCESS) {
@@ -484,13 +503,16 @@ fn spawnServiceProcess(args: []const []const u8) !posix.pid_t {
 
     const pid: posix.pid_t = @intCast(pid_result);
     if (pid == 0) {
-        execServiceProcess(args);
+        execServiceProcess(env_map, args);
     }
 
     return pid;
 }
 
-fn execServiceProcess(args: []const []const u8) noreturn {
+fn execServiceProcess(
+    env_map: *const std.process.Environ.Map,
+    args: []const []const u8,
+) noreturn {
     var argv_buf: [16]?[*:0]const u8 = undefined;
     var arg_storage: [2048]u8 = undefined;
     var arg_pos: usize = 0;
@@ -507,10 +529,38 @@ fn execServiceProcess(args: []const []const u8) noreturn {
     }
     argv_buf[args.len] = null;
 
+    var envp_buf: [256]?[*:0]const u8 = undefined;
+    var env_storage: [16384]u8 = undefined;
+    var env_pos: usize = 0;
+    var env_count: usize = 0;
+    var iter = env_map.iterator();
+    while (iter.next()) |entry| : (env_count += 1) {
+        if (env_count + 1 >= envp_buf.len) {
+            std.log.err("too many environment variables for service", .{});
+            linux.exit(1);
+        }
+        const needed = entry.key_ptr.*.len + 1 + entry.value_ptr.*.len + 1;
+        if (env_pos + needed > env_storage.len) {
+            std.log.err("environment too large for service", .{});
+            linux.exit(1);
+        }
+        const start = env_pos;
+        @memcpy(env_storage[env_pos..][0..entry.key_ptr.*.len], entry.key_ptr.*);
+        env_pos += entry.key_ptr.*.len;
+        env_storage[env_pos] = '=';
+        env_pos += 1;
+        @memcpy(env_storage[env_pos..][0..entry.value_ptr.*.len], entry.value_ptr.*);
+        env_pos += entry.value_ptr.*.len;
+        env_storage[env_pos] = 0;
+        env_pos += 1;
+        envp_buf[env_count] = @ptrCast(&env_storage[start]);
+    }
+    envp_buf[env_count] = null;
+
     const exec_result = linux.execve(
         argv_buf[0].?,
         @ptrCast(&argv_buf),
-        @ptrCast(std.os.environ.ptr),
+        @ptrCast(&envp_buf),
     );
     const exec_err = posix.errno(exec_result);
     std.log.err("execve failed: {s}", .{errnoDescription(exec_err)});
@@ -529,30 +579,30 @@ fn setup_signal_handlers() void {
     posix.sigaction(SIGPOWEROFF, &handler, null);
 }
 
-fn signal_handler(sig: c_int) callconv(.c) void {
+fn signal_handler(sig: posix.SIG) callconv(.c) void {
     _ = sig;
     shutdown_requested.store(true, .release);
 }
 
-fn get_all_pids() ![]posix.pid_t {
+fn get_all_pids(io: Io) ![]posix.pid_t {
     var pids = std.ArrayList(posix.pid_t).initCapacity(std.heap.page_allocator, 100) catch {
         return error.OutOfMemory;
     };
     errdefer pids.deinit(std.heap.page_allocator);
 
-    var dir = std.fs.openDirAbsolute(constants.DIR_PROC, .{ .iterate = true }) catch |err| {
+    var dir = Io.Dir.openDirAbsolute(io, constants.DIR_PROC, .{ .iterate = true }) catch |err| {
         std.log.err("failed to open {s}: {s}", .{ constants.DIR_PROC, @errorName(err) });
         return err;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         if (entry.kind != .directory) continue;
 
         const pid = std.fmt.parseInt(posix.pid_t, entry.name, 10) catch continue;
         if (pid == 1) continue;
-        if (is_kernel_thread(pid)) continue;
+        if (is_kernel_thread(io, pid)) continue;
 
         try pids.append(std.heap.page_allocator, pid);
     }
@@ -598,26 +648,28 @@ pub fn errnoDescription(err: posix.E) []const u8 {
     };
 }
 
-fn is_kernel_thread(pid: posix.pid_t) bool {
+fn is_kernel_thread(io: Io, pid: posix.pid_t) bool {
     var path_buf: [64]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/stat", .{pid}) catch return true;
 
-    const file = std.fs.openFileAbsolute(path, .{}) catch return true;
-    defer file.close();
+    const file = Io.Dir.openFileAbsolute(io, path, .{}) catch return true;
+    defer file.close(io);
 
     var buf: [512]u8 = undefined;
-    const bytes_read = file.read(&buf) catch return true;
+    var rbuf: [1024]u8 = undefined;
+    var reader = file.reader(io, &rbuf);
+    const bytes_read = reader.interface.readSliceShort(&buf) catch return true;
     const content = buf[0..bytes_read];
 
     return parseKernelThreadStatus(content) catch true;
 }
 
 test "is_kernel_thread returns false for init process" {
-    try testing.expect(!is_kernel_thread(1));
+    try testing.expect(!is_kernel_thread(testing.io, 1));
 }
 
 test "get_all_pids does not include pid 1" {
-    const pids = try get_all_pids();
+    const pids = try get_all_pids(testing.io);
     defer std.heap.page_allocator.free(pids);
 
     for (pids) |pid| {
@@ -670,8 +722,12 @@ test "Supervisor.init creates supervisor with correct fields" {
         .{ .name = "FOO", .value = "bar" },
     };
 
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
     const supervisor = Supervisor.init(
         allocator,
+        testing.io,
+        &env_map,
         &command,
         &args,
         &env,
@@ -702,8 +758,12 @@ test "Supervisor.init with null args" {
     const allocator = testing.allocator;
     var command = [_][]const u8{"/bin/sh"};
 
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
     const supervisor = Supervisor.init(
         allocator,
+        testing.io,
+        &env_map,
         &command,
         null,
         null,
@@ -724,8 +784,12 @@ test "Supervisor.buildArgv with command only" {
     const allocator = testing.allocator;
     var command = [_][]const u8{ "/bin/echo", "hello" };
 
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
     var supervisor = Supervisor.init(
         allocator,
+        testing.io,
+        &env_map,
         &command,
         null,
         null,
@@ -756,8 +820,12 @@ test "Supervisor.buildArgv with command and args" {
     var command = [_][]const u8{"/bin/sh"};
     var args = [_][]const u8{ "-c", "echo test" };
 
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
     var supervisor = Supervisor.init(
         allocator,
+        testing.io,
+        &env_map,
         &command,
         &args,
         null,
@@ -789,8 +857,12 @@ test "Supervisor.buildArgv with empty args" {
     var command = [_][]const u8{"/bin/ls"};
     var args = [_][]const u8{};
 
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
     var supervisor = Supervisor.init(
         allocator,
+        testing.io,
+        &env_map,
         &command,
         &args,
         null,

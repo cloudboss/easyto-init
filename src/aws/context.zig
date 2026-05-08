@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 const aws = @import("aws");
 
@@ -14,6 +15,8 @@ const scoped_log = std.log.scoped(.aws_context);
 
 pub const AwsContext = struct {
     allocator: Allocator,
+    io: Io,
+    env_map: *const std.process.Environ.Map,
 
     imds: aws.ImdsClient,
     region: ?[]const u8 = null,
@@ -22,7 +25,7 @@ pub const AwsContext = struct {
     s3: ?S3Client = null,
     ssm: ?SsmClient = null,
     secrets_manager: ?SecretsManagerClient = null,
-    init_mutex: std.Thread.Mutex = .{},
+    init_mutex: Io.Mutex = .init,
 
     const Self = @This();
 
@@ -32,11 +35,13 @@ pub const AwsContext = struct {
     };
 
     /// Initialize the AWS context with an IMDS client.
-    pub fn init(allocator: Allocator) !Self {
-        const imds = try aws.ImdsClient.init(allocator, .{});
+    pub fn init(allocator: Allocator, io: Io, env_map: *const std.process.Environ.Map) !Self {
+        const imds = try aws.ImdsClient.init(allocator, io, env_map, .{});
 
         return Self{
             .allocator = allocator,
+            .io = io,
+            .env_map = env_map,
             .imds = imds,
         };
     }
@@ -66,11 +71,11 @@ pub const AwsContext = struct {
     /// Get or initialize the S3 client.
     /// Returns error if no IAM instance profile is attached.
     pub fn getS3(self: *Self) !*S3Client {
-        self.init_mutex.lock();
-        defer self.init_mutex.unlock();
+        self.init_mutex.lockUncancelable(self.io);
+        defer self.init_mutex.unlock(self.io);
         try self.verifyCredentials();
         if (self.s3 == null) {
-            self.s3 = try S3Client.init(self.allocator, self.region.?);
+            self.s3 = try S3Client.init(self.allocator, self.io, self.env_map, self.region.?);
         }
         return &self.s3.?;
     }
@@ -78,11 +83,11 @@ pub const AwsContext = struct {
     /// Get or initialize the SSM client.
     /// Returns error if no IAM instance profile is attached.
     pub fn getSsm(self: *Self) !*SsmClient {
-        self.init_mutex.lock();
-        defer self.init_mutex.unlock();
+        self.init_mutex.lockUncancelable(self.io);
+        defer self.init_mutex.unlock(self.io);
         try self.verifyCredentials();
         if (self.ssm == null) {
-            self.ssm = try SsmClient.init(self.allocator, self.region.?);
+            self.ssm = try SsmClient.init(self.allocator, self.io, self.env_map, self.region.?);
         }
         return &self.ssm.?;
     }
@@ -90,12 +95,14 @@ pub const AwsContext = struct {
     /// Get or initialize the Secrets Manager client.
     /// Returns error if no IAM instance profile is attached.
     pub fn getSecretsManager(self: *Self) !*SecretsManagerClient {
-        self.init_mutex.lock();
-        defer self.init_mutex.unlock();
+        self.init_mutex.lockUncancelable(self.io);
+        defer self.init_mutex.unlock(self.io);
         try self.verifyCredentials();
         if (self.secrets_manager == null) {
             self.secrets_manager = try SecretsManagerClient.init(
                 self.allocator,
+                self.io,
+                self.env_map,
                 self.region.?,
             );
         }
@@ -105,11 +112,11 @@ pub const AwsContext = struct {
     /// Get or initialize the EC2 client.
     /// Returns error if no IAM instance profile is attached.
     pub fn getEc2(self: *Self) !*Ec2Client {
-        self.init_mutex.lock();
-        defer self.init_mutex.unlock();
+        self.init_mutex.lockUncancelable(self.io);
+        defer self.init_mutex.unlock(self.io);
         try self.verifyCredentials();
         if (self.ec2 == null) {
-            self.ec2 = try Ec2Client.init(self.allocator, self.region.?);
+            self.ec2 = try Ec2Client.init(self.allocator, self.io, self.env_map, self.region.?);
         }
         return &self.ec2.?;
     }

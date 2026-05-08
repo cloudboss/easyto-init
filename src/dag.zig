@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 const AwsContext = @import("aws/context.zig").AwsContext;
 const init_mod = @import("init.zig");
@@ -177,6 +178,8 @@ fn validateNoCycle(
 
 pub const BootContext = struct {
     allocator: Allocator,
+    io: Io,
+    env_map: *const std.process.Environ.Map,
     vmspec_arena: std.heap.ArenaAllocator,
 
     aws_ctx: ?AwsContext = null,
@@ -186,9 +189,15 @@ pub const BootContext = struct {
     vmspec: ?VmSpec = null,
     expanded_command: ?init_mod.ExpandedCommand = null,
 
-    pub fn init(allocator: Allocator) BootContext {
+    pub fn init(
+        allocator: Allocator,
+        io: Io,
+        env_map: *const std.process.Environ.Map,
+    ) BootContext {
         return .{
             .allocator = allocator,
+            .io = io,
+            .env_map = env_map,
             .vmspec_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
@@ -221,8 +230,8 @@ pub const DagExecutor = struct {
     task_states: [TaskId.count]TaskState,
     task_errors: [TaskId.count]?anyerror,
 
-    queue_mutex: std.Thread.Mutex,
-    queue_cond: std.Thread.Condition,
+    queue_mutex: Io.Mutex,
+    queue_cond: Io.Condition,
     queue_buf: [TaskId.count]TaskId,
     queue_head: usize,
     queue_tail: usize,
@@ -239,8 +248,8 @@ pub const DagExecutor = struct {
             .pending_deps = undefined,
             .task_states = .{.pending} ** TaskId.count,
             .task_errors = .{null} ** TaskId.count,
-            .queue_mutex = .{},
-            .queue_cond = .{},
+            .queue_mutex = .init,
+            .queue_cond = .init,
             .queue_buf = undefined,
             .queue_head = 0,
             .queue_tail = 0,
@@ -310,12 +319,14 @@ pub const DagExecutor = struct {
     fn executeTask(self: *Self, task_id: TaskId) void {
         const idx = @intFromEnum(task_id);
         const desc = task_descriptors[idx];
+        const io = self.ctx.io;
 
         std.log.info("task started: {s}", .{desc.name});
-        const start = std.time.Instant.now() catch unreachable;
+        const start = Io.Timestamp.now(io, .awake);
 
         if (desc.run_fn(self.ctx)) {
-            const elapsed_ns = (std.time.Instant.now() catch unreachable).since(start);
+            const elapsed_duration = start.durationTo(Io.Timestamp.now(io, .awake));
+            const elapsed_ns: u64 = @intCast(elapsed_duration.toNanoseconds());
             const elapsed_ms = elapsed_ns / std.time.ns_per_ms;
             if (elapsed_ms > 0) {
                 std.log.info("task completed: {s} ({d}ms)", .{ desc.name, elapsed_ms });
@@ -328,8 +339,13 @@ pub const DagExecutor = struct {
                 std.log.info("task completed: {s} ({d}ns)", .{ desc.name, elapsed_ns });
             }
             self.task_states[idx] = .completed;
-            _ = self.completed_count.fetchAdd(1, .acq_rel);
+            const prev_completed = self.completed_count.fetchAdd(1, .acq_rel);
             self.notifyDependents(task_id);
+            if (prev_completed + 1 >= TaskId.count) {
+                self.queue_mutex.lockUncancelable(io);
+                self.queue_cond.broadcast(io);
+                self.queue_mutex.unlock(io);
+            }
         } else |err| {
             std.log.err("task failed: {s}: {s}", .{ desc.name, @errorName(err) });
             self.task_states[idx] = .failed;
@@ -338,7 +354,9 @@ pub const DagExecutor = struct {
                 self.first_error = err;
                 self.error_task = task_id;
             }
-            self.queue_cond.broadcast();
+            self.queue_mutex.lockUncancelable(io);
+            self.queue_cond.broadcast(io);
+            self.queue_mutex.unlock(io);
         }
     }
 
@@ -358,25 +376,27 @@ pub const DagExecutor = struct {
     }
 
     fn enqueue(self: *Self, task_id: TaskId) void {
-        self.queue_mutex.lock();
-        defer self.queue_mutex.unlock();
+        const io = self.ctx.io;
+        self.queue_mutex.lockUncancelable(io);
+        defer self.queue_mutex.unlock(io);
 
         self.queue_buf[self.queue_tail] = task_id;
         self.queue_tail = (self.queue_tail + 1) % TaskId.count;
         self.queue_len += 1;
 
-        self.queue_cond.signal();
+        self.queue_cond.signal(io);
     }
 
     fn dequeue(self: *Self) ?TaskId {
-        self.queue_mutex.lock();
-        defer self.queue_mutex.unlock();
+        const io = self.ctx.io;
+        self.queue_mutex.lockUncancelable(io);
+        defer self.queue_mutex.unlock(io);
 
         while (self.queue_len == 0) {
             if (self.fatal_error.load(.acquire)) return null;
             if (self.completed_count.load(.acquire) >= TaskId.count) return null;
 
-            self.queue_cond.timedWait(&self.queue_mutex, 500 * std.time.ns_per_ms) catch {};
+            self.queue_cond.waitUncancelable(io, &self.queue_mutex);
         }
 
         if (self.queue_len == 0) return null;

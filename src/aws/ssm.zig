@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
+const posix = std.posix;
 const testing = std.testing;
 
 const aws = @import("aws");
@@ -24,10 +26,15 @@ pub const SsmClient = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator, region: []const u8) !Self {
+    pub fn init(
+        allocator: Allocator,
+        io: Io,
+        env_map: *const std.process.Environ.Map,
+        region: []const u8,
+    ) !Self {
         return Self{
             .allocator = allocator,
-            .config = try aws.Config.load(allocator, .{ .region = region }),
+            .config = try aws.Config.load(allocator, io, env_map, .{ .region = region }),
         };
     }
 
@@ -97,7 +104,7 @@ pub const SsmClient = struct {
     pub fn getParametersByPath(self: *Self, path: []const u8) ![]SsmParameter {
         scoped_log.debug("GetParametersByPath {s}", .{path});
 
-        var parameters: std.ArrayListUnmanaged(SsmParameter) = .empty;
+        var parameters: std.ArrayList(SsmParameter) = .empty;
         errdefer {
             for (parameters.items) |*param| param.deinit(self.allocator);
             parameters.deinit(self.allocator);
@@ -168,7 +175,7 @@ pub const SsmClient = struct {
     /// or if the path doesn't start with `/`, falls back to GetParameter
     /// (single parameter). Matches the Rust implementation's logic.
     pub fn getParameters(self: *Self, path: []const u8) ![]SsmParameter {
-        var parameters: std.ArrayListUnmanaged(SsmParameter) = .empty;
+        var parameters: std.ArrayList(SsmParameter) = .empty;
         errdefer {
             for (parameters.items) |*param| param.deinit(self.allocator);
             parameters.deinit(self.allocator);
@@ -202,6 +209,7 @@ pub const SsmClient = struct {
     /// Falls back to fetching a single parameter if the path doesn't match a hierarchy.
     pub fn downloadPathToDir(
         self: *Self,
+        io: Io,
         path: []const u8,
         destination: []const u8,
         options: DownloadOptions,
@@ -233,6 +241,7 @@ pub const SsmClient = struct {
             scoped_log.debug("writing {s} ({d} bytes)", .{ dest_path, param.value.len });
 
             fs_utils.writeFile(
+                io,
                 dest_path,
                 param.value,
                 options.file_mode,
@@ -251,8 +260,8 @@ pub const SsmClient = struct {
 
 /// Options for downloading SSM parameters to the filesystem.
 pub const DownloadOptions = struct {
-    file_mode: std.fs.File.Mode = 0o600, // SSM params often contain secrets
-    dir_mode: std.fs.File.Mode = 0o755,
+    file_mode: posix.mode_t = 0o600, // SSM params often contain secrets
+    dir_mode: posix.mode_t = 0o755,
     uid: ?u32 = null,
     gid: ?u32 = null,
 };

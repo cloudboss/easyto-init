@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const testing = std.testing;
 
 const aws = @import("aws");
@@ -24,9 +25,9 @@ pub const Ec2Error = error{
 /// Helper for building EC2 filter lists with automatic memory management.
 const FilterBuilder = struct {
     allocator: Allocator,
-    filters: std.ArrayListUnmanaged(Filter) = .empty,
-    values: std.ArrayListUnmanaged([]const []const u8) = .empty,
-    names: std.ArrayListUnmanaged([]const u8) = .empty,
+    filters: std.ArrayList(Filter) = .empty,
+    values: std.ArrayList([]const []const u8) = .empty,
+    names: std.ArrayList([]const u8) = .empty,
 
     fn init(allocator: Allocator) FilterBuilder {
         return .{ .allocator = allocator };
@@ -59,14 +60,21 @@ const FilterBuilder = struct {
 
 pub const Ec2Client = struct {
     allocator: Allocator,
+    io: Io,
     config: aws.Config,
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator, region: []const u8) !Self {
+    pub fn init(
+        allocator: Allocator,
+        io: Io,
+        env_map: *const std.process.Environ.Map,
+        region: []const u8,
+    ) !Self {
         return Self{
             .allocator = allocator,
-            .config = try aws.Config.load(allocator, .{ .region = region }),
+            .io = io,
+            .config = try aws.Config.load(allocator, io, env_map, .{ .region = region }),
         };
     }
 
@@ -152,7 +160,7 @@ pub const Ec2Client = struct {
     ) ![]const u8 {
         const timeout_secs = attachment.timeout orelse 300;
         const timeout_ns: u64 = timeout_secs * std.time.ns_per_s;
-        const start_time = std.time.nanoTimestamp();
+        const start_time = Io.Timestamp.now(self.io, .awake);
 
         var retry = backoff.RetryBackoff.init(10000);
 
@@ -161,14 +169,15 @@ pub const Ec2Client = struct {
                 return volume_id;
             }
 
-            const elapsed: u64 = @intCast(std.time.nanoTimestamp() - start_time);
+            const elapsed_duration = start_time.durationTo(Io.Timestamp.now(self.io, .awake));
+            const elapsed: u64 = @intCast(elapsed_duration.toNanoseconds());
             if (elapsed > timeout_ns) {
                 scoped_log.err("timeout waiting for EBS volume to be available", .{});
                 return Ec2Error.Timeout;
             }
 
             scoped_log.debug("waiting for EBS volume to be available", .{});
-            retry.wait();
+            retry.wait(self.io);
         }
     }
 

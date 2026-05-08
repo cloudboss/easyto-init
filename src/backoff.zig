@@ -2,6 +2,7 @@
 //! Based on https://www.awsarchitectureblog.com/2015/03/backoff.html
 
 const std = @import("std");
+const Io = std.Io;
 
 /// Exponential backoff with full jitter.
 pub const RetryBackoff = struct {
@@ -17,14 +18,15 @@ pub const RetryBackoff = struct {
         };
     }
 
-    pub fn wait(self: *RetryBackoff) void {
+    pub fn wait(self: *RetryBackoff, io: Io) void {
         const shift: u6 = @intCast(@min(self.attempt, 63));
         const max_wait = @min(self.cap_ms, self.base_ms *| (@as(u64, 1) << shift));
-        const wait_ms = if (max_wait > 0)
-            std.crypto.random.intRangeLessThan(u64, 0, max_wait)
-        else
-            0;
-        std.Thread.sleep(wait_ms * std.time.ns_per_ms);
+        var rand_bytes: [8]u8 = undefined;
+        io.random(&rand_bytes);
+        const rand_u64 = std.mem.readInt(u64, &rand_bytes, .little);
+        const wait_ms = if (max_wait > 0) rand_u64 % max_wait else 0;
+        const wait_dur = Io.Duration.fromNanoseconds(@intCast(wait_ms * std.time.ns_per_ms));
+        Io.sleep(io, wait_dur, .awake) catch {};
         self.attempt = self.attempt +| 1;
     }
 
@@ -57,6 +59,6 @@ test "max wait calculation" {
 test "attempt saturates" {
     var backoff = RetryBackoff.init(10000);
     backoff.attempt = std.math.maxInt(u32);
-    backoff.wait();
+    backoff.wait(std.testing.io);
     try std.testing.expectEqual(std.math.maxInt(u32), backoff.attempt);
 }

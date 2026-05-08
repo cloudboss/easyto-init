@@ -2,8 +2,8 @@ const std = @import("std");
 const fmt = std.fmt;
 const mount = std.os.linux.mount;
 const ms = std.os.linux.MS;
-const Mode = std.fs.File.Mode;
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const linux = std.os.linux;
 const posix = std.posix;
 const testing = std.testing;
@@ -50,12 +50,12 @@ pub const Mount = struct {
     source: []const u8,
     flags: u32 = 0,
     fs_type: []const u8,
-    mode: Mode,
+    mode: posix.mode_t,
     options: ?[]const u8 = null,
     target: []const u8,
 
-    pub fn execute(self: Mount, errno: *usize) !void {
-        mkdir_p(self.target, self.mode) catch |err| {
+    pub fn execute(self: Mount, io: Io, errno: *usize) !void {
+        mkdir_p(io, self.target, self.mode) catch |err| {
             std.log.err("failed to create directory {s}: {s}", .{ self.target, @errorName(err) });
             return err;
         };
@@ -86,17 +86,17 @@ const Link = struct {
     target: []const u8,
 };
 
-pub fn run(allocator: Allocator) !void {
+pub fn run(allocator: Allocator, io: Io, env_map: *std.process.Environ.Map) !void {
     // Pre-DAG serial phase.
-    try base_mounts();
-    try setup_test_mode();
-    const boot_start = std.time.milliTimestamp();
+    try base_mounts(io);
+    try setup_test_mode(env_map);
+    const boot_start = Io.Timestamp.now(io, .awake);
     std.log.info("easyto-init started", .{});
     std.log.info("creating base symlinks", .{});
-    try base_links();
+    try base_links(io);
 
     // Parallel DAG phase.
-    var ctx = dag.BootContext.init(allocator);
+    var ctx = dag.BootContext.init(allocator, io, env_map);
     defer ctx.deinit();
     var executor = dag.DagExecutor.init(&ctx);
     try executor.run();
@@ -116,7 +116,7 @@ pub fn run(allocator: Allocator) !void {
     if (replace_init) {
         std.log.info(
             "easyto-init boot completed in {d}ms",
-            .{std.time.milliTimestamp() - boot_start},
+            .{boot_start.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds()},
         );
         try replaceInit(
             command,
@@ -131,6 +131,8 @@ pub fn run(allocator: Allocator) !void {
         std.log.info("starting supervisor", .{});
         var supervisor = Supervisor.init(
             allocator,
+            io,
+            env_map,
             command,
             args,
             vmspec.env,
@@ -144,10 +146,10 @@ pub fn run(allocator: Allocator) !void {
         );
 
         try supervisor.start();
-        spot.startSpotTerminationMonitor();
+        spot.startSpotTerminationMonitor(io, env_map);
         std.log.info(
             "easyto-init boot completed in {d}ms",
-            .{std.time.milliTimestamp() - boot_start},
+            .{boot_start.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds()},
         );
         supervisor.wait();
 
@@ -155,7 +157,7 @@ pub fn run(allocator: Allocator) !void {
     }
 }
 
-fn base_mounts() !void {
+fn base_mounts(io: Io) !void {
     const mounts = [_]Mount{
         .{
             .source = "devtmpfs",
@@ -234,11 +236,11 @@ fn base_mounts() !void {
 
     for (mounts) |m| {
         var errno: usize = 0;
-        try m.execute(&errno);
+        try m.execute(io, &errno);
     }
 }
 
-fn base_links() !void {
+fn base_links(io: Io) !void {
     const links = [_]Link{
         .{
             .target = "/proc/self/fd",
@@ -259,35 +261,42 @@ fn base_links() !void {
     };
 
     for (links) |link| {
-        std.posix.symlink(link.target, link.path) catch |err| {
+        Io.Dir.symLinkAbsolute(io, link.target, link.path, .{}) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
     }
 }
 
-fn setup_test_mode() !void {
-    _ = std.posix.getenv("EASYTO_TEST_MODE") orelse return;
+fn setup_test_mode(env_map: *std.process.Environ.Map) !void {
+    _ = env_map.get("EASYTO_TEST_MODE") orelse return;
 
     const tty_path = "/dev/ttyS0";
 
     // Make serial console accessible to non-root users
-    const tty_fd = std.posix.open(tty_path, .{ .ACCMODE = .WRONLY }, 0) catch |err| {
+    const tty_fd = posix.openat(
+        linux.AT.FDCWD,
+        tty_path,
+        .{ .ACCMODE = .WRONLY },
+        0,
+    ) catch |err| {
         std.log.err("unable to open {s}: {s}", .{ tty_path, @errorName(err) });
         return err;
     };
 
-    std.posix.fchmod(tty_fd, 0o666) catch |err| {
-        std.log.err("unable to chmod {s}: {s}", .{ tty_path, @errorName(err) });
-        return err;
-    };
+    const chmod_errno = posix.errno(linux.fchmod(tty_fd, 0o666));
+    if (chmod_errno != .SUCCESS) {
+        std.log.err("unable to chmod {s}: {s}", .{ tty_path, @tagName(chmod_errno) });
+        return error.FchmodFailed;
+    }
 
     // Redirect stderr to serial console
-    std.posix.dup2(tty_fd, std.posix.STDERR_FILENO) catch |err| {
-        std.log.err("unable to dup2 stderr to {s}: {s}", .{ tty_path, @errorName(err) });
-        return err;
-    };
+    const dup2_errno = posix.errno(linux.dup2(tty_fd, posix.STDERR_FILENO));
+    if (dup2_errno != .SUCCESS) {
+        std.log.err("unable to dup2 stderr to {s}: {s}", .{ tty_path, @tagName(dup2_errno) });
+        return error.Dup2Failed;
+    }
 
-    std.posix.close(tty_fd);
+    _ = linux.close(tty_fd);
 
     std.log.info("test mode enabled", .{});
 }
@@ -303,11 +312,12 @@ pub const Metadata = struct {
     }
 };
 
-pub fn read_metadata(allocator: Allocator, path: []const u8) !Metadata {
-    const contents = try std.fs.cwd().readFileAlloc(
-        allocator,
+pub fn read_metadata(allocator: Allocator, io: Io, path: []const u8) !Metadata {
+    const contents = try Io.Dir.cwd().readFileAlloc(
+        io,
         path,
-        1073741824,
+        allocator,
+        .limited(1073741824),
     );
     errdefer allocator.free(contents);
     const parsed = try std.json.parseFromSlice(
@@ -352,18 +362,18 @@ pub fn fetchUserData(allocator: Allocator, aws_ctx: *AwsContext) !?[]const u8 {
     return try allocator.dupe(u8, raw);
 }
 
-pub fn writeUserData(user_data: []const u8) !void {
-    fs_utils.mkdir_p(constants.DIR_ET_VAR_LIB, 0o755) catch |err| {
+pub fn writeUserData(io: Io, user_data: []const u8) !void {
+    fs_utils.mkdir_p(io, constants.DIR_ET_VAR_LIB, 0o755) catch |err| {
         std.log.err("failed to create {s}: {s}", .{ constants.DIR_ET_VAR_LIB, @errorName(err) });
         return err;
     };
     const path = constants.DIR_ET_VAR_LIB ++ "/" ++ constants.FILE_USER_DATA;
-    const file = std.fs.createFileAbsolute(path, .{}) catch |err| {
+    const file = Io.Dir.createFileAbsolute(io, path, .{}) catch |err| {
         std.log.err("failed to create {s}: {s}", .{ path, @errorName(err) });
         return err;
     };
-    defer file.close();
-    file.writeAll(user_data) catch |err| {
+    defer file.close(io);
+    file.writeStreamingAll(io, user_data) catch |err| {
         std.log.err("failed to write {s}: {s}", .{ path, @errorName(err) });
         return err;
     };
@@ -388,10 +398,15 @@ fn replaceInit(
     }
 
     // Change to working directory
-    posix.chdir(working_dir) catch |err| {
-        std.log.err("chdir to {s} failed: {s}", .{ working_dir, @errorName(err) });
-        return err;
-    };
+    var working_dir_z_buf: [posix.PATH_MAX]u8 = undefined;
+    if (working_dir.len >= working_dir_z_buf.len) return error.NameTooLong;
+    @memcpy(working_dir_z_buf[0..working_dir.len], working_dir);
+    working_dir_z_buf[working_dir.len] = 0;
+    const chdir_errno = posix.errno(linux.chdir(@ptrCast(&working_dir_z_buf)));
+    if (chdir_errno != .SUCCESS) {
+        std.log.err("chdir to {s} failed: {s}", .{ working_dir, @tagName(chdir_errno) });
+        return error.ChdirFailed;
+    }
 
     // Set group ID first (must be done before setuid)
     if (gid != 0) {
@@ -782,31 +797,33 @@ pub const ExpandedCommand = struct {
 
 pub fn processVolumes(
     allocator: Allocator,
+    io: Io,
     aws_ctx: *AwsContext,
     volumes: []const Volume,
     env: []const NameValue,
 ) !void {
     for (volumes) |volume| {
         if (volume.s3) |s3| {
-            try handleS3Volume(aws_ctx, &s3);
+            try handleS3Volume(io, aws_ctx, &s3);
         }
         if (volume.ssm) |ssm| {
-            try handleSsmVolume(aws_ctx, &ssm);
+            try handleSsmVolume(io, aws_ctx, &ssm);
         }
         if (volume.@"secrets-manager") |sm| {
-            try handleSecretsManagerVolume(aws_ctx, &sm);
+            try handleSecretsManagerVolume(io, aws_ctx, &sm);
         }
         if (volume.ebs) |ebs| {
-            try handleEbsVolume(aws_ctx, &ebs);
+            try handleEbsVolume(io, aws_ctx, &ebs);
         }
         if (volume.template) |t| {
-            try handleTemplateVolume(allocator, &t, env);
+            try handleTemplateVolume(allocator, io, &t, env);
         }
     }
 }
 
 fn handleTemplateVolume(
     allocator: Allocator,
+    io: Io,
     volume: *const TemplateVolumeSource,
     env: []const NameValue,
 ) !void {
@@ -815,7 +832,7 @@ fn handleTemplateVolume(
 
     std.log.info("processing template volume -> {s}", .{destination});
 
-    template.renderToFile(allocator, volume, env) catch |err| {
+    template.renderToFile(allocator, io, volume, env) catch |err| {
         if (optional) {
             std.log.info("optional template volume at {s} failed, skipping: {s}", .{ destination, @errorName(err) });
             return;
@@ -827,7 +844,7 @@ fn handleTemplateVolume(
     std.log.info("template volume rendered to {s}", .{destination});
 }
 
-fn handleSsmVolume(aws_ctx: *AwsContext, volume: *const SsmVolumeSource) !void {
+fn handleSsmVolume(io: Io, aws_ctx: *AwsContext, volume: *const SsmVolumeSource) !void {
     const path = volume.path;
     const destination = volume.mount.destination;
     const optional = volume.optional orelse false;
@@ -836,7 +853,7 @@ fn handleSsmVolume(aws_ctx: *AwsContext, volume: *const SsmVolumeSource) !void {
 
     const ssm_client = try aws_ctx.getSsm();
 
-    const result = ssm_client.downloadPathToDir(path, destination, .{
+    const result = ssm_client.downloadPathToDir(io, path, destination, .{
         .uid = volume.mount.@"user-id",
         .gid = volume.mount.@"group-id",
     }) catch |err| {
@@ -860,7 +877,7 @@ fn handleSsmVolume(aws_ctx: *AwsContext, volume: *const SsmVolumeSource) !void {
     std.log.info("SSM volume {s} mounted to {s} ({d} files)", .{ path, destination, result.files_written });
 }
 
-fn handleS3Volume(aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
+fn handleS3Volume(io: Io, aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
     const bucket = volume.bucket;
     const key_prefix = volume.@"key-prefix";
     const destination = volume.mount.destination;
@@ -870,7 +887,7 @@ fn handleS3Volume(aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
 
     const s3_client = try aws_ctx.getS3();
 
-    const result = s3_client.downloadPrefixToDir(bucket, key_prefix, destination, .{
+    const result = s3_client.downloadPrefixToDir(io, bucket, key_prefix, destination, .{
         .uid = volume.mount.@"user-id",
         .gid = volume.mount.@"group-id",
     }) catch |err| {
@@ -894,7 +911,11 @@ fn handleS3Volume(aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
     std.log.info("S3 volume s3://{s}/{s} mounted to {s} ({d} files)", .{ bucket, key_prefix, destination, result.files_written });
 }
 
-fn handleSecretsManagerVolume(aws_ctx: *AwsContext, volume: *const SecretsManagerVolumeSource) !void {
+fn handleSecretsManagerVolume(
+    io: Io,
+    aws_ctx: *AwsContext,
+    volume: *const SecretsManagerVolumeSource,
+) !void {
     const secret_id = volume.@"secret-id";
     const destination = volume.mount.destination;
     const optional = volume.optional orelse false;
@@ -903,7 +924,7 @@ fn handleSecretsManagerVolume(aws_ctx: *AwsContext, volume: *const SecretsManage
 
     const sm_client = try aws_ctx.getSecretsManager();
 
-    sm_client.downloadSecretToFile(secret_id, destination, .{
+    sm_client.downloadSecretToFile(io, secret_id, destination, .{
         .uid = volume.mount.@"user-id",
         .gid = volume.mount.@"group-id",
     }) catch |err| {
@@ -918,7 +939,7 @@ fn handleSecretsManagerVolume(aws_ctx: *AwsContext, volume: *const SecretsManage
     std.log.info("Secrets Manager secret {s} mounted to {s}", .{ secret_id, destination });
 }
 
-fn handleEbsVolume(aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
+fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
     const device = volume.device;
 
     std.log.info("processing EBS volume {s}", .{device});
@@ -981,7 +1002,7 @@ fn handleEbsVolume(aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
 
         // Wait for device to appear
         const timeout = attachment.timeout orelse 300;
-        system.waitForDevice(device, timeout) catch |err| {
+        system.waitForDevice(io, device, timeout) catch |err| {
             std.log.err("timeout waiting for device {s}: {s}", .{ device, @errorName(err) });
             return err;
         };
@@ -994,25 +1015,25 @@ fn handleEbsVolume(aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
 
     const fs_type = mnt.@"fs-type".?;
 
-    system.createFilesystem(device, fs_type) catch |err| {
+    system.createFilesystem(io, device, fs_type) catch |err| {
         std.log.err("failed to create filesystem on {s}: {s}", .{ device, @errorName(err) });
         return err;
     };
 
     // Parse mode if specified
-    const mode: std.fs.File.Mode = if (mnt.mode) |mode_str|
+    const mode: posix.mode_t = if (mnt.mode) |mode_str|
         std.fmt.parseInt(u32, mode_str, 8) catch 0o755
     else
         0o755;
 
     // Create mount point with proper permissions
-    fs_utils.mkdir_p_own(mnt.destination, mode, mnt.@"user-id", mnt.@"group-id") catch |err| {
+    fs_utils.mkdir_p_own(io, mnt.destination, mode, mnt.@"user-id", mnt.@"group-id") catch |err| {
         std.log.err("failed to create mount point {s}: {s}", .{ mnt.destination, @errorName(err) });
         return err;
     };
 
     // Mount the device
-    system.mountDevice(device, mnt.destination, fs_type) catch |err| {
+    system.mountDevice(io, device, mnt.destination, fs_type) catch |err| {
         std.log.err("failed to mount {s} on {s}: {s}", .{ device, mnt.destination, @errorName(err) });
         return err;
     };
@@ -1022,6 +1043,7 @@ fn handleEbsVolume(aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
 
 pub fn expandCommandAndArgs(
     allocator: Allocator,
+    io: Io,
     command: []const []const u8,
     args: ?[]const []const u8,
     env: ?[]const NameValue,
@@ -1059,7 +1081,7 @@ pub fn expandCommandAndArgs(
         !std.mem.startsWith(u8, expanded_command[0], constants.DIR_ROOT))
     {
         const path_var = mapping.get("PATH").?;
-        if (try system.findExecutableInPath(allocator, path_var, expanded_command[0])) |resolved| {
+        if (try system.findExecutableInPath(allocator, io, path_var, expanded_command[0])) |resolved| {
             allocator.free(expanded_command[0]);
             expanded_command[0] = resolved;
         } else {
@@ -1140,7 +1162,7 @@ test "expandCommandAndArgs with no env" {
     const allocator = testing.allocator;
 
     var command = [_][]const u8{ "/bin/echo", "hello" };
-    const expanded = try expandCommandAndArgs(allocator, &command, null, null);
+    const expanded = try expandCommandAndArgs(allocator, testing.io, &command, null, null);
     defer expanded.deinit(allocator);
 
     try testing.expectEqual(@as(usize, 2), expanded.command.len);
@@ -1156,7 +1178,7 @@ test "expandCommandAndArgs expands variables in command" {
     var env = [_]NameValue{
         .{ .name = "MSG", .value = "hello world" },
     };
-    const expanded = try expandCommandAndArgs(allocator, &command, null, &env);
+    const expanded = try expandCommandAndArgs(allocator, testing.io, &command, null, &env);
     defer expanded.deinit(allocator);
 
     try testing.expectEqual(@as(usize, 2), expanded.command.len);
@@ -1172,7 +1194,7 @@ test "expandCommandAndArgs expands variables in args" {
     var env = [_]NameValue{
         .{ .name = "MSG", .value = "test" },
     };
-    const expanded = try expandCommandAndArgs(allocator, &command, &args, &env);
+    const expanded = try expandCommandAndArgs(allocator, testing.io, &command, &args, &env);
     defer expanded.deinit(allocator);
 
     try testing.expectEqual(@as(usize, 1), expanded.command.len);
@@ -1193,7 +1215,7 @@ test "expandCommandAndArgs with multiple env vars" {
         .{ .name = "ARG1", .value = "first" },
         .{ .name = "ARG2", .value = "second" },
     };
-    const expanded = try expandCommandAndArgs(allocator, &command, null, &env);
+    const expanded = try expandCommandAndArgs(allocator, testing.io, &command, null, &env);
     defer expanded.deinit(allocator);
 
     try testing.expectEqual(@as(usize, 3), expanded.command.len);
@@ -1209,7 +1231,7 @@ test "expandCommandAndArgs preserves literal strings" {
     var env = [_]NameValue{
         .{ .name = "UNUSED", .value = "value" },
     };
-    const expanded = try expandCommandAndArgs(allocator, &command, null, &env);
+    const expanded = try expandCommandAndArgs(allocator, testing.io, &command, null, &env);
     defer expanded.deinit(allocator);
 
     try testing.expectEqualStrings("no variables here", expanded.command[1]);
@@ -1219,7 +1241,7 @@ test "ExpandedCommand.deinit frees command" {
     const allocator = testing.allocator;
 
     var command = [_][]const u8{"/bin/echo"};
-    const expanded = try expandCommandAndArgs(allocator, &command, null, null);
+    const expanded = try expandCommandAndArgs(allocator, testing.io, &command, null, null);
     expanded.deinit(allocator);
 }
 
@@ -1228,23 +1250,27 @@ test "ExpandedCommand.deinit frees args" {
 
     var command = [_][]const u8{"/bin/sh"};
     var args = [_][]const u8{ "-c", "echo hello" };
-    const expanded = try expandCommandAndArgs(allocator, &command, &args, null);
+    const expanded = try expandCommandAndArgs(allocator, testing.io, &command, &args, null);
     expanded.deinit(allocator);
 }
 
 test "expandCommandAndArgs resolves relative command[0] via PATH" {
     const allocator = testing.allocator;
+    const io = testing.io;
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var bin_dir = try tmp.dir.makeOpenPath("bin", .{});
-    defer bin_dir.close();
-    const f = try bin_dir.createFile("myprog", .{ .mode = 0o755 });
-    f.close();
+    var bin_dir = try tmp.dir.createDirPathOpen(io, "bin", .{});
+    defer bin_dir.close(io);
+    const f = try bin_dir.createFile(io, "myprog", .{
+        .permissions = .fromMode(0o755),
+    });
+    f.close(io);
 
     var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const bin_abs = try tmp.dir.realpath("bin", &abs_buf);
+    const bin_abs_len = try tmp.dir.realPathFile(io, "bin", &abs_buf);
+    const bin_abs = abs_buf[0..bin_abs_len];
 
     var env_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path_value = try std.fmt.bufPrint(&env_buf, "{s}", .{bin_abs});
@@ -1253,7 +1279,7 @@ test "expandCommandAndArgs resolves relative command[0] via PATH" {
     var env = [_]NameValue{
         .{ .name = "PATH", .value = path_value },
     };
-    const expanded = try expandCommandAndArgs(allocator, &command, null, &env);
+    const expanded = try expandCommandAndArgs(allocator, testing.io, &command, null, &env);
     defer expanded.deinit(allocator);
 
     var expected_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1268,7 +1294,7 @@ test "expandCommandAndArgs leaves absolute command[0] unchanged" {
     var env = [_]NameValue{
         .{ .name = "PATH", .value = "/usr/bin:/bin" },
     };
-    const expanded = try expandCommandAndArgs(allocator, &command, null, &env);
+    const expanded = try expandCommandAndArgs(allocator, testing.io, &command, null, &env);
     defer expanded.deinit(allocator);
 
     try testing.expectEqualStrings("/some/absolute/path", expanded.command[0]);

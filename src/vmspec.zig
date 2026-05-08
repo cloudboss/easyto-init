@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const Io = std.Io;
 const testing = std.testing;
 
 const yaml = @import("yaml");
@@ -152,7 +153,11 @@ pub const VmSpec = struct {
         return null;
     }
 
-    pub fn from_config_file(allocator: Allocator, config_file: *const ConfigFile) !VmSpec {
+    pub fn from_config_file(
+        allocator: Allocator,
+        io: Io,
+        config_file: *const ConfigFile,
+    ) !VmSpec {
         var vmspec = VmSpec{};
         const config = config_file.config orelse Config{};
 
@@ -175,10 +180,11 @@ pub const VmSpec = struct {
             if (std.fmt.parseInt(u32, user_group_names.user, 10)) |uid| {
                 vmspec.security.@"run-as-user-id" = uid;
             } else |_| {
-                const passwd_contents = try std.fs.cwd().readFileAlloc(
-                    allocator,
+                const passwd_contents = try Io.Dir.cwd().readFileAlloc(
+                    io,
                     constants.FILE_ETC_PASSWD,
-                    1048576,
+                    allocator,
+                    .limited(1048576),
                 );
                 defer allocator.free(passwd_contents);
                 const uid = try login.user_group_id(passwd_contents, user_group_names.user);
@@ -189,10 +195,11 @@ pub const VmSpec = struct {
                 if (std.fmt.parseInt(u32, group, 10)) |gid| {
                     vmspec.security.@"run-as-group-id" = gid;
                 } else |_| {
-                    const group_contents = try std.fs.cwd().readFileAlloc(
-                        allocator,
+                    const group_contents = try Io.Dir.cwd().readFileAlloc(
+                        io,
                         constants.FILE_ETC_GROUP,
-                        1048576,
+                        allocator,
+                        .limited(1048576),
                     );
                     defer allocator.free(group_contents);
                     const gid = try login.user_group_id(group_contents, group);
@@ -268,21 +275,28 @@ pub const VmSpec = struct {
     fn dupeYamlValue(allocator: Allocator, v: yaml.Value) !yaml.Value {
         return switch (v) {
             .null => .null,
-            .boolean => |b| .{ .boolean = b },
+            .bool => |b| .{ .bool = b },
             .integer => |i| .{ .integer = i },
             .float => |f| .{ .float = f },
             .string => |s| .{ .string = try allocator.dupe(u8, s) },
-            .sequence => |seq| blk: {
-                const out = try allocator.alloc(yaml.Value, seq.len);
-                for (seq, 0..) |item, i| out[i] = try dupeYamlValue(allocator, item);
-                break :blk .{ .sequence = out };
+            .array => |arr| blk: {
+                var out: yaml.Value.Array = .empty;
+                try out.ensureTotalCapacity(allocator, arr.items.len);
+                for (arr.items) |item| {
+                    out.appendAssumeCapacity(try dupeYamlValue(allocator, item));
+                }
+                break :blk .{ .array = out };
             },
-            .mapping => |m| blk: {
-                const keys = try allocator.alloc(yaml.Value, m.keys.len);
-                const vals = try allocator.alloc(yaml.Value, m.values.len);
-                for (m.keys, 0..) |k, i| keys[i] = try dupeYamlValue(allocator, k);
-                for (m.values, 0..) |vv, i| vals[i] = try dupeYamlValue(allocator, vv);
-                break :blk .{ .mapping = .{ .keys = keys, .values = vals } };
+            .object => |m| blk: {
+                var out: yaml.Value.ObjectMap = .empty;
+                try out.ensureTotalCapacity(allocator, m.count());
+                var it = m.iterator();
+                while (it.next()) |entry| {
+                    const dk = try dupeYamlValue(allocator, entry.key_ptr.*);
+                    const dv = try dupeYamlValue(allocator, entry.value_ptr.*);
+                    try out.put(allocator, dk, dv);
+                }
+                break :blk .{ .object = out };
             },
         };
     }

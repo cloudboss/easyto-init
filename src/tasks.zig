@@ -14,11 +14,11 @@ const AwsContext = @import("aws/context.zig").AwsContext;
 const BootContext = dag.BootContext;
 
 pub fn awsContextInit(ctx: *BootContext) !void {
-    ctx.aws_ctx = try AwsContext.init(ctx.allocator);
+    ctx.aws_ctx = try AwsContext.init(ctx.allocator, ctx.io, ctx.env_map);
 }
 
 pub fn networkInit(ctx: *BootContext) !void {
-    try network.initializeNetwork(ctx.allocator, ctx.aws_ctx.?.getImds());
+    try network.initializeNetwork(ctx.allocator, ctx.io, ctx.aws_ctx.?.getImds());
 }
 
 pub fn fetchUserData(ctx: *BootContext) anyerror!void {
@@ -30,7 +30,7 @@ pub fn fetchUserData(ctx: *BootContext) anyerror!void {
 
 pub fn writeUserData(ctx: *BootContext) !void {
     const ud = ctx.user_data orelse return;
-    try init_mod.writeUserData(ud);
+    try init_mod.writeUserData(ctx.io, ud);
 }
 
 pub fn parseUserData(ctx: *BootContext) !void {
@@ -53,20 +53,24 @@ pub fn enableDebugLogging(ctx: *BootContext) !void {
 }
 
 pub fn startUeventListener(ctx: *BootContext) !void {
-    try uevent.startUeventListener(ctx.allocator);
+    try uevent.startUeventListener(ctx.allocator, ctx.io);
 }
 
 pub fn linkNvmeDevices(ctx: *BootContext) !void {
-    try system.link_nvme_devices(ctx.allocator);
+    try system.link_nvme_devices(ctx.allocator, ctx.io);
 }
 
 pub fn readMetadata(ctx: *BootContext) !void {
     const path = constants.DIR_ET ++ "/" ++ constants.FILE_METADATA;
-    ctx.metadata = try init_mod.read_metadata(ctx.allocator, path);
+    ctx.metadata = try init_mod.read_metadata(ctx.allocator, ctx.io, path);
 }
 
 pub fn parseConfigFile(ctx: *BootContext) !void {
-    ctx.vmspec = try VmSpec.from_config_file(ctx.vmspecAllocator(), &ctx.metadata.?.parsed.value);
+    ctx.vmspec = try VmSpec.from_config_file(
+        ctx.vmspecAllocator(),
+        ctx.io,
+        &ctx.metadata.?.parsed.value,
+    );
 }
 
 pub fn mergeVmspec(ctx: *BootContext) !void {
@@ -100,15 +104,15 @@ pub fn expandEnvValues(ctx: *BootContext) !void {
 }
 
 pub fn loadModules(ctx: *BootContext) !void {
-    try system.loadModules(ctx.vmspec.?.modules);
+    try system.loadModules(ctx.io, ctx.vmspec.?.modules);
 }
 
 pub fn setSysctls(ctx: *BootContext) !void {
-    try system.setSysctls(ctx.vmspec.?.sysctls);
+    try system.setSysctls(ctx.io, ctx.vmspec.?.sysctls);
 }
 
 pub fn resizeRootVolume(ctx: *BootContext) !void {
-    system.resizeRootVolume(ctx.allocator);
+    system.resizeRootVolume(ctx.allocator, ctx.io);
 }
 
 pub fn processVolumes(ctx: *BootContext) !void {
@@ -116,6 +120,7 @@ pub fn processVolumes(ctx: *BootContext) !void {
     if (vmspec.volumes) |volumes| {
         try init_mod.processVolumes(
             ctx.allocator,
+            ctx.io,
             &ctx.aws_ctx.?,
             volumes,
             vmspec.env orelse &.{},
@@ -125,13 +130,14 @@ pub fn processVolumes(ctx: *BootContext) !void {
 
 pub fn runInitScripts(ctx: *BootContext) !void {
     const vmspec = ctx.vmspec.?;
-    try system.runInitScripts(vmspec.@"init-scripts", vmspec.env);
+    try system.runInitScripts(ctx.io, vmspec.@"init-scripts", vmspec.env);
 }
 
 pub fn expandCommandAndArgs(ctx: *BootContext) !void {
     const vmspec = ctx.vmspec.?;
     ctx.expanded_command = try init_mod.expandCommandAndArgs(
         ctx.allocator,
+        ctx.io,
         vmspec.full_command(),
         vmspec.command_args(),
         vmspec.env,

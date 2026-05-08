@@ -2,6 +2,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 const system = @import("system.zig");
 
@@ -19,29 +20,33 @@ const SockaddrNl = extern struct {
     groups: u32 = 0,
 };
 
-pub fn startUeventListener(allocator: Allocator) !void {
-    const fd = posix.socket(
+pub fn startUeventListener(allocator: Allocator, io: Io) !void {
+    const sock_ret = linux.socket(
         posix.AF.NETLINK,
         posix.SOCK.DGRAM,
         NETLINK_KOBJECT_UEVENT,
-    ) catch |err| {
-        std.log.err("failed to create netlink socket: {s}", .{@errorName(err)});
-        return err;
-    };
+    );
+    const sock_errno = posix.errno(sock_ret);
+    if (sock_errno != .SUCCESS) {
+        std.log.err("failed to create netlink socket: {s}", .{@tagName(sock_errno)});
+        return error.SocketFailed;
+    }
+    const fd: posix.fd_t = @intCast(sock_ret);
 
     const addr = SockaddrNl{
         .family = posix.AF.NETLINK,
         .groups = 1,
     };
-    posix.bind(fd, @ptrCast(&addr), @sizeOf(SockaddrNl)) catch |err| {
-        std.log.err("failed to bind netlink socket: {s}", .{@errorName(err)});
-        return err;
-    };
+    const bind_errno = posix.errno(linux.bind(fd, @ptrCast(&addr), @sizeOf(SockaddrNl)));
+    if (bind_errno != .SUCCESS) {
+        std.log.err("failed to bind netlink socket: {s}", .{@tagName(bind_errno)});
+        return error.BindFailed;
+    }
 
     const thread = std.Thread.spawn(
         .{ .stack_size = 1024 * 1024 },
         recvMessages,
-        .{ fd, allocator },
+        .{ fd, allocator, io },
     ) catch |err| {
         std.log.err("failed to spawn uevent listener thread: {s}", .{@errorName(err)});
         return err;
@@ -49,17 +54,20 @@ pub fn startUeventListener(allocator: Allocator) !void {
     thread.detach();
 }
 
-fn recvMessages(fd: posix.socket_t, allocator: Allocator) void {
+fn recvMessages(fd: posix.fd_t, allocator: Allocator, io: Io) void {
     std.log.debug("starting uevent listener", .{});
     var buf: [4096]u8 = undefined;
     while (true) {
-        const len = posix.recvfrom(fd, &buf, 0, null, null) catch |err| {
-            std.log.err("error receiving netlink message: {s}", .{@errorName(err)});
+        const ret = linux.recvfrom(fd, &buf, buf.len, 0, null, null);
+        const e = posix.errno(ret);
+        if (e != .SUCCESS) {
+            std.log.err("error receiving netlink message: {s}", .{@tagName(e)});
             continue;
-        };
+        }
+        const len: usize = @intCast(ret);
         if (handleMessage(buf[0..len])) |dev| {
             if (dev) |device| {
-                system.linkNvmeDevice(allocator, device.name, device.part_num) catch |err| {
+                system.linkNvmeDevice(allocator, io, device.name, device.part_num) catch |err| {
                     std.log.err("error linking device {s}: {s}", .{ device.name, @errorName(err) });
                 };
             }

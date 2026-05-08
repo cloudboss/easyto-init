@@ -5,6 +5,7 @@
 //! spot instance termination.
 
 const std = @import("std");
+const Io = std.Io;
 
 const aws = @import("aws");
 
@@ -18,16 +19,22 @@ const POLL_INTERVAL_NS: u64 = 5 * std.time.ns_per_s;
 /// IMDS path for spot instance action (termination/stop notices).
 const SPOT_INSTANCE_ACTION_PATH = "/latest/meta-data/spot/instance-action";
 
+const MonitorArgs = struct {
+    io: Io,
+    env_map: *const std.process.Environ.Map,
+};
+
 /// Starts the spot termination monitor in a background thread.
 ///
 /// The monitor polls IMDS every 5 seconds for spot termination notices.
 /// When a termination notice is detected, it triggers a graceful shutdown
 /// via the supervisor's shutdown_requested atomic.
-pub fn startSpotTerminationMonitor() void {
+pub fn startSpotTerminationMonitor(io: Io, env_map: *const std.process.Environ.Map) void {
+    const args = MonitorArgs{ .io = io, .env_map = env_map };
     const thread = std.Thread.spawn(
         .{ .stack_size = 1024 * 1024 },
         monitorLoop,
-        .{},
+        .{args},
     ) catch |err| {
         scoped_log.err("failed to spawn spot termination monitor thread: {s}", .{@errorName(err)});
         return;
@@ -40,16 +47,17 @@ pub fn startSpotTerminationMonitor() void {
 /// Creates its own IMDS client because this runs in a detached thread that may
 /// outlive the caller's aws_ctx. Sharing the main IMDS client would risk
 /// use-after-free when the main thread cleans up.
-fn monitorLoop() void {
+fn monitorLoop(args: MonitorArgs) void {
     const allocator = std.heap.page_allocator;
-    var imds_client = aws.ImdsClient.init(allocator, .{}) catch |err| {
+    var imds_client = aws.ImdsClient.init(allocator, args.io, args.env_map, .{}) catch |err| {
         scoped_log.err("failed to initialize IMDS client for spot monitor: {s}", .{@errorName(err)});
         return;
     };
     defer imds_client.deinit();
 
+    const poll_dur = Io.Duration.fromNanoseconds(@intCast(POLL_INTERVAL_NS));
     while (true) {
-        std.Thread.sleep(POLL_INTERVAL_NS);
+        Io.sleep(args.io, poll_dur, .awake) catch {};
 
         if (service.isShutdownRequested()) {
             scoped_log.debug("shutdown already requested, stopping spot monitor", .{});

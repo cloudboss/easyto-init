@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
+const posix = std.posix;
 const testing = std.testing;
 
 const aws = @import("aws");
@@ -24,10 +26,15 @@ pub const SecretsManagerClient = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator, region: []const u8) !Self {
+    pub fn init(
+        allocator: Allocator,
+        io: Io,
+        env_map: *const std.process.Environ.Map,
+        region: []const u8,
+    ) !Self {
         return Self{
             .allocator = allocator,
-            .config = try aws.Config.load(allocator, .{ .region = region }),
+            .config = try aws.Config.load(allocator, io, env_map, .{ .region = region }),
         };
     }
 
@@ -99,6 +106,7 @@ pub const SecretsManagerClient = struct {
     /// should be protected.
     pub fn downloadSecretToFile(
         self: *Self,
+        io: Io,
         secret_id: []const u8,
         destination: []const u8,
         options: DownloadOptions,
@@ -111,6 +119,7 @@ pub const SecretsManagerClient = struct {
         scoped_log.debug("writing {s} ({d} bytes)", .{ destination, content.len });
 
         fs_utils.writeFile(
+            io,
             destination,
             content,
             options.file_mode,
@@ -126,8 +135,8 @@ pub const SecretsManagerClient = struct {
 
 /// Options for downloading secrets to the filesystem.
 pub const DownloadOptions = struct {
-    file_mode: std.fs.File.Mode = 0o600, // Secrets should be restrictive
-    dir_mode: std.fs.File.Mode = 0o755,
+    file_mode: posix.mode_t = 0o600, // Secrets should be restrictive
+    dir_mode: posix.mode_t = 0o755,
     uid: ?u32 = null,
     gid: ?u32 = null,
 };
@@ -135,8 +144,8 @@ pub const DownloadOptions = struct {
 test "DownloadOptions has secure defaults" {
     const opts = DownloadOptions{};
     // Secrets should default to 0o600 (owner read/write only)
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o600), opts.file_mode);
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o755), opts.dir_mode);
+    try testing.expectEqual(@as(posix.mode_t, 0o600), opts.file_mode);
+    try testing.expectEqual(@as(posix.mode_t, 0o755), opts.dir_mode);
     try testing.expect(opts.uid == null);
     try testing.expect(opts.gid == null);
 }
@@ -148,8 +157,8 @@ test "DownloadOptions can override permissions" {
         .uid = 1000,
         .gid = 1000,
     };
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o400), opts.file_mode);
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o700), opts.dir_mode);
+    try testing.expectEqual(@as(posix.mode_t, 0o400), opts.file_mode);
+    try testing.expectEqual(@as(posix.mode_t, 0o700), opts.dir_mode);
     try testing.expectEqual(@as(?u32, 1000), opts.uid);
     try testing.expectEqual(@as(?u32, 1000), opts.gid);
 }
