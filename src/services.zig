@@ -43,7 +43,7 @@ pub fn initChrony(allocator: Allocator, io: Io) !void {
     };
     defer allocator.free(passwd_contents);
 
-    const uid = login.user_group_id(passwd_contents, constants.USER_NAME_CHRONY) catch |err| {
+    const uid = login.userGroupId(passwd_contents, constants.USER_NAME_CHRONY) catch |err| {
         std.log.err("user {s} not found: {s}", .{ constants.USER_NAME_CHRONY, @errorName(err) });
         return err;
     };
@@ -54,11 +54,11 @@ pub fn initChrony(allocator: Allocator, io: Io) !void {
     };
     defer allocator.free(group_contents);
 
-    const gid = login.user_group_id(group_contents, constants.USER_NAME_CHRONY) catch uid;
+    const gid = login.userGroupId(group_contents, constants.USER_NAME_CHRONY) catch uid;
 
     // Create chrony run directory with correct ownership
     const chrony_run_path = constants.DIR_ET_RUN ++ "/chrony";
-    try fs_utils.mkdir_p_own(io, chrony_run_path, 0o750, uid, gid);
+    try fs_utils.mkdirRecursiveOwn(io, chrony_run_path, 0o750, uid, gid);
 }
 
 /// Initialize the SSH service.
@@ -140,7 +140,7 @@ fn writeAuthorizedKeys(
     defer allocator.free(auth_keys_path);
 
     // Create .ssh directory if needed
-    try fs_utils.mkdir_p_own(io, ssh_dir, 0o700, uid, gid);
+    try fs_utils.mkdirRecursiveOwn(io, ssh_dir, 0o700, uid, gid);
 
     // Write authorized_keys file
     try fs_utils.writeFile(io, auth_keys_path, pub_key, 0o640, 0o700, uid, gid);

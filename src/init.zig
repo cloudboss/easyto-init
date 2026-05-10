@@ -55,7 +55,7 @@ pub const Mount = struct {
     target: []const u8,
 
     pub fn execute(self: Mount, io: Io, errno: *usize) !void {
-        mkdir_p(io, self.target, self.mode) catch |err| {
+        fs_utils.mkdirRecursive(io, self.target, self.mode) catch |err| {
             std.log.err("failed to create directory {s}: {s}", .{ self.target, @errorName(err) });
             return err;
         };
@@ -88,12 +88,12 @@ const Link = struct {
 
 pub fn run(allocator: Allocator, io: Io, env_map: *std.process.Environ.Map) !void {
     // Pre-DAG serial phase.
-    try base_mounts(io);
-    try setup_test_mode(env_map);
+    try baseMounts(io);
+    try setupTestMode(env_map);
     const boot_start = Io.Timestamp.now(io, .awake);
     std.log.info("easyto-init started", .{});
     std.log.info("creating base symlinks", .{});
-    try base_links(io);
+    try baseLinks(io);
 
     // Parallel DAG phase.
     var ctx = dag.BootContext.init(allocator, io, env_map);
@@ -157,7 +157,7 @@ pub fn run(allocator: Allocator, io: Io, env_map: *std.process.Environ.Map) !voi
     }
 }
 
-fn base_mounts(io: Io) !void {
+fn baseMounts(io: Io) !void {
     const mounts = [_]Mount{
         .{
             .source = "devtmpfs",
@@ -240,7 +240,7 @@ fn base_mounts(io: Io) !void {
     }
 }
 
-fn base_links(io: Io) !void {
+fn baseLinks(io: Io) !void {
     const links = [_]Link{
         .{
             .target = "/proc/self/fd",
@@ -267,7 +267,7 @@ fn base_links(io: Io) !void {
     }
 }
 
-fn setup_test_mode(env_map: *std.process.Environ.Map) !void {
+fn setupTestMode(env_map: *std.process.Environ.Map) !void {
     _ = env_map.get("EASYTO_TEST_MODE") orelse return;
 
     const tty_path = "/dev/ttyS0";
@@ -312,7 +312,7 @@ pub const Metadata = struct {
     }
 };
 
-pub fn read_metadata(allocator: Allocator, io: Io, path: []const u8) !Metadata {
+pub fn readMetadata(allocator: Allocator, io: Io, path: []const u8) !Metadata {
     const contents = try Io.Dir.cwd().readFileAlloc(
         io,
         path,
@@ -363,7 +363,7 @@ pub fn fetchUserData(allocator: Allocator, aws_ctx: *AwsContext) !?[]const u8 {
 }
 
 pub fn writeUserData(io: Io, user_data: []const u8) !void {
-    fs_utils.mkdir_p(io, constants.DIR_ET_VAR_LIB, 0o755) catch |err| {
+    fs_utils.mkdirRecursive(io, constants.DIR_ET_VAR_LIB, 0o755) catch |err| {
         std.log.err("failed to create {s}: {s}", .{ constants.DIR_ET_VAR_LIB, @errorName(err) });
         return err;
     };
@@ -1027,7 +1027,7 @@ fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource)
         0o755;
 
     // Create mount point with proper permissions
-    fs_utils.mkdir_p_own(io, mnt.destination, mode, mnt.@"user-id", mnt.@"group-id") catch |err| {
+    fs_utils.mkdirRecursiveOwn(io, mnt.destination, mode, mnt.@"user-id", mnt.@"group-id") catch |err| {
         std.log.err("failed to create mount point {s}: {s}", .{ mnt.destination, @errorName(err) });
         return err;
     };

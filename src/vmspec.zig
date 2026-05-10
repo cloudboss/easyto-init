@@ -84,7 +84,7 @@ const UserGroupNames = struct {
     user: []const u8,
     group: ?[]const u8,
 
-    fn from_string(str: []const u8) !UserGroupNames {
+    fn fromString(str: []const u8) !UserGroupNames {
         var fields = std.mem.splitSequence(u8, str, ":");
         const user = fields.next() orelse return Error.InvalidUserGroup;
         return UserGroupNames{ .user = user, .group = fields.next() };
@@ -107,7 +107,7 @@ pub const VmSpec = struct {
     volumes: ?[]Volume = null,
     @"working-dir": ?[]const u8 = "/",
 
-    fn env_strings_to_name_values(allocator: Allocator, env: []const []const u8) ![]NameValue {
+    fn envStringsToNameValues(allocator: Allocator, env: []const []const u8) ![]NameValue {
         var name_values = try ArrayList(NameValue).initCapacity(allocator, env.len);
         errdefer {
             for (name_values.items) |*nv| nv.deinit(allocator);
@@ -131,7 +131,7 @@ pub const VmSpec = struct {
         return try name_values.toOwnedSlice(allocator);
     }
 
-    pub fn full_command(self: *const VmSpec) []const []const u8 {
+    pub fn fullCommand(self: *const VmSpec) []const []const u8 {
         const command_len = if (self.command) |c| c.len else 0;
         const args_len = if (self.args) |a| a.len else 0;
 
@@ -145,7 +145,7 @@ pub const VmSpec = struct {
         return self.args.?;
     }
 
-    pub fn command_args(self: *const VmSpec) ?[]const []const u8 {
+    pub fn commandArgs(self: *const VmSpec) ?[]const []const u8 {
         const command_len = if (self.command) |c| c.len else 0;
         if (command_len > 0) {
             return self.args;
@@ -153,7 +153,7 @@ pub const VmSpec = struct {
         return null;
     }
 
-    pub fn from_config_file(
+    pub fn fromConfigFile(
         allocator: Allocator,
         io: Io,
         config_file: *const ConfigFile,
@@ -168,14 +168,14 @@ pub const VmSpec = struct {
             vmspec.command = try dupeStringSlice(allocator, ep);
         }
         if (config.Env) |env| {
-            vmspec.env = try VmSpec.env_strings_to_name_values(allocator, env);
+            vmspec.env = try VmSpec.envStringsToNameValues(allocator, env);
         }
         if (config.WorkingDir) |wd| {
             vmspec.@"working-dir" = try allocator.dupe(u8, wd);
         }
 
         if (config.User != null) {
-            const user_group_names = try UserGroupNames.from_string(config.User.?);
+            const user_group_names = try UserGroupNames.fromString(config.User.?);
 
             if (std.fmt.parseInt(u32, user_group_names.user, 10)) |uid| {
                 vmspec.security.@"run-as-user-id" = uid;
@@ -187,7 +187,7 @@ pub const VmSpec = struct {
                     .limited(1048576),
                 );
                 defer allocator.free(passwd_contents);
-                const uid = try login.user_group_id(passwd_contents, user_group_names.user);
+                const uid = try login.userGroupId(passwd_contents, user_group_names.user);
                 vmspec.security.@"run-as-user-id" = uid;
             }
 
@@ -202,7 +202,7 @@ pub const VmSpec = struct {
                         .limited(1048576),
                     );
                     defer allocator.free(group_contents);
-                    const gid = try login.user_group_id(group_contents, group);
+                    const gid = try login.userGroupId(group_contents, group);
                     vmspec.security.@"run-as-group-id" = gid;
                 }
             }
@@ -230,7 +230,7 @@ pub const VmSpec = struct {
     /// Parse user data from YAML string.
     /// Returns null if the content is empty.
     /// Caller must call .deinit() on the returned ParsedYaml when done.
-    pub fn from_yaml(allocator: Allocator, content: []const u8) !?ParsedYaml {
+    pub fn fromYaml(allocator: Allocator, content: []const u8) !?ParsedYaml {
         const trimmed = std.mem.trim(u8, content, " \t\r\n");
         if (trimmed.len == 0) {
             return null;
@@ -595,19 +595,19 @@ pub const Mount = struct {
     @"user-id": ?u32 = null,
 };
 
-test "VmSpec.env_strings_to_name_values error" {
+test "VmSpec.envStringsToNameValues error" {
     const env_strings = [_][]const u8{"invalid environment variable"};
-    const actual = VmSpec.env_strings_to_name_values(
+    const actual = VmSpec.envStringsToNameValues(
         testing.allocator,
         &env_strings,
     );
     try testing.expectError(Error.InvalidEnvironmentVariable, actual);
 }
 
-test "VmSpec.env_strings_to_name_values empty" {
+test "VmSpec.envStringsToNameValues empty" {
     const env_strings = [_][]const u8{};
     const expected = [_]NameValue{};
-    const actual = try VmSpec.env_strings_to_name_values(
+    const actual = try VmSpec.envStringsToNameValues(
         testing.allocator,
         &env_strings,
     );
@@ -615,7 +615,7 @@ test "VmSpec.env_strings_to_name_values empty" {
     try testing.expectEqualDeep(&expected, actual);
 }
 
-test "VmSpec.env_strings_to_name_values single" {
+test "VmSpec.envStringsToNameValues single" {
     const env_strings = [_][]const u8{"PATH=/bin:/usr/bin"};
     const expected = [_]NameValue{
         .{
@@ -623,7 +623,7 @@ test "VmSpec.env_strings_to_name_values single" {
             .value = "/bin:/usr/bin",
         },
     };
-    const actual = try VmSpec.env_strings_to_name_values(
+    const actual = try VmSpec.envStringsToNameValues(
         testing.allocator,
         &env_strings,
     );
@@ -634,7 +634,7 @@ test "VmSpec.env_strings_to_name_values single" {
     try testing.expectEqualDeep(&expected, actual);
 }
 
-test "VmSpec.env_strings_to_name_values multiple" {
+test "VmSpec.envStringsToNameValues multiple" {
     const env_strings = [_][]const u8{
         "PATH=/bin:/usr/bin",
         "HOME=/app",
@@ -654,7 +654,7 @@ test "VmSpec.env_strings_to_name_values multiple" {
             .value = "/bin/sh",
         },
     };
-    const actual = try VmSpec.env_strings_to_name_values(
+    const actual = try VmSpec.envStringsToNameValues(
         testing.allocator,
         &env_strings,
     );
@@ -665,96 +665,96 @@ test "VmSpec.env_strings_to_name_values multiple" {
     try testing.expectEqualDeep(&expected, actual);
 }
 
-test "VmSpec.env_strings_to_name_values multiple error" {
+test "VmSpec.envStringsToNameValues multiple error" {
     const env_strings = [_][]const u8{
         "PATH=/bin:/usr/bin",
         "HOME=/app",
         "SHELL=/bin/sh",
         "SHELL/bin/sh",
     };
-    const actual = VmSpec.env_strings_to_name_values(
+    const actual = VmSpec.envStringsToNameValues(
         testing.allocator,
         &env_strings,
     );
     try testing.expectError(Error.InvalidEnvironmentVariable, actual);
 }
 
-test "VmSpec.full_command with both empty" {
+test "VmSpec.fullCnommand with both empty" {
     const vmspec = VmSpec{};
-    const cmd = vmspec.full_command();
+    const cmd = vmspec.fullCommand();
     try testing.expectEqual(@as(usize, 1), cmd.len);
     try testing.expectEqualStrings("/.easyto/bin/sh", cmd[0]);
 }
 
-test "VmSpec.full_command with command only" {
+test "VmSpec.fullCommand with command only" {
     var command_arr = [_][]const u8{ "/bin/echo", "hello" };
     const vmspec = VmSpec{
         .command = &command_arr,
     };
-    const cmd = vmspec.full_command();
+    const cmd = vmspec.fullCommand();
     try testing.expectEqual(@as(usize, 2), cmd.len);
     try testing.expectEqualStrings("/bin/echo", cmd[0]);
     try testing.expectEqualStrings("hello", cmd[1]);
 }
 
-test "VmSpec.full_command with args only" {
+test "VmSpec.fullCommand with args only" {
     var args_arr = [_][]const u8{ "/bin/sh", "-c", "echo test" };
     const vmspec = VmSpec{
         .args = &args_arr,
     };
-    const cmd = vmspec.full_command();
+    const cmd = vmspec.fullCommand();
     try testing.expectEqual(@as(usize, 3), cmd.len);
     try testing.expectEqualStrings("/bin/sh", cmd[0]);
 }
 
-test "VmSpec.full_command with command and args" {
+test "VmSpec.fullCommand with command and args" {
     var command_arr = [_][]const u8{"/bin/echo"};
     var args_arr = [_][]const u8{ "hello", "world" };
     const vmspec = VmSpec{
         .command = &command_arr,
         .args = &args_arr,
     };
-    const cmd = vmspec.full_command();
+    const cmd = vmspec.fullCommand();
     try testing.expectEqual(@as(usize, 1), cmd.len);
     try testing.expectEqualStrings("/bin/echo", cmd[0]);
-    const cmd_args = vmspec.command_args();
+    const cmd_args = vmspec.commandArgs();
     try testing.expect(cmd_args != null);
     try testing.expectEqual(@as(usize, 2), cmd_args.?.len);
 }
 
-test "VmSpec.command_args returns null when command is null" {
+test "VmSpec.commandArgs returns null when command is null" {
     const vmspec = VmSpec{};
-    try testing.expect(vmspec.command_args() == null);
+    try testing.expect(vmspec.commandArgs() == null);
 }
 
-test "VmSpec.command_args returns null when command is empty" {
+test "VmSpec.commandArgs returns null when command is empty" {
     var empty_command = [_][]const u8{};
     const vmspec = VmSpec{
         .command = &empty_command,
     };
-    try testing.expect(vmspec.command_args() == null);
+    try testing.expect(vmspec.commandArgs() == null);
 }
 
-test "UserGroupNames.from_string user only" {
-    const ug = try UserGroupNames.from_string("postgres");
+test "UserGroupNames.fromString user only" {
+    const ug = try UserGroupNames.fromString("postgres");
     try testing.expectEqualStrings("postgres", ug.user);
     try testing.expect(ug.group == null);
 }
 
-test "UserGroupNames.from_string user and group" {
-    const ug = try UserGroupNames.from_string("postgres:postgres");
+test "UserGroupNames.fromString user and group" {
+    const ug = try UserGroupNames.fromString("postgres:postgres");
     try testing.expectEqualStrings("postgres", ug.user);
     try testing.expectEqualStrings("postgres", ug.group.?);
 }
 
-test "UserGroupNames.from_string user and different group" {
-    const ug = try UserGroupNames.from_string("www-data:nginx");
+test "UserGroupNames.fromString user and different group" {
+    const ug = try UserGroupNames.fromString("www-data:nginx");
     try testing.expectEqualStrings("www-data", ug.user);
     try testing.expectEqualStrings("nginx", ug.group.?);
 }
 
-test "UserGroupNames.from_string numeric user" {
-    const ug = try UserGroupNames.from_string("1000:1000");
+test "UserGroupNames.fromString numeric user" {
+    const ug = try UserGroupNames.fromString("1000:1000");
     try testing.expectEqualStrings("1000", ug.user);
     try testing.expectEqualStrings("1000", ug.group.?);
 }
@@ -886,23 +886,23 @@ test "Security.merge overrides all fields" {
     try testing.expectEqual(@as(?bool, true), security.sshd.enable);
 }
 
-test "VmSpec.from_yaml returns null for empty input" {
-    const result = try VmSpec.from_yaml(testing.allocator, "");
+test "VmSpec.fromYaml returns null for empty input" {
+    const result = try VmSpec.fromYaml(testing.allocator, "");
     try testing.expect(result == null);
 }
 
-test "VmSpec.from_yaml returns null for whitespace-only input" {
-    const result = try VmSpec.from_yaml(testing.allocator, "   \n\t\r\n  ");
+test "VmSpec.fromYaml returns null for whitespace-only input" {
+    const result = try VmSpec.fromYaml(testing.allocator, "   \n\t\r\n  ");
     try testing.expect(result == null);
 }
 
-test "VmSpec.from_yaml parses command" {
+test "VmSpec.fromYaml parses command" {
     const yaml_content =
         \\command:
         \\  - /bin/echo
         \\  - hello
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -912,7 +912,7 @@ test "VmSpec.from_yaml parses command" {
     try testing.expectEqualStrings("hello", vmspec.command.?[1]);
 }
 
-test "VmSpec.from_yaml parses env" {
+test "VmSpec.fromYaml parses env" {
     const yaml_content =
         \\env:
         \\  - name: FOO
@@ -920,7 +920,7 @@ test "VmSpec.from_yaml parses env" {
         \\  - name: BAZ
         \\    value: qux
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -930,14 +930,14 @@ test "VmSpec.from_yaml parses env" {
     try testing.expectEqualStrings("bar", vmspec.env.?[0].value);
 }
 
-test "VmSpec.from_yaml parses security" {
+test "VmSpec.fromYaml parses security" {
     const yaml_content =
         \\security:
         \\  run-as-user-id: 1000
         \\  run-as-group-id: 1000
         \\  readonly-root-fs: true
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -946,36 +946,36 @@ test "VmSpec.from_yaml parses security" {
     try testing.expectEqual(@as(?bool, true), vmspec.security.@"readonly-root-fs");
 }
 
-test "VmSpec.from_yaml parses debug flag" {
+test "VmSpec.fromYaml parses debug flag" {
     const yaml_content = "debug: true";
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
     try testing.expectEqual(@as(?bool, true), vmspec.debug);
 }
 
-test "VmSpec.from_yaml parses replace-init flag" {
+test "VmSpec.fromYaml parses replace-init flag" {
     const yaml_content = "replace-init: true";
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
     try testing.expectEqual(@as(?bool, true), vmspec.@"replace-init");
 }
 
-test "VmSpec.from_yaml parses working-dir" {
+test "VmSpec.fromYaml parses working-dir" {
     const yaml_content = "working-dir: /app";
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
     try testing.expectEqualStrings("/app", vmspec.@"working-dir".?);
 }
 
-test "VmSpec.from_yaml treats null working-dir as null" {
+test "VmSpec.fromYaml treats null working-dir as null" {
     const yaml_content = "working-dir: null";
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -983,22 +983,22 @@ test "VmSpec.from_yaml treats null working-dir as null" {
     try testing.expect(vmspec.@"working-dir" == null);
 }
 
-test "VmSpec.from_yaml parses shutdown-grace-period" {
+test "VmSpec.fromYaml parses shutdown-grace-period" {
     const yaml_content = "shutdown-grace-period: 30";
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
     try testing.expectEqual(@as(?u64, 30), vmspec.@"shutdown-grace-period");
 }
 
-test "VmSpec.from_yaml parses modules" {
+test "VmSpec.fromYaml parses modules" {
     const yaml_content =
         \\modules:
         \\  - nvme
         \\  - xfs
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -1008,13 +1008,13 @@ test "VmSpec.from_yaml parses modules" {
     try testing.expectEqualStrings("xfs", vmspec.modules.?[1]);
 }
 
-test "VmSpec.from_yaml parses sysctls" {
+test "VmSpec.fromYaml parses sysctls" {
     const yaml_content =
         \\sysctls:
         \\  - name: net.ipv4.ip_forward
         \\    value: 1
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -1024,13 +1024,13 @@ test "VmSpec.from_yaml parses sysctls" {
     try testing.expectEqualStrings("1", vmspec.sysctls.?[0].value);
 }
 
-test "VmSpec.from_yaml parses init-scripts" {
+test "VmSpec.fromYaml parses init-scripts" {
     const yaml_content =
         \\init-scripts:
         \\  - /etc/init.d/script1
         \\  - /etc/init.d/script2
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -1039,13 +1039,13 @@ test "VmSpec.from_yaml parses init-scripts" {
     try testing.expectEqualStrings("/etc/init.d/script1", vmspec.@"init-scripts".?[0]);
 }
 
-test "VmSpec.from_yaml parses disable-services" {
+test "VmSpec.fromYaml parses disable-services" {
     const yaml_content =
         \\disable-services:
         \\  - sshd
         \\  - network
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -1054,7 +1054,7 @@ test "VmSpec.from_yaml parses disable-services" {
     try testing.expectEqualStrings("sshd", vmspec.@"disable-services".?[0]);
 }
 
-test "VmSpec.from_yaml parses env-from with imds" {
+test "VmSpec.fromYaml parses env-from with imds" {
     const yaml_content =
         \\env-from:
         \\  - imds:
@@ -1062,7 +1062,7 @@ test "VmSpec.from_yaml parses env-from with imds" {
         \\      path: /latest/meta-data/instance-id
         \\      optional: true
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -1074,7 +1074,7 @@ test "VmSpec.from_yaml parses env-from with imds" {
     try testing.expectEqual(@as(?bool, true), imds.optional);
 }
 
-test "VmSpec.from_yaml parses env-from with s3" {
+test "VmSpec.fromYaml parses env-from with s3" {
     const yaml_content =
         \\env-from:
         \\  - s3:
@@ -1082,7 +1082,7 @@ test "VmSpec.from_yaml parses env-from with s3" {
         \\      key: config/env.json
         \\      name: S3_CONFIG
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -1093,14 +1093,14 @@ test "VmSpec.from_yaml parses env-from with s3" {
     try testing.expectEqualStrings("S3_CONFIG", s3.name.?);
 }
 
-test "VmSpec.from_yaml parses env-from with secrets-manager" {
+test "VmSpec.fromYaml parses env-from with secrets-manager" {
     const yaml_content =
         \\env-from:
         \\  - secrets-manager:
         \\      name: DB_PASSWORD
         \\      secret-id: prod/db/password
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -1111,7 +1111,7 @@ test "VmSpec.from_yaml parses env-from with secrets-manager" {
     try testing.expectEqualStrings("prod/db/password", sm.@"secret-id");
 }
 
-test "VmSpec.from_yaml parses env-from with ssm" {
+test "VmSpec.fromYaml parses env-from with ssm" {
     const yaml_content =
         \\env-from:
         \\  - ssm:
@@ -1119,7 +1119,7 @@ test "VmSpec.from_yaml parses env-from with ssm" {
         \\      name: API_KEY
         \\      base64-encode: true
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -1286,7 +1286,7 @@ test "VmSpec.merge working-dir" {
     try testing.expectEqualStrings("/app", vmspec.@"working-dir".?);
 }
 
-test "VmSpec.from_yaml parses both env and env-from" {
+test "VmSpec.fromYaml parses both env and env-from" {
     const yaml_content =
         \\env:
         \\  - name: DATABASE_URL
@@ -1302,7 +1302,7 @@ test "VmSpec.from_yaml parses both env and env-from" {
         \\      secret-id: app/db/password
         \\      name: DB_PASS
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 
@@ -1344,7 +1344,7 @@ test "VmSpec.merge env-from" {
         \\      path: /app/config
         \\      name: CONFIG
     ;
-    const other_parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const other_parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer other_parsed.deinit();
     const other = other_parsed.value;
 
@@ -1360,7 +1360,7 @@ test "VmSpec.merge env-from" {
     try testing.expect(vmspec.@"env-from".?[1].ssm != null);
 }
 
-test "VmSpec.from_yaml parses user data with quoted keys" {
+test "VmSpec.fromYaml parses user data with quoted keys" {
     const yaml_content =
         \\"args": null
         \\"command":
@@ -1391,7 +1391,7 @@ test "VmSpec.from_yaml parses user data with quoted keys" {
         \\  "value": "1"
         \\"working-dir": null
     ;
-    const parsed = (try VmSpec.from_yaml(testing.allocator, yaml_content)).?;
+    const parsed = (try VmSpec.fromYaml(testing.allocator, yaml_content)).?;
     defer parsed.deinit();
     const vmspec = parsed.value;
 

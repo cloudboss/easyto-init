@@ -12,7 +12,7 @@ pub fn equals(left: []const u8, right: []const u8) bool {
     return true;
 }
 
-pub fn starts_with(string: []const u8, prefix: []const u8) bool {
+pub fn startsWith(string: []const u8, prefix: []const u8) bool {
     if (string.len < prefix.len) {
         return false;
     }
@@ -35,11 +35,11 @@ test "string equals" {
     try testing.expect(!equals("hello, world", "hello, world!"));
 }
 
-test "string starts_with" {
-    try testing.expect(starts_with("", ""));
-    try testing.expect(starts_with("hello, world", ""));
-    try testing.expect(starts_with("hello, world", "hello"));
-    try testing.expect(!starts_with("", "hello"));
-    try testing.expect(!starts_with("hello, world", "world"));
-    try testing.expect(!starts_with("hello, world", "hello, world!"));
+test "string startsWith" {
+    try testing.expect(startsWith("", ""));
+    try testing.expect(startsWith("hello, world", ""));
+    try testing.expect(startsWith("hello, world", "hello"));
+    try testing.expect(!startsWith("", "hello"));
+    try testing.expect(!startsWith("hello, world", "world"));
+    try testing.expect(!startsWith("hello, world", "hello, world!"));
 }

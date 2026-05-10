@@ -33,7 +33,7 @@ pub fn renderToFile(
     const mode = try parseMode(tmpl.mount.mode, 0o644);
 
     if (std.fs.path.dirname(destination)) |parent| {
-        try fs.mkdir_p(io, parent, 0o755);
+        try fs.mkdirRecursive(io, parent, 0o755);
     }
 
     const mapping: ?yaml.Value.ObjectMap = if (tmpl.variables) |v| switch (v) {

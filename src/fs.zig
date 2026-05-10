@@ -4,19 +4,19 @@ const linux = std.os.linux;
 const posix = std.posix;
 const Io = std.Io;
 
-pub fn mkdir_p(io: Io, path: []const u8, mode: posix.mode_t) !void {
-    try mkdir_p_at(io, Io.Dir.cwd(), path, mode);
+pub fn mkdirRecursive(io: Io, path: []const u8, mode: posix.mode_t) !void {
+    try mkdirRecursiveAt(io, Io.Dir.cwd(), path, mode);
 }
 
-fn mkdir_p_at(io: Io, dir: Io.Dir, path: []const u8, mode: posix.mode_t) !void {
+fn mkdirRecursiveAt(io: Io, dir: Io.Dir, path: []const u8, mode: posix.mode_t) !void {
     if (path.len == 0 or std.mem.eql(u8, path, "/")) return;
     _ = try dir.createDirPathStatus(io, path, .fromMode(mode));
 }
 
 /// Create directories recursively with specified ownership. Each intermediate
-/// component is chowned individually; `mkdir_p` is preferred when ownership
+/// component is chowned individually; `mkdirRecursive` is preferred when ownership
 /// is not needed.
-pub fn mkdir_p_own(
+pub fn mkdirRecursiveOwn(
     io: Io,
     path: []const u8,
     mode: posix.mode_t,
@@ -57,7 +57,7 @@ pub fn writeFile(
     // Create parent directories
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |last_slash| {
         if (last_slash > 0) {
-            try mkdir_p_own(io, path[0..last_slash], dir_mode, uid, gid);
+            try mkdirRecursiveOwn(io, path[0..last_slash], dir_mode, uid, gid);
         }
     }
 
@@ -190,71 +190,71 @@ pub fn joinPath(allocator: std.mem.Allocator, base: []const u8, relative: []cons
     return try std.fmt.allocPrint(allocator, "{s}/{s}", .{ b, rel });
 }
 
-test "mkdir_p creates nested directories" {
+test "mkdirRecursiveAt creates nested directories" {
     const io = std.testing.io;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const sub_path = "a/b/c";
-    try mkdir_p_at(io, tmp_dir.dir, sub_path, 0o755);
+    try mkdirRecursiveAt(io, tmp_dir.dir, sub_path, 0o755);
 
     var dir = try tmp_dir.dir.openDir(io, sub_path, .{});
     dir.close(io);
 }
 
-test "mkdir_p succeeds when path already exists" {
+test "mkdirRecursiveAt succeeds when path already exists" {
     const io = std.testing.io;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const sub_path = "existing/path";
-    try mkdir_p_at(io, tmp_dir.dir, sub_path, 0o755);
+    try mkdirRecursiveAt(io, tmp_dir.dir, sub_path, 0o755);
 
     // Call again - should not fail
-    try mkdir_p_at(io, tmp_dir.dir, sub_path, 0o755);
+    try mkdirRecursiveAt(io, tmp_dir.dir, sub_path, 0o755);
 
     var dir = try tmp_dir.dir.openDir(io, sub_path, .{});
     dir.close(io);
 }
 
-test "mkdir_p with single component path" {
+test "mkdirRecursiveAt with single component path" {
     const io = std.testing.io;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const sub_path = "single";
-    try mkdir_p_at(io, tmp_dir.dir, sub_path, 0o755);
+    try mkdirRecursiveAt(io, tmp_dir.dir, sub_path, 0o755);
 
     var dir = try tmp_dir.dir.openDir(io, sub_path, .{});
     dir.close(io);
 }
 
-test "mkdir_p with trailing slash" {
+test "mkdirRecursiveAt with trailing slash" {
     const io = std.testing.io;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const sub_path = "trailing/slash/";
-    try mkdir_p_at(io, tmp_dir.dir, sub_path, 0o755);
+    try mkdirRecursiveAt(io, tmp_dir.dir, sub_path, 0o755);
 
     var dir = try tmp_dir.dir.openDir(io, "trailing/slash", .{});
     dir.close(io);
 }
 
-test "mkdir_p with empty path is a no-op" {
+test "mkdirRecursiveAt with empty path is a no-op" {
     const io = std.testing.io;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try mkdir_p_at(io, tmp_dir.dir, "", 0o755);
+    try mkdirRecursiveAt(io, tmp_dir.dir, "", 0o755);
 }
 
-test "mkdir_p with root path is a no-op" {
+test "mkdirRecursiveAt with root path is a no-op" {
     const io = std.testing.io;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try mkdir_p_at(io, tmp_dir.dir, "/", 0o755);
+    try mkdirRecursiveAt(io, tmp_dir.dir, "/", 0o755);
 }
 
 test "atomicWriteFile creates file with content and mode" {

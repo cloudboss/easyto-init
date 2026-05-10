@@ -12,7 +12,7 @@ pub const UserEntry = struct {
     shell: []const u8,
 };
 
-pub fn user_group_id(contents: []const u8, name: []const u8) !u32 {
+pub fn userGroupId(contents: []const u8, name: []const u8) !u32 {
     var lines = std.mem.splitScalar(u8, contents, '\n');
 
     while (lines.next()) |line| {
@@ -75,7 +75,7 @@ pub fn getUserEntry(contents: []const u8, name: []const u8) !UserEntry {
 
 const testing = std.testing;
 
-test "user_group_id user id" {
+test "userGroupId user id" {
     const contents =
         \\tcpdump:x:72:72:tcpdump:/:/usr/sbin/nologin
         \\systemd-coredump:x:978:978:systemd Core Dumper:/:/usr/sbin/nologin
@@ -86,14 +86,14 @@ test "user_group_id user id" {
         \\stapunpriv:x:159:159:systemtap unprivileged user:/var/lib/stapunpriv:/sbin/nologin
     ;
 
-    const id = user_group_id(contents, "tcpdump");
+    const id = userGroupId(contents, "tcpdump");
     try testing.expectEqual(72, id);
 
-    const notfound = user_group_id(contents, "xyz");
+    const notfound = userGroupId(contents, "xyz");
     try testing.expectError(error.UserGroupIdNotFound, notfound);
 }
 
-test "user_group_id group id" {
+test "userGroupId group id" {
     const contents =
         \\joseph:x:1000:
         \\stapusr:x:156:
@@ -106,10 +106,10 @@ test "user_group_id group id" {
         \\stapunpriv:x:159:stapunpriv
     ;
 
-    const id = user_group_id(contents, "joseph");
+    const id = userGroupId(contents, "joseph");
     try testing.expectEqual(1000, id);
 
-    const notfound = user_group_id(contents, "xyz");
+    const notfound = userGroupId(contents, "xyz");
     try testing.expectError(error.UserGroupIdNotFound, notfound);
 }
 

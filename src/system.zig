@@ -39,7 +39,7 @@ pub fn remountRootReadonly() !void {
     }
 }
 
-pub fn link_nvme_devices(allocator: Allocator, io: Io) !void {
+pub fn linkNvmeDevices(allocator: Allocator, io: Io) !void {
     var dir = Io.Dir.openDirAbsolute(
         io,
         SYS_BLOCK_PATH,
@@ -59,7 +59,7 @@ pub fn link_nvme_devices(allocator: Allocator, io: Io) !void {
 
         linkNvmeDevice(allocator, io, device_name, null) catch {};
 
-        var partitions = disk_partitions(
+        var partitions = diskPartitions(
             allocator,
             io,
             device_name,
@@ -111,7 +111,7 @@ pub fn linkNvmeDevice(
     defer file.close(io);
 
     var errno: usize = 0;
-    var nvme_info = nvme.Nvme.from_fd(allocator, file.handle, &errno) catch |err| {
+    var nvme_info = nvme.Nvme.fromFd(allocator, file.handle, &errno) catch |err| {
         std.log.debug(
             "skipping {s}: not an Amazon NVMe device: {s}",
             .{ device_name, @errorName(err) },
@@ -132,7 +132,7 @@ pub fn linkNvmeDevice(
 
     var link_name_buf: [128]u8 = undefined;
     const link_name = if (part_num) |pn|
-        if (device_has_numeric_suffix(ec2_name))
+        if (deviceHasNumericSuffix(ec2_name))
             try fmt.bufPrint(&link_name_buf, "{s}p{s}", .{ ec2_name, pn })
         else
             try fmt.bufPrint(&link_name_buf, "{s}{s}", .{ ec2_name, pn })
@@ -167,7 +167,7 @@ pub fn linkNvmeDevice(
     }
 }
 
-fn disk_partitions(
+fn diskPartitions(
     allocator: Allocator,
     io: Io,
     device: []const u8,
@@ -233,7 +233,7 @@ fn disk_partitions(
     return partitions;
 }
 
-pub fn device_has_numeric_suffix(device: []const u8) bool {
+pub fn deviceHasNumericSuffix(device: []const u8) bool {
     const len = device.len;
     if (len == 0) {
         return false;
@@ -360,7 +360,7 @@ pub fn mountDevice(io: Io, device: []const u8, destination: []const u8, fs_type:
     const fs_utils = @import("fs.zig");
 
     // Create mount point if it doesn't exist
-    fs_utils.mkdir_p(io, destination, 0o755) catch |err| {
+    fs_utils.mkdirRecursive(io, destination, 0o755) catch |err| {
         std.log.err("failed to create mount point {s}: {s}", .{ destination, @errorName(err) });
         return err;
     };
@@ -1004,11 +1004,11 @@ test "procPathFromDotted single component" {
     try testing.expectEqualStrings("/proc/sys/hostname", result);
 }
 
-test "device_has_numeric_suffix" {
-    try testing.expect(device_has_numeric_suffix("") == false);
-    try testing.expect(device_has_numeric_suffix("sda") == false);
-    try testing.expect(device_has_numeric_suffix("sda1") == true);
-    try testing.expect(device_has_numeric_suffix("sda10") == true);
+test "deviceHasNumericSuffix" {
+    try testing.expect(deviceHasNumericSuffix("") == false);
+    try testing.expect(deviceHasNumericSuffix("sda") == false);
+    try testing.expect(deviceHasNumericSuffix("sda1") == true);
+    try testing.expect(deviceHasNumericSuffix("sda10") == true);
 }
 
 test "findExecutableInPath finds executable in first matching dir" {

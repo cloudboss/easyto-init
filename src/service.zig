@@ -90,7 +90,7 @@ pub const Supervisor = struct {
     }
 
     pub fn start(self: *Supervisor) !void {
-        setup_signal_handlers();
+        setupSignalHandlers();
 
         const enabled_services = services_mod.findEnabledServices(
             self.allocator,
@@ -135,7 +135,7 @@ pub const Supervisor = struct {
 
         std.log.info("starting main process: {s}", .{self.command[0]});
 
-        const pid = try self.spawn_process();
+        const pid = try self.spawnProcess();
         self.main_pid = pid;
         std.log.info("main process started with pid {d}", .{pid});
     }
@@ -195,7 +195,7 @@ pub const Supervisor = struct {
         while (true) {
             if (shutdown_requested.load(.acquire) and !main_exited) {
                 std.log.info("shutdown requested, terminating processes", .{});
-                self.graceful_shutdown();
+                self.gracefulShutdown();
                 self.waitServiceThreads();
                 return;
             }
@@ -212,7 +212,7 @@ pub const Supervisor = struct {
                     main_exited = true;
                     // Signal service threads to stop restarting
                     requestShutdown();
-                    self.graceful_shutdown();
+                    self.gracefulShutdown();
                     self.waitServiceThreads();
                     return;
                 }
@@ -229,7 +229,7 @@ pub const Supervisor = struct {
 
             if (shutdown_requested.load(.acquire) and !main_exited) {
                 std.log.info("shutdown requested, terminating processes", .{});
-                self.graceful_shutdown();
+                self.gracefulShutdown();
                 self.waitServiceThreads();
                 return;
             }
@@ -250,9 +250,9 @@ pub const Supervisor = struct {
         services_mod.deinit();
     }
 
-    fn graceful_shutdown(self: *Supervisor) void {
+    fn gracefulShutdown(self: *Supervisor) void {
         std.log.info("sending SIGTERM to all processes", .{});
-        self.signal_all(posix.SIG.TERM);
+        self.signalAll(posix.SIG.TERM);
 
         const grace_ns = self.shutdown_grace_period * std.time.ns_per_s;
         const start_time = Io.Timestamp.now(self.io, .awake);
@@ -279,7 +279,7 @@ pub const Supervisor = struct {
         }
 
         std.log.info("grace period expired, sending SIGKILL to all processes", .{});
-        self.signal_all(posix.SIG.KILL);
+        self.signalAll(posix.SIG.KILL);
 
         while (true) {
             var status: u32 = 0;
@@ -292,8 +292,8 @@ pub const Supervisor = struct {
         std.log.info("all processes terminated", .{});
     }
 
-    fn signal_all(self: *Supervisor, sig: posix.SIG) void {
-        const pids = get_all_pids(self.io) catch |err| {
+    fn signalAll(self: *Supervisor, sig: posix.SIG) void {
+        const pids = getAllPids(self.io) catch |err| {
             std.log.err("failed to enumerate pids: {s}", .{@errorName(err)});
             return;
         };
@@ -304,7 +304,7 @@ pub const Supervisor = struct {
         }
     }
 
-    fn spawn_process(self: *Supervisor) !posix.pid_t {
+    fn spawnProcess(self: *Supervisor) !posix.pid_t {
         const command_len = self.command.len;
         const args_len = if (self.args) |a| a.len else 0;
         const total_len = command_len + args_len;
@@ -356,13 +356,13 @@ pub const Supervisor = struct {
 
         const pid: posix.pid_t = @intCast(pid_result);
         if (pid == 0) {
-            self.exec_child(argv, envp);
+            self.execChild(argv, envp);
         }
 
         return pid;
     }
 
-    fn exec_child(self: *Supervisor, argv: []?[*:0]const u8, envp: []?[*:0]const u8) noreturn {
+    fn execChild(self: *Supervisor, argv: []?[*:0]const u8, envp: []?[*:0]const u8) noreturn {
         var wd_buf: [posix.PATH_MAX]u8 = undefined;
         if (self.working_dir.len >= wd_buf.len) {
             std.log.err("working_dir too long", .{});
@@ -567,9 +567,9 @@ fn execServiceProcess(
     linux.exit(1);
 }
 
-fn setup_signal_handlers() void {
+fn setupSignalHandlers() void {
     const handler = posix.Sigaction{
-        .handler = .{ .handler = signal_handler },
+        .handler = .{ .handler = signalHandler },
         .mask = posix.sigemptyset(),
         .flags = 0,
     };
@@ -579,12 +579,12 @@ fn setup_signal_handlers() void {
     posix.sigaction(SIGPOWEROFF, &handler, null);
 }
 
-fn signal_handler(sig: posix.SIG) callconv(.c) void {
+fn signalHandler(sig: posix.SIG) callconv(.c) void {
     _ = sig;
     shutdown_requested.store(true, .release);
 }
 
-fn get_all_pids(io: Io) ![]posix.pid_t {
+fn getAllPids(io: Io) ![]posix.pid_t {
     var pids = std.ArrayList(posix.pid_t).initCapacity(std.heap.page_allocator, 100) catch {
         return error.OutOfMemory;
     };
@@ -602,7 +602,7 @@ fn get_all_pids(io: Io) ![]posix.pid_t {
 
         const pid = std.fmt.parseInt(posix.pid_t, entry.name, 10) catch continue;
         if (pid == 1) continue;
-        if (is_kernel_thread(io, pid)) continue;
+        if (isKernelThread(io, pid)) continue;
 
         try pids.append(std.heap.page_allocator, pid);
     }
@@ -648,7 +648,7 @@ pub fn errnoDescription(err: posix.E) []const u8 {
     };
 }
 
-fn is_kernel_thread(io: Io, pid: posix.pid_t) bool {
+fn isKernelThread(io: Io, pid: posix.pid_t) bool {
     var path_buf: [64]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/stat", .{pid}) catch return true;
 
@@ -664,12 +664,12 @@ fn is_kernel_thread(io: Io, pid: posix.pid_t) bool {
     return parseKernelThreadStatus(content) catch true;
 }
 
-test "is_kernel_thread returns false for init process" {
-    try testing.expect(!is_kernel_thread(testing.io, 1));
+test "isKernelThread returns false for init process" {
+    try testing.expect(!isKernelThread(testing.io, 1));
 }
 
-test "get_all_pids does not include pid 1" {
-    const pids = try get_all_pids(testing.io);
+test "getAllPids does not include pid 1" {
+    const pids = try getAllPids(testing.io);
     defer std.heap.page_allocator.free(pids);
 
     for (pids) |pid| {

@@ -161,7 +161,7 @@ const NvmePassthruCmd = extern struct {
     result: c_uint,
 };
 
-pub fn nvme_identify_ctrl(fd: std.posix.fd_t, errno: *usize) !NvmeIdCtrl {
+pub fn nvmeIdentifyCtrl(fd: std.posix.fd_t, errno: *usize) !NvmeIdCtrl {
     const request = std.os.linux.IOCTL.IOWR('N', NVME_IOCTL_ADMIN_CMD_NUM, NvmePassthruCmd);
     var out = std.mem.zeroInit(NvmeIdCtrl, .{});
     var arg = std.mem.zeroInit(NvmePassthruCmd, .{
@@ -188,7 +188,7 @@ pub const Names = struct {
     /// Virtual name for instance store volumes, such as ephemeral0.
     virtual_name: ?[]const u8,
 
-    pub fn from_string(allocator: Allocator, str: []const u8) !Names {
+    pub fn fromString(allocator: Allocator, str: []const u8) !Names {
         const COLON: u8 = 0x3a;
         const SPACE: u8 = 0x20;
         const NULL: u8 = 0x0;
@@ -219,11 +219,11 @@ pub const Names = struct {
             return Error.NoDeviceName;
         }
 
-        if (string.starts_with(str[field1_start..], "/dev")) {
+        if (string.startsWith(str[field1_start..], "/dev")) {
             field1_start = 5;
         }
 
-        if ((field2_start > 0) and (string.starts_with(str[field2_start..], "/dev"))) {
+        if ((field2_start > 0) and (string.startsWith(str[field2_start..], "/dev"))) {
             field2_start += 5;
         }
 
@@ -303,8 +303,8 @@ pub const Nvme = struct {
     /// The [vendor ID](VendorId) of the device.
     vendor_id: u16,
 
-    pub fn from_fd(allocator: Allocator, fd: std.posix.fd_t, errno: *usize) !Nvme {
-        const ctrl = try nvme_identify_ctrl(fd, errno);
+    pub fn fromFd(allocator: Allocator, fd: std.posix.fd_t, errno: *usize) !Nvme {
+        const ctrl = try nvmeIdentifyCtrl(fd, errno);
         if (ctrl.vid != AMZ_VENDOR_ID) {
             return Error.UnknownVendorId;
         }
@@ -315,7 +315,7 @@ pub const Nvme = struct {
         }
         const model = try parseModel(&mn);
 
-        const names = try Names.from_string(allocator, &ctrl.vs.bdev);
+        const names = try Names.fromString(allocator, &ctrl.vs.bdev);
 
         return Nvme{
             .model = model,
@@ -350,14 +350,14 @@ pub const Nvme = struct {
 
 test "parse nvme names empty" {
     const allocator = testing.allocator;
-    const names = Names.from_string(allocator, "");
+    const names = Names.fromString(allocator, "");
 
     try testing.expectError(Error.NoDeviceName, names);
 }
 
 test "parse nvme names without virtual_name" {
     const allocator = testing.allocator;
-    var names = try Names.from_string(allocator, "/dev/sda1");
+    var names = try Names.fromString(allocator, "/dev/sda1");
     defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sda1"));
@@ -366,7 +366,7 @@ test "parse nvme names without virtual_name" {
 
 test "parse nvme names without virtual_name including spaces" {
     const allocator = testing.allocator;
-    var names = try Names.from_string(allocator, "/dev/sda1    ");
+    var names = try Names.fromString(allocator, "/dev/sda1    ");
     defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sda1"));
@@ -375,7 +375,7 @@ test "parse nvme names without virtual_name including spaces" {
 
 test "parse nvme names without virtual_name without /dev" {
     const allocator = testing.allocator;
-    var names = try Names.from_string(allocator, "sda1");
+    var names = try Names.fromString(allocator, "sda1");
     defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sda1"));
@@ -384,7 +384,7 @@ test "parse nvme names without virtual_name without /dev" {
 
 test "parse nvme names without virtual_name without /dev including spaces" {
     const allocator = testing.allocator;
-    var names = try Names.from_string(allocator, "sda1    ");
+    var names = try Names.fromString(allocator, "sda1    ");
     defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sda1"));
@@ -393,7 +393,7 @@ test "parse nvme names without virtual_name without /dev including spaces" {
 
 test "parse nvme names with virtual_name" {
     const allocator = testing.allocator;
-    var names = try Names.from_string(allocator, "ephemeral0:/dev/sdf");
+    var names = try Names.fromString(allocator, "ephemeral0:/dev/sdf");
     defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sdf"));
@@ -402,7 +402,7 @@ test "parse nvme names with virtual_name" {
 
 test "parse nvme names with virtual_name including spaces" {
     const allocator = testing.allocator;
-    var names = try Names.from_string(allocator, "ephemeral0:/dev/sdf    ");
+    var names = try Names.fromString(allocator, "ephemeral0:/dev/sdf    ");
     defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sdf"));
@@ -411,7 +411,7 @@ test "parse nvme names with virtual_name including spaces" {
 
 test "parse nvme names with virtual_name without /dev" {
     const allocator = testing.allocator;
-    var names = try Names.from_string(allocator, "ephemeral0:sdf");
+    var names = try Names.fromString(allocator, "ephemeral0:sdf");
     defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sdf"));
@@ -420,7 +420,7 @@ test "parse nvme names with virtual_name without /dev" {
 
 test "parse nvme names with virtual_name without /dev including spaces" {
     const allocator = testing.allocator;
-    var names = try Names.from_string(allocator, "ephemeral0:sdf   ");
+    var names = try Names.fromString(allocator, "ephemeral0:sdf   ");
     defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.device_name.?, "sdf"));
@@ -429,7 +429,7 @@ test "parse nvme names with virtual_name without /dev including spaces" {
 
 test "parse nvme names with virtual_name with device_name none" {
     const allocator = testing.allocator;
-    var names = try Names.from_string(allocator, "ephemeral0:none");
+    var names = try Names.fromString(allocator, "ephemeral0:none");
     defer names.deinit(allocator);
 
     try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));

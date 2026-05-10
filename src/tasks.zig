@@ -35,7 +35,7 @@ pub fn writeUserData(ctx: *BootContext) !void {
 
 pub fn parseUserData(ctx: *BootContext) !void {
     const ud = ctx.user_data orelse return;
-    if (VmSpec.from_yaml(ctx.allocator, ud)) |parsed| {
+    if (VmSpec.fromYaml(ctx.allocator, ud)) |parsed| {
         ctx.user_vmspec_parsed = parsed;
     } else |err| {
         std.log.err("unable to parse user data: {s}", .{@errorName(err)});
@@ -57,16 +57,16 @@ pub fn startUeventListener(ctx: *BootContext) !void {
 }
 
 pub fn linkNvmeDevices(ctx: *BootContext) !void {
-    try system.link_nvme_devices(ctx.allocator, ctx.io);
+    try system.linkNvmeDevices(ctx.allocator, ctx.io);
 }
 
 pub fn readMetadata(ctx: *BootContext) !void {
     const path = constants.DIR_ET ++ "/" ++ constants.FILE_METADATA;
-    ctx.metadata = try init_mod.read_metadata(ctx.allocator, ctx.io, path);
+    ctx.metadata = try init_mod.readMetadata(ctx.allocator, ctx.io, path);
 }
 
 pub fn parseConfigFile(ctx: *BootContext) !void {
-    ctx.vmspec = try VmSpec.from_config_file(
+    ctx.vmspec = try VmSpec.fromConfigFile(
         ctx.vmspecAllocator(),
         ctx.io,
         &ctx.metadata.?.parsed.value,
@@ -138,8 +138,8 @@ pub fn expandCommandAndArgs(ctx: *BootContext) !void {
     ctx.expanded_command = try init_mod.expandCommandAndArgs(
         ctx.allocator,
         ctx.io,
-        vmspec.full_command(),
-        vmspec.command_args(),
+        vmspec.fullCommand(),
+        vmspec.commandArgs(),
         vmspec.env,
     );
 }
