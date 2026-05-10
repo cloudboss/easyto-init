@@ -323,12 +323,8 @@ pub const Supervisor = struct {
 
         var arg_strings = try self.allocator.alloc([:0]const u8, total_len);
         var arg_strings_count: usize = 0;
-        errdefer {
-            for (arg_strings[0..arg_strings_count]) |s| self.allocator.free(s);
-            self.allocator.free(arg_strings);
-        }
         defer {
-            for (arg_strings) |s| self.allocator.free(s);
+            for (arg_strings[0..arg_strings_count]) |s| self.allocator.free(s);
             self.allocator.free(arg_strings);
         }
 
@@ -902,6 +898,35 @@ test "Supervisor.buildArgv with empty args" {
     try testing.expectEqual(@as(usize, 2), result.argv.len);
     try testing.expectEqualStrings("/bin/ls", std.mem.span(result.argv[0].?));
     try testing.expect(result.argv[1] == null);
+}
+
+test "Supervisor.spawnProcess leaks nothing when a dupeZ fails mid-populate" {
+    const allocator = testing.allocator;
+    var command = [_][]const u8{ "/bin/echo", "hello", "world" };
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    var supervisor = Supervisor.init(
+        allocator,
+        testing.io,
+        &env_map,
+        &command,
+        null,
+        null,
+        "/",
+        0,
+        0,
+        10,
+        null,
+        null,
+        false,
+    );
+
+    // Fail at the third dupeZ (after argv alloc, arg_strings alloc, two dupeZ succeed).
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 4 });
+    supervisor.allocator = failing.allocator();
+
+    try testing.expectError(error.OutOfMemory, supervisor.spawnProcess());
 }
 
 test "shutdown_requested atomic operations" {
