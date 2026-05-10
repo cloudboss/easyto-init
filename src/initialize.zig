@@ -21,6 +21,7 @@ const fs = @import("fs.zig");
 const log_level = @import("log_level.zig");
 const NameValue = @import("vmspec.zig").NameValue;
 const network = @import("network.zig");
+const process = @import("process.zig");
 const S3VolumeSource = @import("vmspec.zig").S3VolumeSource;
 const SecretsManagerVolumeSource = @import("vmspec.zig").SecretsManagerVolumeSource;
 const service = @import("service.zig");
@@ -117,6 +118,7 @@ pub fn run(allocator: Allocator, io: Io, env_map: *std.process.Environ.Map) !voi
             .{boot_start.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds()},
         );
         try replaceInit(
+            allocator,
             command,
             args,
             vmspec.env,
@@ -378,6 +380,7 @@ pub fn writeUserData(io: Io, user_data: []const u8) !void {
 }
 
 fn replaceInit(
+    allocator: Allocator,
     command: []const []const u8,
     args: ?[]const []const u8,
     env: ?[]const NameValue,
@@ -385,7 +388,7 @@ fn replaceInit(
     uid: u32,
     gid: u32,
     readonly_root_fs: bool,
-) !void {
+) !noreturn {
     if (command.len == 0) {
         std.log.err("command is empty", .{});
         return error.EmptyCommand;
@@ -395,122 +398,29 @@ fn replaceInit(
         try system.remountRootReadonly();
     }
 
-    // Change to working directory
-    var working_dir_z_buf: [posix.PATH_MAX]u8 = undefined;
-    if (working_dir.len >= working_dir_z_buf.len) return error.NameTooLong;
-    @memcpy(working_dir_z_buf[0..working_dir.len], working_dir);
-    working_dir_z_buf[working_dir.len] = 0;
-    const chdir_errno = posix.errno(linux.chdir(@ptrCast(&working_dir_z_buf)));
-    if (chdir_errno != .SUCCESS) {
-        std.log.err("chdir to {s} failed: {s}", .{ working_dir, @tagName(chdir_errno) });
-        return error.ChdirFailed;
-    }
-
-    // Set group ID first (must be done before setuid)
-    if (gid != 0) {
-        const ret = linux.setgid(gid);
-        const e = posix.errno(ret);
-        if (e != .SUCCESS) {
-            std.log.err("setgid to {d} failed: {s}", .{ gid, @tagName(e) });
-            return error.SetgidFailed;
-        }
-    }
-
-    // Set user ID
-    if (uid != 0) {
-        const ret = linux.setuid(uid);
-        const e = posix.errno(ret);
-        if (e != .SUCCESS) {
-            std.log.err("setuid to {d} failed: {s}", .{ uid, @tagName(e) });
-            return error.SetuidFailed;
-        }
-    }
-
-    // Build argv with null-terminated strings
-    // Using static storage since we're about to execve
-    const args_slice = args orelse &[_][]const u8{};
-    const total_len = command.len + args_slice.len;
-
-    var argv_buf: [64]?[*:0]const u8 = undefined;
-    if (total_len + 1 > argv_buf.len) {
-        std.log.err("too many arguments", .{});
-        return error.TooManyArguments;
-    }
-
-    // Storage for null-terminated argument strings
-    var arg_storage: [8192]u8 = undefined;
-    var arg_pos: usize = 0;
-
-    var i: usize = 0;
-    for (command) |arg| {
-        if (arg_pos + arg.len + 1 > arg_storage.len) {
-            std.log.err("arguments too large", .{});
-            return error.ArgumentsTooLarge;
-        }
-        @memcpy(arg_storage[arg_pos..][0..arg.len], arg);
-        arg_storage[arg_pos + arg.len] = 0;
-        argv_buf[i] = @ptrCast(&arg_storage[arg_pos]);
-        arg_pos += arg.len + 1;
-        i += 1;
-    }
-    for (args_slice) |arg| {
-        if (arg_pos + arg.len + 1 > arg_storage.len) {
-            std.log.err("arguments too large", .{});
-            return error.ArgumentsTooLarge;
-        }
-        @memcpy(arg_storage[arg_pos..][0..arg.len], arg);
-        arg_storage[arg_pos + arg.len] = 0;
-        argv_buf[i] = @ptrCast(&arg_storage[arg_pos]);
-        arg_pos += arg.len + 1;
-        i += 1;
-    }
-    argv_buf[i] = null;
-    const argv = argv_buf[0 .. total_len + 1];
-
-    // Build envp with null-terminated strings
-    const env_slice = env orelse &[_]NameValue{};
-    var envp_buf: [256]?[*:0]const u8 = undefined;
-
-    if (env_slice.len + 1 > envp_buf.len) {
-        std.log.err("too many environment variables", .{});
-        return error.TooManyEnvVars;
-    }
-
-    var env_storage: [16384]u8 = undefined;
-    var env_pos: usize = 0;
-
-    for (env_slice, 0..) |nv, idx| {
-        const needed = nv.name.len + 1 + nv.value.len + 1; // name + '=' + value + '\0'
-        if (env_pos + needed > env_storage.len) {
-            std.log.err("environment too large", .{});
-            return error.EnvironmentTooLarge;
-        }
-
-        const start = env_pos;
-        @memcpy(env_storage[env_pos..][0..nv.name.len], nv.name);
-        env_pos += nv.name.len;
-        env_storage[env_pos] = '=';
-        env_pos += 1;
-        @memcpy(env_storage[env_pos..][0..nv.value.len], nv.value);
-        env_pos += nv.value.len;
-        env_storage[env_pos] = 0;
-        env_pos += 1;
-
-        envp_buf[idx] = @ptrCast(&env_storage[start]);
-    }
-    envp_buf[env_slice.len] = null;
-    const envp = envp_buf[0 .. env_slice.len + 1];
+    const argv = try concatArgv(allocator, command, args);
+    defer allocator.free(argv);
 
     std.log.info("execve: {s}", .{command[0]});
+    return process.replace(allocator, .{
+        .argv = argv,
+        .env = env orelse &.{},
+        .working_dir = working_dir,
+        .uid = uid,
+        .gid = gid,
+    });
+}
 
-    const exec_result = linux.execve(
-        argv[0].?,
-        @ptrCast(argv.ptr),
-        @ptrCast(envp.ptr),
-    );
-    const exec_err = posix.errno(exec_result);
-    std.log.err("execve failed: {s}", .{service.errnoDescription(exec_err)});
-    return error.ExecveFailed;
+fn concatArgv(
+    allocator: Allocator,
+    command: []const []const u8,
+    args: ?[]const []const u8,
+) ![][]const u8 {
+    const args_slice = args orelse &[_][]const u8{};
+    const argv = try allocator.alloc([]const u8, command.len + args_slice.len);
+    @memcpy(argv[0..command.len], command);
+    @memcpy(argv[command.len..], args_slice);
+    return argv;
 }
 
 pub fn resolveEnvFrom(

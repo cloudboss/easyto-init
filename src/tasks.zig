@@ -127,7 +127,7 @@ pub fn processVolumes(ctx: *BootContext) !void {
 
 pub fn runInitScripts(ctx: *BootContext) !void {
     const vmspec = ctx.vmspec.?;
-    try system.runInitScripts(ctx.io, vmspec.@"init-scripts", vmspec.env);
+    try system.runInitScripts(ctx.allocator, ctx.io, vmspec.@"init-scripts", vmspec.env);
 }
 
 pub fn expandCommandAndArgs(ctx: *BootContext) !void {
