@@ -15,6 +15,7 @@ const log_level = @import("log_level.zig");
 const login = @import("login.zig");
 const network = @import("network.zig");
 const nvme_amz = @import("nvme-amz.zig");
+const process = @import("process.zig");
 const root = @import("root.zig");
 const service = @import("service.zig");
 const services = @import("services.zig");
@@ -42,6 +43,7 @@ test {
     testing.refAllDecls(log_level);
     testing.refAllDecls(network);
     testing.refAllDecls(nvme_amz);
+    testing.refAllDecls(process);
     testing.refAllDecls(root);
     testing.refAllDecls(service);
     testing.refAllDecls(services);
