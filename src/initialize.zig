@@ -430,11 +430,12 @@ pub fn resolveEnvFrom(
     vmspec: *VmSpec,
     env_from: []const EnvFromSource,
 ) !void {
+    var env: std.ArrayList(NameValue) = .empty;
+    if (vmspec.env) |existing| try env.appendSlice(vmspec_alloc, existing);
+
     for (env_from) |source| {
         if (source.imds) |imds| {
             const imds_client = aws_ctx.getImds();
-
-            // Fetch value from IMDS
             const imds_path = try std.fmt.allocPrint(
                 allocator,
                 "/latest/meta-data/{s}",
@@ -452,11 +453,8 @@ pub fn resolveEnvFrom(
             };
             defer allocator.free(value);
 
-            // Trim whitespace from the value
             const trimmed = std.mem.trim(u8, value, " \t\r\n");
-
-            // Add to environment
-            try addEnvVar(vmspec_alloc, vmspec, imds.name, trimmed);
+            try upsertEnv(vmspec_alloc, &env, imds.name, trimmed);
             std.log.info("resolved env {s} from IMDS path {s}", .{ imds.name, imds.path });
         }
 
@@ -481,10 +479,8 @@ pub fn resolveEnvFrom(
                 };
                 defer allocator.free(value);
 
-                // Trim whitespace from the value
                 const trimmed = std.mem.trim(u8, value, " \t\r\n");
-
-                try addEnvVar(vmspec_alloc, vmspec, name, trimmed);
+                try upsertEnv(vmspec_alloc, &env, name, trimmed);
                 std.log.info("resolved env {s} from S3 s3://{s}/{s}", .{ name, s3.bucket, s3.key });
             } else {
                 // JSON map expanded to multiple env vars
@@ -513,7 +509,7 @@ pub fn resolveEnvFrom(
 
                 var map_it = env_map.iterator();
                 while (map_it.next()) |entry| {
-                    try addEnvVar(vmspec_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
+                    try upsertEnv(vmspec_alloc, &env, entry.key_ptr.*, entry.value_ptr.*);
                     std.log.info(
                         "resolved env {s} from S3 s3://{s}/{s}",
                         .{ entry.key_ptr.*, s3.bucket, s3.key },
@@ -543,10 +539,8 @@ pub fn resolveEnvFrom(
                 };
                 defer allocator.free(value);
 
-                // Trim whitespace from the value
                 const trimmed = std.mem.trim(u8, value, " \t\r\n");
-
-                try addEnvVar(vmspec_alloc, vmspec, name, trimmed);
+                try upsertEnv(vmspec_alloc, &env, name, trimmed);
                 std.log.info("resolved env {s} from SSM parameter {s}", .{ name, ssm.path });
             } else {
                 // JSON map expanded to multiple env vars
@@ -575,7 +569,7 @@ pub fn resolveEnvFrom(
 
                 var map_it = env_map.iterator();
                 while (map_it.next()) |entry| {
-                    try addEnvVar(vmspec_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
+                    try upsertEnv(vmspec_alloc, &env, entry.key_ptr.*, entry.value_ptr.*);
                     std.log.info(
                         "resolved env {s} from SSM parameter {s}",
                         .{ entry.key_ptr.*, ssm.path },
@@ -605,10 +599,8 @@ pub fn resolveEnvFrom(
                 };
                 defer allocator.free(value);
 
-                // Trim whitespace from the value
                 const trimmed = std.mem.trim(u8, value, " \t\r\n");
-
-                try addEnvVar(vmspec_alloc, vmspec, name, trimmed);
+                try upsertEnv(vmspec_alloc, &env, name, trimmed);
                 std.log.info("resolved env {s} from secret {s}", .{ name, sm.@"secret-id" });
             } else {
                 // JSON map expanded to multiple env vars
@@ -637,7 +629,7 @@ pub fn resolveEnvFrom(
 
                 var map_it = env_map.iterator();
                 while (map_it.next()) |entry| {
-                    try addEnvVar(vmspec_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
+                    try upsertEnv(vmspec_alloc, &env, entry.key_ptr.*, entry.value_ptr.*);
                     std.log.info(
                         "resolved env {s} from secret {s}",
                         .{ entry.key_ptr.*, sm.@"secret-id" },
@@ -646,6 +638,26 @@ pub fn resolveEnvFrom(
             }
         }
     }
+
+    vmspec.env = try env.toOwnedSlice(vmspec_alloc);
+}
+
+fn upsertEnv(
+    arena: Allocator,
+    env: *std.ArrayList(NameValue),
+    name: []const u8,
+    value: []const u8,
+) !void {
+    for (env.items) |*nv| {
+        if (std.mem.eql(u8, nv.name, name)) {
+            nv.value = try arena.dupe(u8, value);
+            return;
+        }
+    }
+    try env.append(arena, .{
+        .name = try arena.dupe(u8, name),
+        .value = try arena.dupe(u8, value),
+    });
 }
 
 pub fn expandEnvValues(
@@ -690,37 +702,6 @@ pub fn expandEnvValues(
         };
     }
     vmspec.env = new_env;
-}
-
-fn addEnvVar(allocator: Allocator, vmspec: *VmSpec, name: []const u8, value: []const u8) !void {
-    const new_nv = NameValue{
-        .name = try allocator.dupe(u8, name),
-        .value = try allocator.dupe(u8, value),
-    };
-
-    if (vmspec.env) |existing_env| {
-        // Check if the variable already exists
-        for (existing_env, 0..) |nv, i| {
-            if (std.mem.eql(u8, nv.name, name)) {
-                // Replace existing value
-                var env_copy = try allocator.alloc(NameValue, existing_env.len);
-                @memcpy(env_copy, existing_env);
-                env_copy[i] = new_nv;
-                vmspec.env = env_copy;
-                return;
-            }
-        }
-        // Append new variable
-        var new_env = try allocator.alloc(NameValue, existing_env.len + 1);
-        @memcpy(new_env[0..existing_env.len], existing_env);
-        new_env[existing_env.len] = new_nv;
-        vmspec.env = new_env;
-    } else {
-        // Create new env array
-        var new_env = try allocator.alloc(NameValue, 1);
-        new_env[0] = new_nv;
-        vmspec.env = new_env;
-    }
 }
 
 pub const ExpandedCommand = struct {
@@ -1091,51 +1072,42 @@ pub fn expandCommandAndArgs(
     };
 }
 
-test "addEnvVar adds to empty env" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
+test "upsertEnv adds to empty env" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    var vmspec = VmSpec{};
+    var env: std.ArrayList(NameValue) = .empty;
+    try upsertEnv(arena.allocator(), &env, "FOO", "bar");
 
-    try addEnvVar(arena.allocator(), &vmspec, "FOO", "bar");
-
-    try testing.expect(vmspec.env != null);
-    try testing.expectEqual(@as(usize, 1), vmspec.env.?.len);
-    try testing.expectEqualStrings("FOO", vmspec.env.?[0].name);
-    try testing.expectEqualStrings("bar", vmspec.env.?[0].value);
+    try testing.expectEqual(@as(usize, 1), env.items.len);
+    try testing.expectEqualStrings("FOO", env.items[0].name);
+    try testing.expectEqualStrings("bar", env.items[0].value);
 }
 
-test "addEnvVar appends new variable" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
+test "upsertEnv appends new variable" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    var vmspec = VmSpec{};
+    var env: std.ArrayList(NameValue) = .empty;
+    try upsertEnv(arena.allocator(), &env, "FOO", "bar");
+    try upsertEnv(arena.allocator(), &env, "BAZ", "qux");
 
-    try addEnvVar(arena.allocator(), &vmspec, "FOO", "bar");
-    try addEnvVar(arena.allocator(), &vmspec, "BAZ", "qux");
-
-    try testing.expect(vmspec.env != null);
-    try testing.expectEqual(@as(usize, 2), vmspec.env.?.len);
-    try testing.expectEqualStrings("FOO", vmspec.env.?[0].name);
-    try testing.expectEqualStrings("BAZ", vmspec.env.?[1].name);
+    try testing.expectEqual(@as(usize, 2), env.items.len);
+    try testing.expectEqualStrings("FOO", env.items[0].name);
+    try testing.expectEqualStrings("BAZ", env.items[1].name);
 }
 
-test "addEnvVar replaces existing variable" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
+test "upsertEnv replaces existing variable in place" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    var vmspec = VmSpec{};
+    var env: std.ArrayList(NameValue) = .empty;
+    try upsertEnv(arena.allocator(), &env, "FOO", "bar");
+    try upsertEnv(arena.allocator(), &env, "FOO", "updated");
 
-    try addEnvVar(arena.allocator(), &vmspec, "FOO", "bar");
-    try addEnvVar(arena.allocator(), &vmspec, "FOO", "updated");
-
-    try testing.expect(vmspec.env != null);
-    try testing.expectEqual(@as(usize, 1), vmspec.env.?.len);
-    try testing.expectEqualStrings("FOO", vmspec.env.?[0].name);
-    try testing.expectEqualStrings("updated", vmspec.env.?[0].value);
+    try testing.expectEqual(@as(usize, 1), env.items.len);
+    try testing.expectEqualStrings("FOO", env.items[0].name);
+    try testing.expectEqualStrings("updated", env.items[0].value);
 }
 
 test "expandCommandAndArgs with no env" {
