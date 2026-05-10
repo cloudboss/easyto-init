@@ -698,7 +698,7 @@ test "VmSpec.envStringsToNameValues multiple error" {
     try testing.expectError(Error.InvalidEnvironmentVariable, actual);
 }
 
-test "VmSpec.fullCnommand with both empty" {
+test "VmSpec.fullCommand with both empty" {
     const vmspec = VmSpec{};
     const cmd = vmspec.fullCommand();
     try testing.expectEqual(@as(usize, 1), cmd.len);
