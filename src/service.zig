@@ -9,14 +9,15 @@ const aws = @import("aws");
 
 const constants = @import("constants.zig");
 const services_mod = @import("services.zig");
-const system = @import("system.zig");
 const ServiceDef = services_mod.ServiceDef;
+const system = @import("system.zig");
 const vmspec = @import("vmspec.zig");
 const NameValue = vmspec.NameValue;
 
-const SIGPOWEROFF: posix.SIG = @enumFromInt(38);
+// Default value of config ACPI_TINY_POWER_BUTTON_SIGNAL in kernel.
+const ACPI_TINY_POWER_BUTTON_SIGNAL: posix.SIG = @enumFromInt(38);
+// Identifies a kernel thread, from linux/sched.h.
 const PF_KTHREAD: u32 = 0x00200000;
-const FLAGS_FIELD_INDEX: usize = 8;
 
 var shutdown_requested = std.atomic.Value(bool).init(false);
 
@@ -576,7 +577,7 @@ fn setupSignalHandlers() void {
 
     posix.sigaction(posix.SIG.TERM, &handler, null);
     posix.sigaction(posix.SIG.INT, &handler, null);
-    posix.sigaction(SIGPOWEROFF, &handler, null);
+    posix.sigaction(ACPI_TINY_POWER_BUTTON_SIGNAL, &handler, null);
 }
 
 fn signalHandler(sig: posix.SIG) callconv(.c) void {
@@ -590,8 +591,8 @@ fn getAllPids(io: Io) ![]posix.pid_t {
     };
     errdefer pids.deinit(std.heap.page_allocator);
 
-    var dir = Io.Dir.openDirAbsolute(io, constants.DIR_PROC, .{ .iterate = true }) catch |err| {
-        std.log.err("failed to open {s}: {s}", .{ constants.DIR_PROC, @errorName(err) });
+    var dir = Io.Dir.openDirAbsolute(io, constants.dir_proc, .{ .iterate = true }) catch |err| {
+        std.log.err("failed to open {s}: {s}", .{ constants.dir_proc, @errorName(err) });
         return err;
     };
     defer dir.close(io);
@@ -618,9 +619,10 @@ fn parseKernelThreadStatus(content: []const u8) !bool {
 
     var iter = std.mem.tokenizeScalar(u8, after_comm, ' ');
     var field_index: usize = 2;
+    const field_index_flags: usize = 8;
 
     while (iter.next()) |field| {
-        if (field_index == FLAGS_FIELD_INDEX) {
+        if (field_index == field_index_flags) {
             const flags = std.fmt.parseInt(u32, field, 10) catch return error.InvalidFlags;
             return (flags & PF_KTHREAD) != 0;
         }

@@ -3,10 +3,11 @@ const linux = std.os.linux;
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
+const testing = std.testing;
 
 const system = @import("system.zig");
 
-const NETLINK_KOBJECT_UEVENT: u32 = 15;
+const netlink_kobject_uevent: u32 = 15;
 
 const DeviceEvent = struct {
     name: []const u8,
@@ -24,7 +25,7 @@ pub fn startUeventListener(allocator: Allocator, io: Io) !void {
     const sock_ret = linux.socket(
         posix.AF.NETLINK,
         posix.SOCK.DGRAM,
-        NETLINK_KOBJECT_UEVENT,
+        netlink_kobject_uevent,
     );
     const sock_errno = posix.errno(sock_ret);
     if (sock_errno != .SUCCESS) {
@@ -110,8 +111,6 @@ fn handleMessage(buf: []const u8) !?DeviceEvent {
         .part_num = partn,
     };
 }
-
-const testing = std.testing;
 
 test "handleMessage add block device" {
     const msg = "add@/devices/pci/nvme1n1\x00SUBSYSTEM=block\x00DEVNAME=nvme1n1\x00";

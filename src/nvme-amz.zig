@@ -4,11 +4,11 @@ const testing = std.testing;
 
 const string = @import("string.zig");
 
-const AMZ_EBS_MN = "Amazon Elastic Block Store";
-const AMZ_INST_STORE_MN = "Amazon EC2 NVMe Instance Storage";
-const AMZ_VENDOR_ID: c_ushort = 0x1D0F;
-const NVME_ADMIN_IDENTIFY: u8 = 0x06;
-const NVME_IOCTL_ADMIN_CMD_NUM: u8 = 0x41;
+const amz_ebs_mn = "Amazon Elastic Block Store";
+const amz_inst_store_mn = "Amazon EC2 NVMe Instance Storage";
+const amz_vendor_id: c_ushort = 0x1D0F;
+const nvme_admin_identify: u8 = 0x06;
+const nvme_ioctl_admin_cmd_num: u8 = 0x41;
 
 const Error = error{
     IoctlError,
@@ -162,13 +162,13 @@ const NvmePassthruCmd = extern struct {
 };
 
 pub fn nvmeIdentifyCtrl(fd: std.posix.fd_t, errno: *usize) !NvmeIdCtrl {
-    const request = std.os.linux.IOCTL.IOWR('N', NVME_IOCTL_ADMIN_CMD_NUM, NvmePassthruCmd);
+    const request = std.os.linux.IOCTL.IOWR('N', nvme_ioctl_admin_cmd_num, NvmePassthruCmd);
     var out = std.mem.zeroInit(NvmeIdCtrl, .{});
     var arg = std.mem.zeroInit(NvmePassthruCmd, .{
         .addr = @intFromPtr(&out),
         .cdw10 = 1,
         .data_len = @sizeOf(NvmeIdCtrl),
-        .opcode = NVME_ADMIN_IDENTIFY,
+        .opcode = nvme_admin_identify,
     });
     const ret = std.os.linux.ioctl(fd, request, @intFromPtr(&arg));
     switch (std.posix.errno(ret)) {
@@ -189,9 +189,9 @@ pub const Names = struct {
     virtual_name: ?[]const u8,
 
     pub fn fromString(allocator: Allocator, str: []const u8) !Names {
-        const COLON: u8 = 0x3a;
-        const SPACE: u8 = 0x20;
-        const NULL: u8 = 0x0;
+        const colon_char: u8 = 0x3a;
+        const space_char: u8 = 0x20;
+        const null_char: u8 = 0x0;
 
         var field1_start: usize = 0;
         var field1_end: usize = 0;
@@ -200,10 +200,10 @@ pub const Names = struct {
         var has_delim = false;
 
         for (str, 0..) |c, i| {
-            if ((c == NULL) or (c == SPACE)) {
+            if ((c == null_char) or (c == space_char)) {
                 break;
             }
-            if (c == COLON) {
+            if (c == colon_char) {
                 has_delim = true;
                 field2_start = i + 1;
                 continue;
@@ -285,9 +285,9 @@ pub const Model = enum {
 
 fn parseModel(mn: *const [40]u8) Error!Model {
     const trimmed = std.mem.trimEnd(u8, mn, &.{ ' ', 0 });
-    if (std.mem.eql(u8, trimmed, AMZ_EBS_MN)) {
+    if (std.mem.eql(u8, trimmed, amz_ebs_mn)) {
         return .AmazonElasticBlockStore;
-    } else if (std.mem.eql(u8, trimmed, AMZ_INST_STORE_MN)) {
+    } else if (std.mem.eql(u8, trimmed, amz_inst_store_mn)) {
         return .AmazonInstanceStore;
     } else {
         return Error.UnknownModelNumber;
@@ -305,7 +305,7 @@ pub const Nvme = struct {
 
     pub fn fromFd(allocator: Allocator, fd: std.posix.fd_t, errno: *usize) !Nvme {
         const ctrl = try nvmeIdentifyCtrl(fd, errno);
-        if (ctrl.vid != AMZ_VENDOR_ID) {
+        if (ctrl.vid != amz_vendor_id) {
             return Error.UnknownVendorId;
         }
 
@@ -443,7 +443,7 @@ test "nvme struct no names" {
             .device_name = null,
             .virtual_name = null,
         },
-        .vendor_id = AMZ_VENDOR_ID,
+        .vendor_id = amz_vendor_id,
     };
     try testing.expectError(
         Error.NoDeviceName,
@@ -458,7 +458,7 @@ test "nvme struct only device_name" {
             .device_name = "nvme0n1",
             .virtual_name = null,
         },
-        .vendor_id = AMZ_VENDOR_ID,
+        .vendor_id = amz_vendor_id,
     };
     try testing.expect(string.equals(try nvme.name(), "nvme0n1"));
 }
@@ -470,7 +470,7 @@ test "nvme struct only virtual_name" {
             .device_name = null,
             .virtual_name = "ephemeral0",
         },
-        .vendor_id = AMZ_VENDOR_ID,
+        .vendor_id = amz_vendor_id,
     };
     try testing.expect(string.equals(try nvme.name(), "ephemeral0"));
 }
@@ -482,7 +482,7 @@ test "nvme struct both device_name and virtual_name" {
             .device_name = "sdf",
             .virtual_name = "ephemeral0",
         },
-        .vendor_id = AMZ_VENDOR_ID,
+        .vendor_id = amz_vendor_id,
     };
     try testing.expect(string.equals(try nvme.name(), "sdf"));
 }
@@ -490,14 +490,14 @@ test "nvme struct both device_name and virtual_name" {
 test "parseModel ebs space padded" {
     var mn: [40]u8 = undefined;
     @memset(&mn, ' ');
-    @memcpy(mn[0..AMZ_EBS_MN.len], AMZ_EBS_MN);
+    @memcpy(mn[0..amz_ebs_mn.len], amz_ebs_mn);
     try testing.expectEqual(Model.AmazonElasticBlockStore, try parseModel(&mn));
 }
 
 test "parseModel ebs null padded" {
     var mn: [40]u8 = undefined;
     @memset(&mn, 0);
-    @memcpy(mn[0..AMZ_EBS_MN.len], AMZ_EBS_MN);
+    @memcpy(mn[0..amz_ebs_mn.len], amz_ebs_mn);
     try testing.expectEqual(Model.AmazonElasticBlockStore, try parseModel(&mn));
 }
 
@@ -506,21 +506,21 @@ test "parseModel ebs exact length" {
     // practice, but verifies no off-by-one).
     var mn: [40]u8 = undefined;
     @memset(&mn, 'x');
-    @memcpy(mn[0..AMZ_EBS_MN.len], AMZ_EBS_MN);
+    @memcpy(mn[0..amz_ebs_mn.len], amz_ebs_mn);
     try testing.expectError(Error.UnknownModelNumber, parseModel(&mn));
 }
 
 test "parseModel instance store space padded" {
     var mn: [40]u8 = undefined;
     @memset(&mn, ' ');
-    @memcpy(mn[0..AMZ_INST_STORE_MN.len], AMZ_INST_STORE_MN);
+    @memcpy(mn[0..amz_inst_store_mn.len], amz_inst_store_mn);
     try testing.expectEqual(Model.AmazonInstanceStore, try parseModel(&mn));
 }
 
 test "parseModel instance store null padded" {
     var mn: [40]u8 = undefined;
     @memset(&mn, 0);
-    @memcpy(mn[0..AMZ_INST_STORE_MN.len], AMZ_INST_STORE_MN);
+    @memcpy(mn[0..amz_inst_store_mn.len], amz_inst_store_mn);
     try testing.expectEqual(Model.AmazonInstanceStore, try parseModel(&mn));
 }
 

@@ -5,6 +5,8 @@ const Io = std.Io;
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
+const mount = linux.mount;
+const ms = linux.MS;
 
 const GptContext = @import("zgpt").GptContext;
 const GptEntry = @import("zgpt").gpt.GptEntry;
@@ -12,19 +14,16 @@ const resizePartition = @import("zblkpg").resizePartition;
 
 const backoff = @import("backoff.zig");
 const constants = @import("constants.zig");
-const nvme = @import("nvme-amz.zig");
 const NameValue = @import("vmspec.zig").NameValue;
+const nvme = @import("nvme-amz.zig");
 
-const mount = linux.mount;
-const ms = linux.MS;
-
-const SYS_BLOCK_PATH = "/sys/block";
+const sys_block_path = "/sys/block";
 
 pub fn remountRootReadonly() !void {
     std.log.info("remounting root filesystem as readonly", .{});
     const ret = mount(
         null,
-        @ptrCast(constants.DIR_ROOT),
+        @ptrCast(constants.dir_root),
         null,
         ms.REMOUNT | ms.RDONLY,
         0,
@@ -42,12 +41,12 @@ pub fn remountRootReadonly() !void {
 pub fn linkNvmeDevices(allocator: Allocator, io: Io) !void {
     var dir = Io.Dir.openDirAbsolute(
         io,
-        SYS_BLOCK_PATH,
+        sys_block_path,
         .{ .iterate = true },
     ) catch |err| {
         std.log.err(
             "unable to open {s}: {s}",
-            .{ SYS_BLOCK_PATH, @errorName(err) },
+            .{ sys_block_path, @errorName(err) },
         );
         return err;
     };
@@ -101,7 +100,7 @@ pub fn linkNvmeDevice(
     const dev_path = try fmt.bufPrint(
         &dev_path_buf,
         "{s}/{s}",
-        .{ constants.DIR_DEV, device_name },
+        .{ constants.dir_dev, device_name },
     );
 
     const file = Io.Dir.openFileAbsolute(io, dev_path, .{}) catch |err| {
@@ -143,7 +142,7 @@ pub fn linkNvmeDevice(
     const link_path = try fmt.bufPrint(
         &link_path_buf,
         "{s}/{s}",
-        .{ constants.DIR_DEV, link_name },
+        .{ constants.dir_dev, link_name },
     );
 
     std.log.debug("linking {s} to {s}", .{ device_name, link_path });
@@ -176,7 +175,7 @@ fn diskPartitions(
     const sys_device_path = try fmt.bufPrint(
         &path_buf,
         "{s}/{s}",
-        .{ SYS_BLOCK_PATH, device },
+        .{ sys_block_path, device },
     );
 
     var dir = Io.Dir.openDirAbsolute(
@@ -244,7 +243,7 @@ pub fn deviceHasNumericSuffix(device: []const u8) bool {
 /// Check if a device has a filesystem using blkid.
 /// Returns true if filesystem detected, false if no filesystem.
 pub fn deviceHasFilesystem(io: Io, device: []const u8) !bool {
-    const blkid_path = constants.DIR_ET_SBIN ++ "/blkid";
+    const blkid_path = constants.dir_et_sbin ++ "/blkid";
 
     var child = std.process.spawn(io, .{
         .argv = &[_][]const u8{ blkid_path, device },
@@ -314,7 +313,7 @@ pub fn createFilesystem(io: Io, device: []const u8, fs_type: []const u8) !void {
     const mkfs_path = fmt.bufPrint(
         &mkfs_buf,
         "{s}/mkfs.{s}",
-        .{ constants.DIR_ET_SBIN, fs_type },
+        .{ constants.dir_et_sbin, fs_type },
     ) catch {
         std.log.err("mkfs path too long for {s}", .{fs_type});
         return error.PathTooLong;
@@ -436,7 +435,7 @@ pub fn findExecutableInPath(
 
 /// Load a kernel module using modprobe.
 pub fn loadModule(io: Io, name: []const u8) !void {
-    const modprobe_path = constants.DIR_ET_SBIN ++ "/modprobe";
+    const modprobe_path = constants.dir_et_sbin ++ "/modprobe";
 
     var child = std.process.spawn(io, .{
         .argv = &[_][]const u8{ modprobe_path, name },
@@ -483,7 +482,7 @@ fn runInitScript(io: Io, script: []const u8, index: usize, env: ?[]const NameVal
     const path_len = fmt.bufPrint(
         &path_buf,
         "{s}/init-{d}",
-        .{ constants.DIR_ET_RUN, index },
+        .{ constants.dir_et_run, index },
     ) catch {
         std.log.err("init script path too long", .{});
         return error.PathTooLong;
@@ -648,7 +647,7 @@ pub fn setSysctls(io: Io, sysctls: ?[]const NameValue) !void {
 /// Convert dotted sysctl key to /proc/sys path.
 /// e.g., "net.ipv4.ip_forward" -> "/proc/sys/net/ipv4/ip_forward"
 fn procPathFromDotted(buf: []u8, key: []const u8) ![]const u8 {
-    const prefix = constants.DIR_PROC ++ "/sys/";
+    const prefix = constants.dir_proc ++ "/sys/";
     if (prefix.len + key.len > buf.len) return error.BufferTooSmall;
 
     @memcpy(buf[0..prefix.len], prefix);
@@ -696,7 +695,7 @@ fn resizeRootVolumeImpl(allocator: Allocator, io: Io) !void {
     const disk_path = try fmt.bufPrint(
         &disk_path_buf,
         "{s}/{s}",
-        .{ constants.DIR_DEV, devices.disk },
+        .{ constants.dir_dev, devices.disk },
     );
     std.log.debug(
         "root disk device path: {s}",
@@ -814,7 +813,7 @@ fn resizeRootVolumeImpl(allocator: Allocator, io: Io) !void {
     const part_path = try fmt.bufPrint(
         &part_path_buf,
         "{s}/{s}",
-        .{ constants.DIR_DEV, devices.partition },
+        .{ constants.dir_dev, devices.partition },
     );
     std.log.debug("growing root filesystem", .{});
     try growFilesystem(io, part_path);
@@ -825,7 +824,7 @@ fn findRootDevices(
     part_buf: []u8,
     disk_buf: []u8,
 ) !RootDevices {
-    const mounts_path = constants.DIR_PROC ++ "/mounts";
+    const mounts_path = constants.dir_proc ++ "/mounts";
     const file = Io.Dir.openFileAbsolute(
         io,
         mounts_path,
@@ -875,12 +874,12 @@ fn findRootDevices(
 
     var dir = Io.Dir.openDirAbsolute(
         io,
-        SYS_BLOCK_PATH,
+        sys_block_path,
         .{ .iterate = true },
     ) catch |err| {
         std.log.err(
             "unable to open {s}: {s}",
-            .{ SYS_BLOCK_PATH, @errorName(err) },
+            .{ sys_block_path, @errorName(err) },
         );
         return err;
     };
@@ -893,7 +892,7 @@ fn findRootDevices(
             &abs_buf,
             "{s}/{s}/{s}",
             .{
-                SYS_BLOCK_PATH,
+                sys_block_path,
                 dir_entry.name,
                 part_name,
             },
@@ -922,7 +921,7 @@ fn diskSectors(io: Io, device: []const u8) !i64 {
     const path = try fmt.bufPrint(
         &path_buf,
         "{s}/{s}/size",
-        .{ SYS_BLOCK_PATH, device },
+        .{ sys_block_path, device },
     );
     return intFromFile(io, path);
 }
@@ -961,7 +960,7 @@ fn intFromFile(io: Io, path: []const u8) !i64 {
 
 fn growFilesystem(io: Io, device_path: []const u8) !void {
     const resize2fs =
-        constants.DIR_ET_SBIN ++ "/resize2fs";
+        constants.dir_et_sbin ++ "/resize2fs";
 
     var child = std.process.spawn(io, .{
         .argv = &[_][]const u8{ resize2fs, device_path },

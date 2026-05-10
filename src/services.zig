@@ -37,27 +37,27 @@ pub fn deinit() void {
 pub fn initChrony(allocator: Allocator, io: Io) !void {
     std.log.info("initializing chrony", .{});
 
-    const passwd_contents = fs_utils.readFileAlloc(io, allocator, constants.FILE_ETC_PASSWD) catch |err| {
-        std.log.err("failed to read {s}: {s}", .{ constants.FILE_ETC_PASSWD, @errorName(err) });
+    const passwd_contents = fs_utils.readFileAlloc(io, allocator, constants.file_etc_passwd) catch |err| {
+        std.log.err("failed to read {s}: {s}", .{ constants.file_etc_passwd, @errorName(err) });
         return err;
     };
     defer allocator.free(passwd_contents);
 
-    const uid = login.userGroupId(passwd_contents, constants.USER_NAME_CHRONY) catch |err| {
-        std.log.err("user {s} not found: {s}", .{ constants.USER_NAME_CHRONY, @errorName(err) });
+    const uid = login.userGroupId(passwd_contents, constants.user_name_chrony) catch |err| {
+        std.log.err("user {s} not found: {s}", .{ constants.user_name_chrony, @errorName(err) });
         return err;
     };
 
-    const group_contents = fs_utils.readFileAlloc(io, allocator, constants.FILE_ETC_GROUP) catch |err| {
-        std.log.err("failed to read {s}: {s}", .{ constants.FILE_ETC_GROUP, @errorName(err) });
+    const group_contents = fs_utils.readFileAlloc(io, allocator, constants.file_etc_group) catch |err| {
+        std.log.err("failed to read {s}: {s}", .{ constants.file_etc_group, @errorName(err) });
         return err;
     };
     defer allocator.free(group_contents);
 
-    const gid = login.userGroupId(group_contents, constants.USER_NAME_CHRONY) catch uid;
+    const gid = login.userGroupId(group_contents, constants.user_name_chrony) catch uid;
 
     // Create chrony run directory with correct ownership
-    const chrony_run_path = constants.DIR_ET_RUN ++ "/chrony";
+    const chrony_run_path = constants.dir_et_run ++ "/chrony";
     try fs_utils.mkdirRecursiveOwn(io, chrony_run_path, 0o750, uid, gid);
 }
 
@@ -80,8 +80,8 @@ pub fn initSsh(allocator: Allocator, io: Io) !void {
     const login_user = std.mem.sliceTo(&login_user_buf, 0);
 
     // Read passwd file to get user's home directory
-    const passwd_contents = fs_utils.readFileAlloc(io, allocator, constants.FILE_ETC_PASSWD) catch |err| {
-        std.log.err("failed to read {s}: {s}", .{ constants.FILE_ETC_PASSWD, @errorName(err) });
+    const passwd_contents = fs_utils.readFileAlloc(io, allocator, constants.file_etc_passwd) catch |err| {
+        std.log.err("failed to read {s}: {s}", .{ constants.file_etc_passwd, @errorName(err) });
         return err;
     };
     defer allocator.free(passwd_contents);
@@ -99,8 +99,8 @@ pub fn initSsh(allocator: Allocator, io: Io) !void {
 }
 
 fn getLoginUser(io: Io) ![64]u8 {
-    var dir = Io.Dir.openDirAbsolute(io, constants.DIR_ET_HOME, .{ .iterate = true }) catch |err| {
-        std.log.err("failed to open {s}: {s}", .{ constants.DIR_ET_HOME, @errorName(err) });
+    var dir = Io.Dir.openDirAbsolute(io, constants.dir_et_home, .{ .iterate = true }) catch |err| {
+        std.log.err("failed to open {s}: {s}", .{ constants.dir_et_home, @errorName(err) });
         return err;
     };
     defer dir.close(io);
@@ -149,8 +149,8 @@ fn writeAuthorizedKeys(
 }
 
 fn generateHostKeysIfMissing(io: Io) !void {
-    const ssh_keygen_path = constants.DIR_ET_BIN ++ "/ssh-keygen";
-    const ssh_etc_dir = constants.DIR_ET_ETC ++ "/ssh";
+    const ssh_keygen_path = constants.dir_et_bin ++ "/ssh-keygen";
+    const ssh_etc_dir = constants.dir_et_etc ++ "/ssh";
 
     // Check and generate RSA key
     const rsa_key_path = ssh_etc_dir ++ "/ssh_host_rsa_key";
@@ -189,7 +189,7 @@ fn runSshKeygen(io: Io, keygen_path: []const u8, key_type: []const u8, key_path:
 /// Chrony service definition
 pub const chrony_service = ServiceDef{
     .name = "chrony",
-    .args = &[_][]const u8{ constants.DIR_ET_SBIN ++ "/chronyd", "-d" },
+    .args = &[_][]const u8{ constants.dir_et_sbin ++ "/chronyd", "-d" },
     .init_fn = initChrony,
 };
 
@@ -197,10 +197,10 @@ pub const chrony_service = ServiceDef{
 pub const ssh_service = ServiceDef{
     .name = "ssh",
     .args = &[_][]const u8{
-        constants.DIR_ET_SBIN ++ "/sshd",
+        constants.dir_et_sbin ++ "/sshd",
         "-D",
         "-f",
-        constants.DIR_ET_ETC ++ "/ssh/sshd_config",
+        constants.dir_et_etc ++ "/ssh/sshd_config",
         "-e",
     },
     .optional = true,
@@ -221,7 +221,7 @@ pub fn findEnabledServices(
 
     var dir = Io.Dir.openDirAbsolute(
         io,
-        constants.DIR_ET_SERVICES,
+        constants.dir_et_services,
         .{ .iterate = true },
     ) catch |err| {
         if (err == error.FileNotFound) {

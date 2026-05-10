@@ -14,10 +14,10 @@ const service = @import("service.zig");
 const scoped_log = std.log.scoped(.spot);
 
 /// Default polling interval for spot termination notices (5 seconds).
-const POLL_INTERVAL_NS: u64 = 5 * std.time.ns_per_s;
+const poll_interval_ns: u64 = 5 * std.time.ns_per_s;
 
 /// IMDS path for spot instance action (termination/stop notices).
-const SPOT_INSTANCE_ACTION_PATH = "/latest/meta-data/spot/instance-action";
+const spot_instance_action_path = "/latest/meta-data/spot/instance-action";
 
 const MonitorArgs = struct {
     io: Io,
@@ -55,7 +55,7 @@ fn monitorLoop(args: MonitorArgs) void {
     };
     defer imds_client.deinit();
 
-    const poll_dur = Io.Duration.fromNanoseconds(@intCast(POLL_INTERVAL_NS));
+    const poll_dur = Io.Duration.fromNanoseconds(@intCast(poll_interval_ns));
     while (true) {
         Io.sleep(args.io, poll_dur, .awake) catch {};
 
@@ -88,7 +88,7 @@ const CheckResult = union(enum) {
 fn checkSpotTermination(imds_client: *aws.ImdsClient) CheckResult {
     var diagnostic: aws.imds.ServiceError = undefined;
     const response = imds_client.getMetadata(
-        SPOT_INSTANCE_ACTION_PATH,
+        spot_instance_action_path,
         .{ .diagnostic = &diagnostic },
     ) catch |err| {
         if (err == error.HttpError and diagnostic.httpStatus() == 404) {

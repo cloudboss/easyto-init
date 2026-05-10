@@ -1,7 +1,9 @@
 const std = @import("std");
 
+const AwsContext = @import("aws/context.zig").AwsContext;
 const constants = @import("constants.zig");
 const dag = @import("dag.zig");
+const BootContext = dag.BootContext;
 const init_mod = @import("init.zig");
 const log_level = @import("log_level.zig");
 const network = @import("network.zig");
@@ -9,9 +11,6 @@ const system = @import("system.zig");
 const uevent = @import("uevent.zig");
 const vmspec_mod = @import("vmspec.zig");
 const VmSpec = vmspec_mod.VmSpec;
-const AwsContext = @import("aws/context.zig").AwsContext;
-
-const BootContext = dag.BootContext;
 
 pub fn awsContextInit(ctx: *BootContext) !void {
     ctx.aws_ctx = try AwsContext.init(ctx.allocator, ctx.io, ctx.env_map);
@@ -61,7 +60,7 @@ pub fn linkNvmeDevices(ctx: *BootContext) !void {
 }
 
 pub fn readMetadata(ctx: *BootContext) !void {
-    const path = constants.DIR_ET ++ "/" ++ constants.FILE_METADATA;
+    const path = constants.dir_et ++ "/" ++ constants.file_metadata;
     ctx.metadata = try init_mod.readMetadata(ctx.allocator, ctx.io, path);
 }
 

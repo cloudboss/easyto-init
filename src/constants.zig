@@ -1,35 +1,35 @@
-pub const DIR_DEV = "/dev";
-pub const DIR_DEV_HUGEPAGES = "/dev/hugepages";
-pub const DIR_DEV_MQUEUE = "/dev/mqueue";
-pub const DIR_DEV_PTS = "/dev/pts";
-pub const DIR_DEV_SHM = "/dev/shm";
-pub const DIR_ET = "/.easyto";
-pub const DIR_ET_BIN = "/.easyto/bin";
-pub const DIR_ET_ETC = "/.easyto/etc";
-pub const DIR_ET_HOME = "/.easyto/home";
-pub const DIR_ET_RUN = "/.easyto/run";
-pub const DIR_ET_SBIN = "/.easyto/sbin";
-pub const DIR_ET_SERVICES = "/.easyto/services";
-pub const DIR_ET_VAR_LIB = "/.easyto/var/lib";
-pub const DIR_PROC = "/proc";
-pub const DIR_ROOT = "/";
-pub const DIR_ROOT_HOME = "/root";
-pub const DIR_SYS = "/sys";
-pub const DIR_SYS_FS_CGROUP = "/sys/fs/cgroup";
-pub const DIR_SYS_KERNEL_DEBUG = "/sys/kernel/debug";
+pub const dir_dev = "/dev";
+pub const dir_dev_hugepages = "/dev/hugepages";
+pub const dir_dev_mqueue = "/dev/mqueue";
+pub const dir_dev_pts = "/dev/pts";
+pub const dir_dev_shm = "/dev/shm";
+pub const dir_et = "/.easyto";
+pub const dir_et_bin = "/.easyto/bin";
+pub const dir_et_etc = "/.easyto/etc";
+pub const dir_et_home = "/.easyto/home";
+pub const dir_et_run = "/.easyto/run";
+pub const dir_et_sbin = "/.easyto/sbin";
+pub const dir_et_services = "/.easyto/services";
+pub const dir_et_var_lib = "/.easyto/var/lib";
+pub const dir_proc = "/proc";
+pub const dir_root = "/";
+pub const dir_root_home = "/root";
+pub const dir_sys = "/sys";
+pub const dir_sys_fs_cgroup = "/sys/fs/cgroup";
+pub const dir_sys_kernel_debug = "/sys/kernel/debug";
 
-pub const FILE_ETC_GROUP = "/etc/group";
-pub const FILE_ETC_PASSWD = "/etc/passwd";
-pub const FILE_ETC_RESOLV_CONF = "/etc/resolv.conf";
-pub const FILE_METADATA = "metadata.json";
-pub const FILE_USER_DATA = "user-data";
-pub const FILE_NETWORK_JSON = "network.json";
+pub const file_etc_group = "/etc/group";
+pub const file_etc_passwd = "/etc/passwd";
+pub const file_etc_resolv_conf = "/etc/resolv.conf";
+pub const file_metadata = "metadata.json";
+pub const file_user_data = "user-data";
+pub const file_network_json = "network.json";
 
-pub const ENV_PATH = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin";
+pub const env_path = "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin";
 
-pub const GROUP_NAME_WHEEL = "wheel";
+pub const group_name_wheel = "wheel";
 
-pub const SSL_CERT_FILE = "amazon.pem";
+pub const ssl_cert_file = "amazon.pem";
 
-pub const USER_NAME_ROOT = "root";
-pub const USER_NAME_CHRONY = "cb-chrony";
+pub const user_name_root = "root";
+pub const user_name_chrony = "cb-chrony";

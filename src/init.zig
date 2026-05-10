@@ -164,7 +164,7 @@ fn baseMounts(io: Io) !void {
             .flags = ms.NOSUID,
             .fs_type = "devtmpfs",
             .mode = 0o755,
-            .target = constants.DIR_DEV,
+            .target = constants.dir_dev,
         },
         .{
             .source = "devpts",
@@ -172,42 +172,42 @@ fn baseMounts(io: Io) !void {
             .fs_type = "devpts",
             .mode = 0o755,
             .options = "mode=0620,gid=5,ptmxmode=666",
-            .target = constants.DIR_DEV_PTS,
+            .target = constants.dir_dev_pts,
         },
         .{
             .source = "mqueue",
             .flags = ms.NODEV | ms.NOEXEC | ms.NOSUID,
             .fs_type = "mqueue",
             .mode = 0o755,
-            .target = constants.DIR_DEV_MQUEUE,
+            .target = constants.dir_dev_mqueue,
         },
         .{
             .source = "tmpfs",
             .flags = ms.NODEV | ms.NOSUID,
             .fs_type = "tmpfs",
             .mode = 0o1777,
-            .target = constants.DIR_DEV_SHM,
+            .target = constants.dir_dev_shm,
         },
         .{
             .source = "hugetlbfs",
             .flags = ms.RELATIME,
             .fs_type = "hugetlbfs",
             .mode = 0o755,
-            .target = constants.DIR_DEV_HUGEPAGES,
+            .target = constants.dir_dev_hugepages,
         },
         .{
             .source = "proc",
             .flags = ms.NODEV | ms.NOEXEC | ms.RELATIME | ms.NOSUID,
             .fs_type = "proc",
             .mode = 0o555,
-            .target = constants.DIR_PROC,
+            .target = constants.dir_proc,
         },
         .{
             .source = "sys",
             .flags = ms.NODEV | ms.NOEXEC | ms.NOSUID,
             .fs_type = "sysfs",
             .mode = 0o555,
-            .target = constants.DIR_SYS,
+            .target = constants.dir_sys,
         },
         .{
             .source = "tmpfs",
@@ -215,7 +215,7 @@ fn baseMounts(io: Io) !void {
             .fs_type = "tmpfs",
             .mode = 0o755,
             .options = "mode=0755",
-            .target = constants.DIR_ET_RUN,
+            .target = constants.dir_et_run,
         },
         .{
             .source = "cgroup2",
@@ -223,14 +223,14 @@ fn baseMounts(io: Io) !void {
             .fs_type = "cgroup2",
             .mode = 0o555,
             .options = "nsdelegate",
-            .target = constants.DIR_SYS_FS_CGROUP,
+            .target = constants.dir_sys_fs_cgroup,
         },
         .{
             .source = "debugfs",
             .flags = ms.NODEV | ms.NOEXEC | ms.RELATIME | ms.NOSUID,
             .fs_type = "debugfs",
             .mode = 0o500,
-            .target = constants.DIR_SYS_KERNEL_DEBUG,
+            .target = constants.dir_sys_kernel_debug,
         },
     };
 
@@ -363,11 +363,11 @@ pub fn fetchUserData(allocator: Allocator, aws_ctx: *AwsContext) !?[]const u8 {
 }
 
 pub fn writeUserData(io: Io, user_data: []const u8) !void {
-    fs_utils.mkdirRecursive(io, constants.DIR_ET_VAR_LIB, 0o755) catch |err| {
-        std.log.err("failed to create {s}: {s}", .{ constants.DIR_ET_VAR_LIB, @errorName(err) });
+    fs_utils.mkdirRecursive(io, constants.dir_et_var_lib, 0o755) catch |err| {
+        std.log.err("failed to create {s}: {s}", .{ constants.dir_et_var_lib, @errorName(err) });
         return err;
     };
-    const path = constants.DIR_ET_VAR_LIB ++ "/" ++ constants.FILE_USER_DATA;
+    const path = constants.dir_et_var_lib ++ "/" ++ constants.file_user_data;
     const file = Io.Dir.createFileAbsolute(io, path, .{}) catch |err| {
         std.log.err("failed to create {s}: {s}", .{ path, @errorName(err) });
         return err;
@@ -744,7 +744,7 @@ pub fn expandEnvValues(
     if (!has_path) {
         new_env[env_slice.len] = NameValue{
             .name = try vmspec_alloc.dupe(u8, "PATH"),
-            .value = try vmspec_alloc.dupe(u8, constants.ENV_PATH),
+            .value = try vmspec_alloc.dupe(u8, constants.env_path),
         };
     }
     vmspec.env = new_env;
@@ -1078,7 +1078,7 @@ pub fn expandCommandAndArgs(
     // PATH is always present in env because expandEnvValues appends
     // a default when none is provided.
     if (expanded_command.len > 0 and
-        !std.mem.startsWith(u8, expanded_command[0], constants.DIR_ROOT))
+        !std.mem.startsWith(u8, expanded_command[0], constants.dir_root))
     {
         const path_var = mapping.get("PATH").?;
         if (try system.findExecutableInPath(allocator, io, path_var, expanded_command[0])) |resolved| {

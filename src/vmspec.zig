@@ -13,7 +13,7 @@ const ConfigFile = container.ConfigFile;
 const login = @import("login.zig");
 const string = @import("string.zig");
 
-const default_command = [_][]const u8{constants.DIR_ET_BIN ++ "/sh"};
+const default_command = [_][]const u8{constants.dir_et_bin ++ "/sh"};
 
 /// Merge two NameValue slices. Values from `other` override values in `base` with the same name.
 /// Items from `base` that aren't in `other` are kept; all items from `other` are added.
@@ -182,7 +182,7 @@ pub const VmSpec = struct {
             } else |_| {
                 const passwd_contents = try Io.Dir.cwd().readFileAlloc(
                     io,
-                    constants.FILE_ETC_PASSWD,
+                    constants.file_etc_passwd,
                     allocator,
                     .limited(1048576),
                 );
@@ -197,7 +197,7 @@ pub const VmSpec = struct {
                 } else |_| {
                     const group_contents = try Io.Dir.cwd().readFileAlloc(
                         io,
-                        constants.FILE_ETC_GROUP,
+                        constants.file_etc_group,
                         allocator,
                         .limited(1048576),
                     );

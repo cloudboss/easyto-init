@@ -636,7 +636,7 @@ fn writeResolvConf(io: Io, ack: *dhcpz.v4.Message) !void {
         w.print("nameserver {}.{}.{}.{}\n", .{ s[0], s[1], s[2], s[3] }) catch {};
     }
 
-    try fs.atomicWriteFile(io, constants.FILE_ETC_RESOLV_CONF, w.buffered(), 0o644);
+    try fs.atomicWriteFile(io, constants.file_etc_resolv_conf, w.buffered(), 0o644);
 }
 
 fn subnetMaskToPrefix(mask: [4]u8) u8 {
