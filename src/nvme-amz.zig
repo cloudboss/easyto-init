@@ -2,8 +2,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
-const string = @import("string.zig");
-
 const amz_ebs_mn = "Amazon Elastic Block Store";
 const amz_inst_store_mn = "Amazon EC2 NVMe Instance Storage";
 const amz_vendor_id: c_ushort = 0x1D0F;
@@ -219,11 +217,11 @@ pub const Names = struct {
             return Error.NoDeviceName;
         }
 
-        if (string.startsWith(str[field1_start..], "/dev")) {
+        if (std.mem.startsWith(u8, str[field1_start..], "/dev")) {
             field1_start = 5;
         }
 
-        if ((field2_start > 0) and (string.startsWith(str[field2_start..], "/dev"))) {
+        if ((field2_start > 0) and (std.mem.startsWith(u8, str[field2_start..], "/dev"))) {
             field2_start += 5;
         }
 
@@ -237,7 +235,7 @@ pub const Names = struct {
 
         var device_name: ?[]const u8 = null;
         if (has_delim) {
-            if (!string.equals(str[field2_start..field2_end], "none")) {
+            if (!std.mem.eql(u8, str[field2_start..field2_end], "none")) {
                 var buf: std.ArrayList(u8) = .empty;
                 errdefer buf.deinit(allocator);
                 try buf.appendSlice(allocator, str[field2_start..field2_end]);
@@ -360,7 +358,7 @@ test "parse nvme names without virtual_name" {
     var names = try Names.fromString(allocator, "/dev/sda1");
     defer names.deinit(allocator);
 
-    try testing.expect(string.equals(names.device_name.?, "sda1"));
+    try testing.expect(std.mem.eql(u8, names.device_name.?, "sda1"));
     try testing.expect(names.virtual_name == null);
 }
 
@@ -369,7 +367,7 @@ test "parse nvme names without virtual_name including spaces" {
     var names = try Names.fromString(allocator, "/dev/sda1    ");
     defer names.deinit(allocator);
 
-    try testing.expect(string.equals(names.device_name.?, "sda1"));
+    try testing.expect(std.mem.eql(u8, names.device_name.?, "sda1"));
     try testing.expect(names.virtual_name == null);
 }
 
@@ -378,7 +376,7 @@ test "parse nvme names without virtual_name without /dev" {
     var names = try Names.fromString(allocator, "sda1");
     defer names.deinit(allocator);
 
-    try testing.expect(string.equals(names.device_name.?, "sda1"));
+    try testing.expect(std.mem.eql(u8, names.device_name.?, "sda1"));
     try testing.expect(names.virtual_name == null);
 }
 
@@ -387,7 +385,7 @@ test "parse nvme names without virtual_name without /dev including spaces" {
     var names = try Names.fromString(allocator, "sda1    ");
     defer names.deinit(allocator);
 
-    try testing.expect(string.equals(names.device_name.?, "sda1"));
+    try testing.expect(std.mem.eql(u8, names.device_name.?, "sda1"));
     try testing.expect(names.virtual_name == null);
 }
 
@@ -396,8 +394,8 @@ test "parse nvme names with virtual_name" {
     var names = try Names.fromString(allocator, "ephemeral0:/dev/sdf");
     defer names.deinit(allocator);
 
-    try testing.expect(string.equals(names.device_name.?, "sdf"));
-    try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));
+    try testing.expect(std.mem.eql(u8, names.device_name.?, "sdf"));
+    try testing.expect(std.mem.eql(u8, names.virtual_name.?, "ephemeral0"));
 }
 
 test "parse nvme names with virtual_name including spaces" {
@@ -405,8 +403,8 @@ test "parse nvme names with virtual_name including spaces" {
     var names = try Names.fromString(allocator, "ephemeral0:/dev/sdf    ");
     defer names.deinit(allocator);
 
-    try testing.expect(string.equals(names.device_name.?, "sdf"));
-    try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));
+    try testing.expect(std.mem.eql(u8, names.device_name.?, "sdf"));
+    try testing.expect(std.mem.eql(u8, names.virtual_name.?, "ephemeral0"));
 }
 
 test "parse nvme names with virtual_name without /dev" {
@@ -414,8 +412,8 @@ test "parse nvme names with virtual_name without /dev" {
     var names = try Names.fromString(allocator, "ephemeral0:sdf");
     defer names.deinit(allocator);
 
-    try testing.expect(string.equals(names.device_name.?, "sdf"));
-    try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));
+    try testing.expect(std.mem.eql(u8, names.device_name.?, "sdf"));
+    try testing.expect(std.mem.eql(u8, names.virtual_name.?, "ephemeral0"));
 }
 
 test "parse nvme names with virtual_name without /dev including spaces" {
@@ -423,8 +421,8 @@ test "parse nvme names with virtual_name without /dev including spaces" {
     var names = try Names.fromString(allocator, "ephemeral0:sdf   ");
     defer names.deinit(allocator);
 
-    try testing.expect(string.equals(names.device_name.?, "sdf"));
-    try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));
+    try testing.expect(std.mem.eql(u8, names.device_name.?, "sdf"));
+    try testing.expect(std.mem.eql(u8, names.virtual_name.?, "ephemeral0"));
 }
 
 test "parse nvme names with virtual_name with device_name none" {
@@ -432,7 +430,7 @@ test "parse nvme names with virtual_name with device_name none" {
     var names = try Names.fromString(allocator, "ephemeral0:none");
     defer names.deinit(allocator);
 
-    try testing.expect(string.equals(names.virtual_name.?, "ephemeral0"));
+    try testing.expect(std.mem.eql(u8, names.virtual_name.?, "ephemeral0"));
     try testing.expect(names.device_name == null);
 }
 
@@ -460,7 +458,7 @@ test "nvme struct only device_name" {
         },
         .vendor_id = amz_vendor_id,
     };
-    try testing.expect(string.equals(try nvme.name(), "nvme0n1"));
+    try testing.expect(std.mem.eql(u8, try nvme.name(), "nvme0n1"));
 }
 
 test "nvme struct only virtual_name" {
@@ -472,7 +470,7 @@ test "nvme struct only virtual_name" {
         },
         .vendor_id = amz_vendor_id,
     };
-    try testing.expect(string.equals(try nvme.name(), "ephemeral0"));
+    try testing.expect(std.mem.eql(u8, try nvme.name(), "ephemeral0"));
 }
 
 test "nvme struct both device_name and virtual_name" {
@@ -484,7 +482,7 @@ test "nvme struct both device_name and virtual_name" {
         },
         .vendor_id = amz_vendor_id,
     };
-    try testing.expect(string.equals(try nvme.name(), "sdf"));
+    try testing.expect(std.mem.eql(u8, try nvme.name(), "sdf"));
 }
 
 test "parseModel ebs space padded" {

@@ -20,7 +20,6 @@ const root = @import("root.zig");
 const service = @import("service.zig");
 const services = @import("services.zig");
 const spot = @import("spot.zig");
-const string = @import("string.zig");
 const system = @import("system.zig");
 const tasks = @import("tasks.zig");
 const template = @import("template.zig");
@@ -48,7 +47,6 @@ test {
     testing.refAllDecls(service);
     testing.refAllDecls(services);
     testing.refAllDecls(spot);
-    testing.refAllDecls(string);
     testing.refAllDecls(system);
     testing.refAllDecls(tasks);
     testing.refAllDecls(template);

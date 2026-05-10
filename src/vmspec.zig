@@ -11,7 +11,6 @@ const container = @import("container.zig");
 const Config = container.Config;
 const ConfigFile = container.ConfigFile;
 const login = @import("login.zig");
-const string = @import("string.zig");
 
 const default_command = [_][]const u8{constants.dir_et_bin ++ "/sh"};
 

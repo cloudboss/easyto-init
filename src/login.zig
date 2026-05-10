@@ -3,8 +3,6 @@ const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
-const string = @import("string.zig");
-
 pub const UserEntry = struct {
     name: []const u8,
     uid: u32,
@@ -20,7 +18,7 @@ pub fn userGroupId(contents: []const u8, name: []const u8) !u32 {
         var fields = std.mem.splitSequence(u8, line, ":");
 
         const field0 = fields.next() orelse return error.InvalidUserGroupFile;
-        if (!string.equals(field0, name)) continue;
+        if (!std.mem.eql(u8, field0, name)) continue;
 
         _ = fields.next() orelse return error.InvalidUserGroupFile;
 
@@ -46,7 +44,7 @@ pub fn getUserEntry(contents: []const u8, name: []const u8) !UserEntry {
 
         // name:password:uid:gid:gecos:home:shell
         const field_name = fields.next() orelse return error.InvalidUserGroupFile;
-        if (!string.equals(field_name, name)) continue;
+        if (!std.mem.eql(u8, field_name, name)) continue;
 
         _ = fields.next() orelse return error.InvalidUserGroupFile; // password
         const uid_str = fields.next() orelse return error.InvalidUserGroupFile;
