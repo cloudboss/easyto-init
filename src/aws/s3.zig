@@ -397,7 +397,8 @@ test "parseJsonToMap with boolean values" {
 
 test "parseJsonToMap skips nested objects and arrays" {
     const allocator = testing.allocator;
-    const json = "{\"name\": \"test\", \"nested\": {\"a\": 1}, \"list\": [1, 2, 3], \"null_val\": null}";
+    const json = "{\"name\": \"test\", \"nested\": {\"a\": 1}, " ++
+        "\"list\": [1, 2, 3], \"null_val\": null}";
 
     var map = try parseJsonToMap(allocator, json);
     defer freeStringMap(allocator, &map);
@@ -470,17 +471,29 @@ test "parseJsonToMap with mixed scalar types" {
 }
 
 test "calculatePathSuffix with matching prefix" {
-    try testing.expectEqualStrings("file.txt", calculatePathSuffix("app/config/file.txt", "app/config/"));
-    try testing.expectEqualStrings("nested/deep/file.txt", calculatePathSuffix("prefix/nested/deep/file.txt", "prefix/"));
+    try testing.expectEqualStrings(
+        "file.txt",
+        calculatePathSuffix("app/config/file.txt", "app/config/"),
+    );
+    try testing.expectEqualStrings(
+        "nested/deep/file.txt",
+        calculatePathSuffix("prefix/nested/deep/file.txt", "prefix/"),
+    );
     try testing.expectEqualStrings("", calculatePathSuffix("exact/match/", "exact/match/"));
 }
 
 test "calculatePathSuffix with non-matching prefix" {
-    try testing.expectEqualStrings("other/path/file.txt", calculatePathSuffix("other/path/file.txt", "app/config/"));
+    try testing.expectEqualStrings(
+        "other/path/file.txt",
+        calculatePathSuffix("other/path/file.txt", "app/config/"),
+    );
 }
 
 test "calculatePathSuffix with empty prefix" {
-    try testing.expectEqualStrings("app/config/file.txt", calculatePathSuffix("app/config/file.txt", ""));
+    try testing.expectEqualStrings(
+        "app/config/file.txt",
+        calculatePathSuffix("app/config/file.txt", ""),
+    );
 }
 
 test "calculatePathSuffix with empty key" {
@@ -567,7 +580,8 @@ test "parseJsonToMap with empty string value" {
 
 test "parseJsonToMap with escaped characters in strings" {
     const allocator = testing.allocator;
-    const json = "{\"path\": \"C:\\\\Users\\\\test\", \"quote\": \"say \\\"hello\\\"\", \"newline\": \"line1\\nline2\"}";
+    const json = "{\"path\": \"C:\\\\Users\\\\test\", " ++
+        "\"quote\": \"say \\\"hello\\\"\", \"newline\": \"line1\\nline2\"}";
 
     var map = try parseJsonToMap(allocator, json);
     defer freeStringMap(allocator, &map);
@@ -690,12 +704,18 @@ test "parseJsonToMap with scientific notation float" {
 
 test "calculatePathSuffix when prefix is longer than key" {
     // When prefix is longer than key, startsWith returns false, so full key is returned
-    try testing.expectEqualStrings("short", calculatePathSuffix("short", "this/is/a/very/long/prefix/"));
+    try testing.expectEqualStrings(
+        "short",
+        calculatePathSuffix("short", "this/is/a/very/long/prefix/"),
+    );
 }
 
 test "calculatePathSuffix with partial overlap not at start" {
     // Prefix "config/" doesn't match "app/config/file.txt" at the start
-    try testing.expectEqualStrings("app/config/file.txt", calculatePathSuffix("app/config/file.txt", "config/"));
+    try testing.expectEqualStrings(
+        "app/config/file.txt",
+        calculatePathSuffix("app/config/file.txt", "config/"),
+    );
 }
 
 test "calculatePathSuffix with exact match returns empty" {

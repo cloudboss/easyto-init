@@ -92,7 +92,14 @@ pub fn initSsh(allocator: Allocator, io: Io) !void {
     };
 
     // Write authorized_keys file
-    try writeAuthorizedKeys(allocator, io, user_entry.home_dir, user_entry.uid, user_entry.gid, pub_key);
+    try writeAuthorizedKeys(
+        allocator,
+        io,
+        user_entry.home_dir,
+        user_entry.uid,
+        user_entry.gid,
+        pub_key,
+    );
 
     // Generate host keys if missing
     try generateHostKeysIfMissing(io);

@@ -18,7 +18,11 @@ const default_command = [_][]const u8{constants.dir_et_bin ++ "/sh"};
 /// Merge two NameValue slices. Values from `other` override values in `base` with the same name.
 /// Items from `base` that aren't in `other` are kept; all items from `other` are added.
 /// Strings are copied to ensure proper ownership.
-fn mergeNameValues(allocator: Allocator, base: ?[]const NameValue, other: []const NameValue) ![]NameValue {
+fn mergeNameValues(
+    allocator: Allocator,
+    base: ?[]const NameValue,
+    other: []const NameValue,
+) ![]NameValue {
     if (other.len == 0) {
         // Nothing to merge, keep base as-is (base items are already owned)
         if (base) |b| {
@@ -263,7 +267,10 @@ pub const VmSpec = struct {
         };
     }
 
-    fn dupeTemplateVolumeSource(allocator: Allocator, src: TemplateVolumeSource) !TemplateVolumeSource {
+    fn dupeTemplateVolumeSource(
+        allocator: Allocator,
+        src: TemplateVolumeSource,
+    ) !TemplateVolumeSource {
         return TemplateVolumeSource{
             .content = try allocator.dupe(u8, src.content),
             .variables = if (src.variables) |v| try dupeYamlValue(allocator, v) else null,
@@ -318,7 +325,10 @@ pub const VmSpec = struct {
         };
     }
 
-    fn dupeSecretsManagerVolumeSource(allocator: Allocator, src: SecretsManagerVolumeSource) !SecretsManagerVolumeSource {
+    fn dupeSecretsManagerVolumeSource(
+        allocator: Allocator,
+        src: SecretsManagerVolumeSource,
+    ) !SecretsManagerVolumeSource {
         return SecretsManagerVolumeSource{
             .@"secret-id" = try allocator.dupe(u8, src.@"secret-id"),
             .optional = src.optional,
@@ -328,13 +338,19 @@ pub const VmSpec = struct {
 
     fn dupeEbsVolumeSource(allocator: Allocator, src: EbsVolumeSource) !EbsVolumeSource {
         return EbsVolumeSource{
-            .attachment = if (src.attachment) |att| try dupeEbsVolumeAttachment(allocator, att) else null,
+            .attachment = if (src.attachment) |att|
+                try dupeEbsVolumeAttachment(allocator, att)
+            else
+                null,
             .device = try allocator.dupe(u8, src.device),
             .mount = if (src.mount) |m| try dupeMount(allocator, m) else null,
         };
     }
 
-    fn dupeEbsVolumeAttachment(allocator: Allocator, src: EbsVolumeAttachment) !EbsVolumeAttachment {
+    fn dupeEbsVolumeAttachment(
+        allocator: Allocator,
+        src: EbsVolumeAttachment,
+    ) !EbsVolumeAttachment {
         var tags = try allocator.alloc(AwsTag, src.tags.len);
         for (src.tags, 0..) |tag, i| {
             tags[i] = AwsTag{
@@ -397,7 +413,10 @@ pub const VmSpec = struct {
         };
     }
 
-    fn dupeSecretsManagerEnvSource(allocator: Allocator, src: SecretsManagerEnvSource) !SecretsManagerEnvSource {
+    fn dupeSecretsManagerEnvSource(
+        allocator: Allocator,
+        src: SecretsManagerEnvSource,
+    ) !SecretsManagerEnvSource {
         return SecretsManagerEnvSource{
             .name = if (src.name) |n| try allocator.dupe(u8, n) else null,
             .@"secret-id" = try allocator.dupe(u8, src.@"secret-id"),
@@ -1325,7 +1344,10 @@ test "VmSpec.fromYaml parses both env and env-from" {
 
     // Check Secrets Manager source
     try testing.expect(vmspec.@"env-from".?[2].@"secrets-manager" != null);
-    try testing.expectEqualStrings("app/db/password", vmspec.@"env-from".?[2].@"secrets-manager".?.@"secret-id");
+    try testing.expectEqualStrings(
+        "app/db/password",
+        vmspec.@"env-from".?[2].@"secrets-manager".?.@"secret-id",
+    );
 }
 
 test "VmSpec.merge env-from" {

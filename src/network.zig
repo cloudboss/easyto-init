@@ -408,7 +408,11 @@ fn discoverDeviceNumbers(imds_client: *aws.ImdsClient) !DeviceNumberMap {
         const devnum_str = imds_client.getMetadata(path, .{}) catch continue;
         defer imds_alloc.free(devnum_str);
 
-        const dn = std.fmt.parseInt(u32, std.mem.trim(u8, devnum_str, " \t\r\n"), 10) catch continue;
+        const dn = std.fmt.parseInt(
+            u32,
+            std.mem.trim(u8, devnum_str, " \t\r\n"),
+            10,
+        ) catch continue;
 
         @memcpy(&result.macs[result.len], mac[0..17]);
         result.device_numbers[result.len] = dn;

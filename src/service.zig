@@ -104,7 +104,10 @@ pub const Supervisor = struct {
         defer self.allocator.free(enabled_services);
 
         if (enabled_services.len > 0) {
-            self.service_states = self.allocator.alloc(ServiceState, enabled_services.len) catch |err| {
+            self.service_states = self.allocator.alloc(
+                ServiceState,
+                enabled_services.len,
+            ) catch |err| {
                 std.log.warn("failed to allocate service states: {s}", .{@errorName(err)});
                 return self.startMainProcess();
             };
@@ -116,9 +119,15 @@ pub const Supervisor = struct {
             for (self.service_states) |*svc| {
                 self.startService(svc) catch |err| {
                     if (svc.def.optional) {
-                        std.log.info("optional service {s} failed to start: {s}", .{ svc.def.name, @errorName(err) });
+                        std.log.info(
+                            "optional service {s} failed to start: {s}",
+                            .{ svc.def.name, @errorName(err) },
+                        );
                     } else {
-                        std.log.err("required service {s} failed to start: {s}", .{ svc.def.name, @errorName(err) });
+                        std.log.err(
+                            "required service {s} failed to start: {s}",
+                            .{ svc.def.name, @errorName(err) },
+                        );
                         return err;
                     }
                 };
@@ -458,7 +467,10 @@ pub const Supervisor = struct {
     }
 
     /// Build argv array from command and args slices. Exported for testing.
-    pub fn buildArgv(self: *const Supervisor) !struct { argv: []?[*:0]const u8, arg_strings: [][:0]const u8 } {
+    pub fn buildArgv(self: *const Supervisor) !struct {
+        argv: []?[*:0]const u8,
+        arg_strings: [][:0]const u8,
+    } {
         const command_len = self.command.len;
         const args_len = if (self.args) |a| a.len else 0;
         const total_len = command_len + args_len;
@@ -681,21 +693,24 @@ test "getAllPids does not include pid 1" {
 // Test parseKernelThreadStatus with realistic /proc/[pid]/stat content
 test "parseKernelThreadStatus with normal process" {
     // Real example from /proc/1/stat - init is not a kernel thread (flags don't have PF_KTHREAD)
-    const content = "1 (init) S 0 1 1 0 -1 4194560 1234 0 0 0 10 5 0 0 20 0 1 0 1 12345678 1024 18446744073709551615 0 0 0 0 0 0 0 0 65536 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+    const content = "1 (init) S 0 1 1 0 -1 4194560 1234 0 0 0 10 5 0 0 20 0 1 0 1 12345678 1024 " ++
+        "18446744073709551615 0 0 0 0 0 0 0 0 65536 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
     const is_kthread = try parseKernelThreadStatus(content);
     try testing.expect(!is_kthread);
 }
 
 test "parseKernelThreadStatus with kernel thread" {
     // Kernel thread has PF_KTHREAD (0x00200000 = 2097152) set in flags field
-    const content = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 18446744073709551615 0 0 0 0 0 0 0 2147483647 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+    const content = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 " ++
+        "18446744073709551615 0 0 0 0 0 0 0 2147483647 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
     const is_kthread = try parseKernelThreadStatus(content);
     try testing.expect(is_kthread);
 }
 
 test "parseKernelThreadStatus with process name containing parentheses" {
     // Process names can contain parentheses which makes parsing tricky
-    const content = "123 (my (weird) app) S 0 1 1 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+    const content = "123 (my (weird) app) S 0 1 1 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 0 0 " ++
+        "0 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
     const is_kthread = try parseKernelThreadStatus(content);
     try testing.expect(!is_kthread);
 }
@@ -711,7 +726,8 @@ test "parseKernelThreadStatus error on missing fields" {
 }
 
 test "parseKernelThreadStatus error on non-numeric flags" {
-    const content = "123 (myapp) S 0 1 1 0 -1 notanumber 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+    const content = "123 (myapp) S 0 1 1 0 -1 notanumber 0 0 0 0 0 0 0 0 20 0 1 0 0 0 " ++
+        "0 0 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
     try testing.expectError(error.InvalidFlags, parseKernelThreadStatus(content));
 }
 

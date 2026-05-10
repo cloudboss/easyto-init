@@ -292,17 +292,29 @@ pub fn calculateRelativeName(name: []const u8, path: []const u8) []const u8 {
 }
 
 test "calculateRelativeName with matching prefix" {
-    try testing.expectEqualStrings("database_host", calculateRelativeName("/app/config/database_host", "/app/config/"));
-    try testing.expectEqualStrings("nested/deep/param", calculateRelativeName("/prefix/nested/deep/param", "/prefix/"));
+    try testing.expectEqualStrings(
+        "database_host",
+        calculateRelativeName("/app/config/database_host", "/app/config/"),
+    );
+    try testing.expectEqualStrings(
+        "nested/deep/param",
+        calculateRelativeName("/prefix/nested/deep/param", "/prefix/"),
+    );
     try testing.expectEqualStrings("", calculateRelativeName("/exact/match/", "/exact/match/"));
 }
 
 test "calculateRelativeName with non-matching prefix" {
-    try testing.expectEqualStrings("/other/path/param", calculateRelativeName("/other/path/param", "/app/config/"));
+    try testing.expectEqualStrings(
+        "/other/path/param",
+        calculateRelativeName("/other/path/param", "/app/config/"),
+    );
 }
 
 test "calculateRelativeName with empty prefix" {
-    try testing.expectEqualStrings("/app/config/param", calculateRelativeName("/app/config/param", ""));
+    try testing.expectEqualStrings(
+        "/app/config/param",
+        calculateRelativeName("/app/config/param", ""),
+    );
 }
 
 test "calculateRelativeName with empty name" {

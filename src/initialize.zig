@@ -68,7 +68,10 @@ pub const Mount = struct {
                 std.log.warn("mount point {s} already mounted, skipping", .{self.target});
             },
             else => {
-                std.log.err("mount {s} on {s} failed: {s}", .{ self.source, self.target, @tagName(e) });
+                std.log.err(
+                    "mount {s} on {s} failed: {s}",
+                    .{ self.source, self.target, @tagName(e) },
+                );
                 errno.* = @intFromEnum(e);
                 return Error.MountError;
             },
@@ -522,7 +525,11 @@ pub fn resolveEnvFrom(
             const imds_client = aws_ctx.getImds();
 
             // Fetch value from IMDS
-            const imds_path = try std.fmt.allocPrint(allocator, "/latest/meta-data/{s}", .{imds.path});
+            const imds_path = try std.fmt.allocPrint(
+                allocator,
+                "/latest/meta-data/{s}",
+                .{imds.path},
+            );
             defer allocator.free(imds_path);
 
             const value = imds_client.getMetadata(imds_path, .{}) catch |err| {
@@ -612,10 +619,16 @@ pub fn resolveEnvFrom(
                 // Single value with explicit name
                 const value = ssm_client.getParameter(ssm.path) catch |err| {
                     if (ssm.optional orelse false) {
-                        std.log.info("optional SSM parameter {s} not found, skipping", .{ssm.path});
+                        std.log.info(
+                            "optional SSM parameter {s} not found, skipping",
+                            .{ssm.path},
+                        );
                         continue;
                     }
-                    std.log.err("failed to fetch SSM parameter {s}: {s}", .{ ssm.path, @errorName(err) });
+                    std.log.err(
+                        "failed to fetch SSM parameter {s}: {s}",
+                        .{ ssm.path, @errorName(err) },
+                    );
                     return err;
                 };
                 defer allocator.free(value);
@@ -629,10 +642,16 @@ pub fn resolveEnvFrom(
                 // JSON map expanded to multiple env vars
                 var env_map = ssm_client.getParameterMap(ssm.path) catch |err| {
                     if (ssm.optional orelse false) {
-                        std.log.info("optional SSM parameter {s} not found, skipping", .{ssm.path});
+                        std.log.info(
+                            "optional SSM parameter {s} not found, skipping",
+                            .{ssm.path},
+                        );
                         continue;
                     }
-                    std.log.err("failed to fetch SSM parameter map {s}: {s}", .{ ssm.path, @errorName(err) });
+                    std.log.err(
+                        "failed to fetch SSM parameter map {s}: {s}",
+                        .{ ssm.path, @errorName(err) },
+                    );
                     return err;
                 };
                 defer {
@@ -647,7 +666,10 @@ pub fn resolveEnvFrom(
                 var map_it = env_map.iterator();
                 while (map_it.next()) |entry| {
                     try addEnvVar(vmspec_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
-                    std.log.info("resolved env {s} from SSM parameter {s}", .{ entry.key_ptr.*, ssm.path });
+                    std.log.info(
+                        "resolved env {s} from SSM parameter {s}",
+                        .{ entry.key_ptr.*, ssm.path },
+                    );
                 }
             }
         }
@@ -659,10 +681,16 @@ pub fn resolveEnvFrom(
                 // Single value with explicit name
                 const value = sm_client.getSecretValue(sm.@"secret-id") catch |err| {
                     if (sm.optional orelse false) {
-                        std.log.info("optional secret {s} not found, skipping", .{sm.@"secret-id"});
+                        std.log.info(
+                            "optional secret {s} not found, skipping",
+                            .{sm.@"secret-id"},
+                        );
                         continue;
                     }
-                    std.log.err("failed to fetch secret {s}: {s}", .{ sm.@"secret-id", @errorName(err) });
+                    std.log.err(
+                        "failed to fetch secret {s}: {s}",
+                        .{ sm.@"secret-id", @errorName(err) },
+                    );
                     return err;
                 };
                 defer allocator.free(value);
@@ -676,10 +704,16 @@ pub fn resolveEnvFrom(
                 // JSON map expanded to multiple env vars
                 var env_map = sm_client.getSecretMap(sm.@"secret-id") catch |err| {
                     if (sm.optional orelse false) {
-                        std.log.info("optional secret {s} not found, skipping", .{sm.@"secret-id"});
+                        std.log.info(
+                            "optional secret {s} not found, skipping",
+                            .{sm.@"secret-id"},
+                        );
                         continue;
                     }
-                    std.log.err("failed to fetch secret map {s}: {s}", .{ sm.@"secret-id", @errorName(err) });
+                    std.log.err(
+                        "failed to fetch secret map {s}: {s}",
+                        .{ sm.@"secret-id", @errorName(err) },
+                    );
                     return err;
                 };
                 defer {
@@ -694,7 +728,10 @@ pub fn resolveEnvFrom(
                 var map_it = env_map.iterator();
                 while (map_it.next()) |entry| {
                     try addEnvVar(vmspec_alloc, vmspec, entry.key_ptr.*, entry.value_ptr.*);
-                    std.log.info("resolved env {s} from secret {s}", .{ entry.key_ptr.*, sm.@"secret-id" });
+                    std.log.info(
+                        "resolved env {s} from secret {s}",
+                        .{ entry.key_ptr.*, sm.@"secret-id" },
+                    );
                 }
             }
         }
@@ -829,7 +866,10 @@ fn handleTemplateVolume(
 
     template.renderToFile(allocator, io, volume, env) catch |err| {
         if (optional) {
-            std.log.info("optional template volume at {s} failed, skipping: {s}", .{ destination, @errorName(err) });
+            std.log.info(
+                "optional template volume at {s} failed, skipping: {s}",
+                .{ destination, @errorName(err) },
+            );
             return;
         }
         std.log.err("failed to render template to {s}: {s}", .{ destination, @errorName(err) });
@@ -853,10 +893,16 @@ fn handleSsmVolume(io: Io, aws_ctx: *AwsContext, volume: *const SsmVolumeSource)
         .gid = volume.mount.@"group-id",
     }) catch |err| {
         if (optional) {
-            std.log.info("optional SSM volume {s} failed, skipping: {s}", .{ path, @errorName(err) });
+            std.log.info(
+                "optional SSM volume {s} failed, skipping: {s}",
+                .{ path, @errorName(err) },
+            );
             return;
         }
-        std.log.err("failed to download SSM volume {s}: {s}", .{ path, @errorName(err) });
+        std.log.err(
+            "failed to download SSM volume {s}: {s}",
+            .{ path, @errorName(err) },
+        );
         return err;
     };
 
@@ -869,7 +915,10 @@ fn handleSsmVolume(io: Io, aws_ctx: *AwsContext, volume: *const SsmVolumeSource)
         return error.ParameterNotFound;
     }
 
-    std.log.info("SSM volume {s} mounted to {s} ({d} files)", .{ path, destination, result.files_written });
+    std.log.info(
+        "SSM volume {s} mounted to {s} ({d} files)",
+        .{ path, destination, result.files_written },
+    );
 }
 
 fn handleS3Volume(io: Io, aws_ctx: *AwsContext, volume: *const S3VolumeSource) !void {
@@ -887,23 +936,35 @@ fn handleS3Volume(io: Io, aws_ctx: *AwsContext, volume: *const S3VolumeSource) !
         .gid = volume.mount.@"group-id",
     }) catch |err| {
         if (optional) {
-            std.log.info("optional S3 volume s3://{s}/{s} failed, skipping: {s}", .{ bucket, key_prefix, @errorName(err) });
+            std.log.info(
+                "optional S3 volume s3://{s}/{s} failed, skipping: {s}",
+                .{ bucket, key_prefix, @errorName(err) },
+            );
             return;
         }
-        std.log.err("failed to download S3 volume s3://{s}/{s}: {s}", .{ bucket, key_prefix, @errorName(err) });
+        std.log.err(
+            "failed to download S3 volume s3://{s}/{s}: {s}",
+            .{ bucket, key_prefix, @errorName(err) },
+        );
         return err;
     };
 
     if (result.files_written == 0) {
         if (optional) {
-            std.log.info("no objects found in s3://{s}/{s}, skipping (optional)", .{ bucket, key_prefix });
+            std.log.info(
+                "no objects found in s3://{s}/{s}, skipping (optional)",
+                .{ bucket, key_prefix },
+            );
             return;
         }
         std.log.err("no S3 objects found at s3://{s}/{s}", .{ bucket, key_prefix });
         return error.S3VolumeEmpty;
     }
 
-    std.log.info("S3 volume s3://{s}/{s} mounted to {s} ({d} files)", .{ bucket, key_prefix, destination, result.files_written });
+    std.log.info(
+        "S3 volume s3://{s}/{s} mounted to {s} ({d} files)",
+        .{ bucket, key_prefix, destination, result.files_written },
+    );
 }
 
 fn handleSecretsManagerVolume(
@@ -924,7 +985,10 @@ fn handleSecretsManagerVolume(
         .gid = volume.mount.@"group-id",
     }) catch |err| {
         if (optional) {
-            std.log.info("optional secret {s} failed, skipping: {s}", .{ secret_id, @errorName(err) });
+            std.log.info(
+                "optional secret {s} failed, skipping: {s}",
+                .{ secret_id, @errorName(err) },
+            );
             return;
         }
         std.log.err("failed to download secret {s}: {s}", .{ secret_id, @errorName(err) });
@@ -989,7 +1053,10 @@ fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource)
             std.mem.trim(u8, az, " \t\r\n"),
             std.mem.trim(u8, instance_id, " \t\r\n"),
         ) catch |err| {
-            std.log.err("unable to ensure EBS volume {s} is attached: {s}", .{ device, @errorName(err) });
+            std.log.err(
+                "unable to ensure EBS volume {s} is attached: {s}",
+                .{ device, @errorName(err) },
+            );
             return err;
         };
 
@@ -1029,7 +1096,10 @@ fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource)
 
     // Mount the device
     system.mountDevice(io, device, mnt.destination, fs_type) catch |err| {
-        std.log.err("failed to mount {s} on {s}: {s}", .{ device, mnt.destination, @errorName(err) });
+        std.log.err(
+            "failed to mount {s} on {s}: {s}",
+            .{ device, mnt.destination, @errorName(err) },
+        );
         return err;
     };
 
@@ -1076,7 +1146,12 @@ pub fn expandCommandAndArgs(
         !std.mem.startsWith(u8, expanded_command[0], constants.dir_root))
     {
         const path_var = mapping.get("PATH").?;
-        if (try system.findExecutableInPath(allocator, io, path_var, expanded_command[0])) |resolved| {
+        if (try system.findExecutableInPath(
+            allocator,
+            io,
+            path_var,
+            expanded_command[0],
+        )) |resolved| {
             allocator.free(expanded_command[0]);
             expanded_command[0] = resolved;
         } else {

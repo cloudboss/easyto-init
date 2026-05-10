@@ -50,7 +50,10 @@ pub fn startSpotTerminationMonitor(io: Io, env_map: *const std.process.Environ.M
 fn monitorLoop(args: MonitorArgs) void {
     const allocator = std.heap.page_allocator;
     var imds_client = aws.ImdsClient.init(allocator, args.io, args.env_map, .{}) catch |err| {
-        scoped_log.err("failed to initialize IMDS client for spot monitor: {s}", .{@errorName(err)});
+        scoped_log.err(
+            "failed to initialize IMDS client for spot monitor: {s}",
+            .{@errorName(err)},
+        );
         return;
     };
     defer imds_client.deinit();

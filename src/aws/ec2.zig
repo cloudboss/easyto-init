@@ -208,7 +208,10 @@ pub const Ec2Client = struct {
         ) catch |err| {
             if (err == error.ServiceError) {
                 defer diagnostic.deinit();
-                scoped_log.err("DescribeVolumes failed: {s}: {s}", .{ diagnostic.code(), diagnostic.message() });
+                scoped_log.err(
+                    "DescribeVolumes failed: {s}: {s}",
+                    .{ diagnostic.code(), diagnostic.message() },
+                );
                 return Ec2Error.ServiceError;
             }
             scoped_log.debug("DescribeVolumes failed: {s}", .{@errorName(err)});
@@ -253,7 +256,10 @@ pub const Ec2Client = struct {
         ) catch |err| {
             if (err == error.ServiceError) {
                 defer diagnostic.deinit();
-                scoped_log.err("AttachVolume failed: {s}: {s}", .{ diagnostic.code(), diagnostic.message() });
+                scoped_log.err(
+                    "AttachVolume failed: {s}: {s}",
+                    .{ diagnostic.code(), diagnostic.message() },
+                );
                 return Ec2Error.ServiceError;
             }
             scoped_log.err("AttachVolume failed: {s}", .{@errorName(err)});
