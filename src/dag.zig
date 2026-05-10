@@ -3,10 +3,9 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const AwsContext = @import("aws/context.zig").AwsContext;
-const init_mod = @import("init.zig");
+const initialize = @import("initialize.zig");
 const tasks = @import("tasks.zig");
-const vmspec_mod = @import("vmspec.zig");
-const VmSpec = vmspec_mod.VmSpec;
+const VmSpec = @import("vmspec.zig").VmSpec;
 
 pub const TaskId = enum(u8) {
     aws_context_init,
@@ -185,9 +184,9 @@ pub const BootContext = struct {
     aws_ctx: ?AwsContext = null,
     user_data: ?[]const u8 = null,
     user_vmspec_parsed: ?VmSpec.ParsedYaml = null,
-    metadata: ?init_mod.Metadata = null,
+    metadata: ?initialize.Metadata = null,
     vmspec: ?VmSpec = null,
-    expanded_command: ?init_mod.ExpandedCommand = null,
+    expanded_command: ?initialize.ExpandedCommand = null,
 
     pub fn init(
         allocator: Allocator,

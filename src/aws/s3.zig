@@ -9,7 +9,7 @@ const testing = std.testing;
 const aws = @import("aws");
 const s3 = @import("s3");
 
-const fs_utils = @import("../fs.zig");
+const fs = @import("../fs.zig");
 
 const scoped_log = std.log.scoped(.aws_s3);
 
@@ -210,12 +210,12 @@ pub const S3Client = struct {
             const content = try self.getObject(obj.bucket, obj.key);
             defer self.allocator.free(content);
 
-            const dest_path = try fs_utils.joinPath(self.allocator, destination, obj.path_suffix);
+            const dest_path = try fs.joinPath(self.allocator, destination, obj.path_suffix);
             defer self.allocator.free(dest_path);
 
             scoped_log.debug("writing {s} ({d} bytes)", .{ dest_path, content.len });
 
-            fs_utils.writeFile(
+            fs.writeFile(
                 io,
                 dest_path,
                 content,

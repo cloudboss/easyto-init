@@ -1,6 +1,7 @@
 const std = @import("std");
 const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
+const testing = std.testing;
 
 const string = @import("string.zig");
 
@@ -72,8 +73,6 @@ pub fn getUserEntry(contents: []const u8, name: []const u8) !UserEntry {
 
     return error.UserGroupIdNotFound;
 }
-
-const testing = std.testing;
 
 test "userGroupId user id" {
     const contents =

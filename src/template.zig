@@ -13,10 +13,9 @@ const mustache = @import("mustache");
 const yaml = @import("yaml");
 
 const fs = @import("fs.zig");
-const vmspec = @import("vmspec.zig");
-const Mount = vmspec.Mount;
-const NameValue = vmspec.NameValue;
-const TemplateVolumeSource = vmspec.TemplateVolumeSource;
+const Mount = @import("vmspec.zig").Mount;
+const NameValue = @import("vmspec.zig").NameValue;
+const TemplateVolumeSource = @import("vmspec.zig").TemplateVolumeSource;
 
 pub const Error = error{
     InvalidVariableMapping,

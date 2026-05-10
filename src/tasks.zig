@@ -1,16 +1,14 @@
 const std = @import("std");
 
 const AwsContext = @import("aws/context.zig").AwsContext;
+const BootContext = @import("dag.zig").BootContext;
 const constants = @import("constants.zig");
-const dag = @import("dag.zig");
-const BootContext = dag.BootContext;
-const init_mod = @import("init.zig");
+const initialize = @import("initialize.zig");
 const log_level = @import("log_level.zig");
 const network = @import("network.zig");
 const system = @import("system.zig");
 const uevent = @import("uevent.zig");
-const vmspec_mod = @import("vmspec.zig");
-const VmSpec = vmspec_mod.VmSpec;
+const VmSpec = @import("vmspec.zig").VmSpec;
 
 pub fn awsContextInit(ctx: *BootContext) !void {
     ctx.aws_ctx = try AwsContext.init(ctx.allocator, ctx.io, ctx.env_map);
@@ -21,7 +19,7 @@ pub fn networkInit(ctx: *BootContext) !void {
 }
 
 pub fn fetchUserData(ctx: *BootContext) anyerror!void {
-    ctx.user_data = init_mod.fetchUserData(ctx.allocator, &ctx.aws_ctx.?) catch |err| blk: {
+    ctx.user_data = initialize.fetchUserData(ctx.allocator, &ctx.aws_ctx.?) catch |err| blk: {
         std.log.warn("failed to fetch user data: {s}, continuing without", .{@errorName(err)});
         break :blk null;
     };
@@ -29,7 +27,7 @@ pub fn fetchUserData(ctx: *BootContext) anyerror!void {
 
 pub fn writeUserData(ctx: *BootContext) !void {
     const ud = ctx.user_data orelse return;
-    try init_mod.writeUserData(ctx.io, ud);
+    try initialize.writeUserData(ctx.io, ud);
 }
 
 pub fn parseUserData(ctx: *BootContext) !void {
@@ -61,7 +59,7 @@ pub fn linkNvmeDevices(ctx: *BootContext) !void {
 
 pub fn readMetadata(ctx: *BootContext) !void {
     const path = constants.dir_et ++ "/" ++ constants.file_metadata;
-    ctx.metadata = try init_mod.readMetadata(ctx.allocator, ctx.io, path);
+    ctx.metadata = try initialize.readMetadata(ctx.allocator, ctx.io, path);
 }
 
 pub fn parseConfigFile(ctx: *BootContext) !void {
@@ -80,7 +78,7 @@ pub fn mergeVmspec(ctx: *BootContext) !void {
 
 pub fn resolveEnvFrom(ctx: *BootContext) !void {
     if (ctx.vmspec.?.@"env-from") |env_from| {
-        init_mod.resolveEnvFrom(
+        initialize.resolveEnvFrom(
             ctx.allocator,
             ctx.vmspecAllocator(),
             &ctx.aws_ctx.?,
@@ -94,7 +92,7 @@ pub fn resolveEnvFrom(ctx: *BootContext) !void {
 }
 
 pub fn expandEnvValues(ctx: *BootContext) !void {
-    try init_mod.expandEnvValues(
+    try initialize.expandEnvValues(
         ctx.allocator,
         ctx.vmspecAllocator(),
         &ctx.vmspec.?,
@@ -117,7 +115,7 @@ pub fn resizeRootVolume(ctx: *BootContext) !void {
 pub fn processVolumes(ctx: *BootContext) !void {
     const vmspec = ctx.vmspec.?;
     if (vmspec.volumes) |volumes| {
-        try init_mod.processVolumes(
+        try initialize.processVolumes(
             ctx.allocator,
             ctx.io,
             &ctx.aws_ctx.?,
@@ -134,7 +132,7 @@ pub fn runInitScripts(ctx: *BootContext) !void {
 
 pub fn expandCommandAndArgs(ctx: *BootContext) !void {
     const vmspec = ctx.vmspec.?;
-    ctx.expanded_command = try init_mod.expandCommandAndArgs(
+    ctx.expanded_command = try initialize.expandCommandAndArgs(
         ctx.allocator,
         ctx.io,
         vmspec.fullCommand(),

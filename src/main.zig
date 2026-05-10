@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const init = @import("init.zig");
+const initialize = @import("initialize.zig");
 pub const log_level = @import("log_level.zig");
 const system = @import("system.zig");
 
@@ -11,7 +11,7 @@ pub const std_options: std.Options = .{
 };
 
 pub fn main(process_init: std.process.Init) !void {
-    init.run(
+    initialize.run(
         process_init.gpa,
         process_init.io,
         process_init.environ_map,

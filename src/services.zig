@@ -7,7 +7,7 @@ const testing = std.testing;
 const aws = @import("aws");
 
 const constants = @import("constants.zig");
-const fs_utils = @import("fs.zig");
+const fs = @import("fs.zig");
 const login = @import("login.zig");
 
 pub const ServiceDef = struct {
@@ -37,7 +37,7 @@ pub fn deinit() void {
 pub fn initChrony(allocator: Allocator, io: Io) !void {
     std.log.info("initializing chrony", .{});
 
-    const passwd_contents = fs_utils.readFileAlloc(io, allocator, constants.file_etc_passwd) catch |err| {
+    const passwd_contents = fs.readFileAlloc(io, allocator, constants.file_etc_passwd) catch |err| {
         std.log.err("failed to read {s}: {s}", .{ constants.file_etc_passwd, @errorName(err) });
         return err;
     };
@@ -48,7 +48,7 @@ pub fn initChrony(allocator: Allocator, io: Io) !void {
         return err;
     };
 
-    const group_contents = fs_utils.readFileAlloc(io, allocator, constants.file_etc_group) catch |err| {
+    const group_contents = fs.readFileAlloc(io, allocator, constants.file_etc_group) catch |err| {
         std.log.err("failed to read {s}: {s}", .{ constants.file_etc_group, @errorName(err) });
         return err;
     };
@@ -58,7 +58,7 @@ pub fn initChrony(allocator: Allocator, io: Io) !void {
 
     // Create chrony run directory with correct ownership
     const chrony_run_path = constants.dir_et_run ++ "/chrony";
-    try fs_utils.mkdirRecursiveOwn(io, chrony_run_path, 0o750, uid, gid);
+    try fs.mkdirRecursiveOwn(io, chrony_run_path, 0o750, uid, gid);
 }
 
 /// Initialize the SSH service.
@@ -80,7 +80,7 @@ pub fn initSsh(allocator: Allocator, io: Io) !void {
     const login_user = std.mem.sliceTo(&login_user_buf, 0);
 
     // Read passwd file to get user's home directory
-    const passwd_contents = fs_utils.readFileAlloc(io, allocator, constants.file_etc_passwd) catch |err| {
+    const passwd_contents = fs.readFileAlloc(io, allocator, constants.file_etc_passwd) catch |err| {
         std.log.err("failed to read {s}: {s}", .{ constants.file_etc_passwd, @errorName(err) });
         return err;
     };
@@ -140,10 +140,10 @@ fn writeAuthorizedKeys(
     defer allocator.free(auth_keys_path);
 
     // Create .ssh directory if needed
-    try fs_utils.mkdirRecursiveOwn(io, ssh_dir, 0o700, uid, gid);
+    try fs.mkdirRecursiveOwn(io, ssh_dir, 0o700, uid, gid);
 
     // Write authorized_keys file
-    try fs_utils.writeFile(io, auth_keys_path, pub_key, 0o640, 0o700, uid, gid);
+    try fs.writeFile(io, auth_keys_path, pub_key, 0o640, 0o700, uid, gid);
 
     std.log.info("wrote SSH authorized_keys to {s}", .{auth_keys_path});
 }

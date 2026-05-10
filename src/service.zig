@@ -8,11 +8,10 @@ const testing = std.testing;
 const aws = @import("aws");
 
 const constants = @import("constants.zig");
-const services_mod = @import("services.zig");
-const ServiceDef = services_mod.ServiceDef;
+const NameValue = @import("vmspec.zig").NameValue;
+const services = @import("services.zig");
+const ServiceDef = services.ServiceDef;
 const system = @import("system.zig");
-const vmspec = @import("vmspec.zig");
-const NameValue = vmspec.NameValue;
 
 // Default value of config ACPI_TINY_POWER_BUTTON_SIGNAL in kernel.
 const ACPI_TINY_POWER_BUTTON_SIGNAL: posix.SIG = @enumFromInt(38);
@@ -93,7 +92,7 @@ pub const Supervisor = struct {
     pub fn start(self: *Supervisor) !void {
         setupSignalHandlers();
 
-        const enabled_services = services_mod.findEnabledServices(
+        const enabled_services = services.findEnabledServices(
             self.allocator,
             self.io,
             self.disable_services,
@@ -248,7 +247,7 @@ pub const Supervisor = struct {
             self.service_states = &[_]ServiceState{};
         }
         // Clean up global service state
-        services_mod.deinit();
+        services.deinit();
     }
 
     fn gracefulShutdown(self: *Supervisor) void {

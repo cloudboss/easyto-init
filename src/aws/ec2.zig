@@ -10,9 +10,8 @@ const ec2 = @import("ec2");
 const Filter = ec2.types.Filter;
 
 const backoff = @import("../backoff.zig");
-const vmspec = @import("../vmspec.zig");
-const EbsVolumeAttachment = vmspec.EbsVolumeAttachment;
-const AwsTag = vmspec.AwsTag;
+const EbsVolumeAttachment = @import("../vmspec.zig").EbsVolumeAttachment;
+const AwsTag = @import("../vmspec.zig").AwsTag;
 
 const scoped_log = std.log.scoped(.aws_ec2);
 

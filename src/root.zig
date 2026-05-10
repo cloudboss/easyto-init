@@ -1,42 +1,55 @@
 const std = @import("std");
+const testing = std.testing;
 
+const aws_asm = @import("aws/asm.zig");
+const aws_ec2 = @import("aws/ec2.zig");
 const aws_s3 = @import("aws/s3.zig");
+const aws_ssm = @import("aws/ssm.zig");
 const backoff = @import("backoff.zig");
+const constants = @import("constants.zig");
 const container = @import("container.zig");
 const dag = @import("dag.zig");
 const fs = @import("fs.zig");
-const init = @import("init.zig");
+const initialize = @import("initialize.zig");
 const log_level = @import("log_level.zig");
 const login = @import("login.zig");
 const network = @import("network.zig");
-const nvme = @import("nvme-amz.zig");
+const nvme_amz = @import("nvme-amz.zig");
+const root = @import("root.zig");
 const service = @import("service.zig");
+const services = @import("services.zig");
 const spot = @import("spot.zig");
 const string = @import("string.zig");
 const system = @import("system.zig");
-const boot_tasks = @import("tasks.zig");
+const tasks = @import("tasks.zig");
+const template = @import("template.zig");
 const uevent = @import("uevent.zig");
 const vmspec = @import("vmspec.zig");
 
-const testing = std.testing;
-
 test {
     testing.refAllDecls(@This());
+    testing.refAllDecls(aws_asm);
+    testing.refAllDecls(aws_ec2);
     testing.refAllDecls(aws_s3);
+    testing.refAllDecls(aws_ssm);
     testing.refAllDecls(backoff);
+    testing.refAllDecls(constants);
     testing.refAllDecls(container);
     testing.refAllDecls(dag);
     testing.refAllDecls(fs);
-    testing.refAllDecls(init);
-    testing.refAllDecls(log_level);
+    testing.refAllDecls(initialize);
     testing.refAllDecls(login);
+    testing.refAllDecls(log_level);
     testing.refAllDecls(network);
-    testing.refAllDecls(nvme);
+    testing.refAllDecls(nvme_amz);
+    testing.refAllDecls(root);
     testing.refAllDecls(service);
+    testing.refAllDecls(services);
     testing.refAllDecls(spot);
     testing.refAllDecls(string);
     testing.refAllDecls(system);
-    testing.refAllDecls(boot_tasks);
+    testing.refAllDecls(tasks);
+    testing.refAllDecls(template);
     testing.refAllDecls(uevent);
     testing.refAllDecls(vmspec);
 }

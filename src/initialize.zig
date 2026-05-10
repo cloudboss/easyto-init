@@ -11,33 +11,28 @@ const testing = std.testing;
 const aws = @import("aws");
 const k8s_expand = @import("k8s_expand");
 
-const asm_mod = @import("aws/asm.zig");
 const AwsContext = @import("aws/context.zig").AwsContext;
-const s3_mod = @import("aws/s3.zig");
-const ssm_mod = @import("aws/ssm.zig");
 const constants = @import("constants.zig");
 const container = @import("container.zig");
 const dag = @import("dag.zig");
-const fs_utils = @import("fs.zig");
-const mkdir_p = fs_utils.mkdir_p;
+const EbsVolumeSource = @import("vmspec.zig").EbsVolumeSource;
+const EnvFromSource = @import("vmspec.zig").EnvFromSource;
+const fs = @import("fs.zig");
 const log_level = @import("log_level.zig");
+const NameValue = @import("vmspec.zig").NameValue;
 const network = @import("network.zig");
+const S3VolumeSource = @import("vmspec.zig").S3VolumeSource;
+const SecretsManagerVolumeSource = @import("vmspec.zig").SecretsManagerVolumeSource;
 const service = @import("service.zig");
 const Supervisor = service.Supervisor;
 const spot = @import("spot.zig");
+const SsmVolumeSource = @import("vmspec.zig").SsmVolumeSource;
 const system = @import("system.zig");
 const template = @import("template.zig");
+const TemplateVolumeSource = @import("vmspec.zig").TemplateVolumeSource;
 const uevent = @import("uevent.zig");
-const vmspec_mod = @import("vmspec.zig");
-const VmSpec = vmspec_mod.VmSpec;
-const EbsVolumeSource = vmspec_mod.EbsVolumeSource;
-const EnvFromSource = vmspec_mod.EnvFromSource;
-const NameValue = vmspec_mod.NameValue;
-const Volume = vmspec_mod.Volume;
-const S3VolumeSource = vmspec_mod.S3VolumeSource;
-const SsmVolumeSource = vmspec_mod.SsmVolumeSource;
-const SecretsManagerVolumeSource = vmspec_mod.SecretsManagerVolumeSource;
-const TemplateVolumeSource = vmspec_mod.TemplateVolumeSource;
+const VmSpec = @import("vmspec.zig").VmSpec;
+const Volume = @import("vmspec.zig").Volume;
 
 const Error = error{
     MountError,
@@ -55,7 +50,7 @@ pub const Mount = struct {
     target: []const u8,
 
     pub fn execute(self: Mount, io: Io, errno: *usize) !void {
-        fs_utils.mkdirRecursive(io, self.target, self.mode) catch |err| {
+        fs.mkdirRecursive(io, self.target, self.mode) catch |err| {
             std.log.err("failed to create directory {s}: {s}", .{ self.target, @errorName(err) });
             return err;
         };
@@ -363,7 +358,7 @@ pub fn fetchUserData(allocator: Allocator, aws_ctx: *AwsContext) !?[]const u8 {
 }
 
 pub fn writeUserData(io: Io, user_data: []const u8) !void {
-    fs_utils.mkdirRecursive(io, constants.dir_et_var_lib, 0o755) catch |err| {
+    fs.mkdirRecursive(io, constants.dir_et_var_lib, 0o755) catch |err| {
         std.log.err("failed to create {s}: {s}", .{ constants.dir_et_var_lib, @errorName(err) });
         return err;
     };
@@ -1027,7 +1022,7 @@ fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource)
         0o755;
 
     // Create mount point with proper permissions
-    fs_utils.mkdirRecursiveOwn(io, mnt.destination, mode, mnt.@"user-id", mnt.@"group-id") catch |err| {
+    fs.mkdirRecursiveOwn(io, mnt.destination, mode, mnt.@"user-id", mnt.@"group-id") catch |err| {
         std.log.err("failed to create mount point {s}: {s}", .{ mnt.destination, @errorName(err) });
         return err;
     };

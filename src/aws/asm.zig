@@ -9,7 +9,7 @@ const testing = std.testing;
 const aws = @import("aws");
 const secretsmanager = @import("secretsmanager");
 
-const fs_utils = @import("../fs.zig");
+const fs = @import("../fs.zig");
 const s3 = @import("s3.zig");
 
 const scoped_log = std.log.scoped(.aws_asm);
@@ -118,7 +118,7 @@ pub const SecretsManagerClient = struct {
 
         scoped_log.debug("writing {s} ({d} bytes)", .{ destination, content.len });
 
-        fs_utils.writeFile(
+        fs.writeFile(
             io,
             destination,
             content,

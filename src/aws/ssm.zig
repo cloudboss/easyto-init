@@ -9,7 +9,7 @@ const testing = std.testing;
 const aws = @import("aws");
 const ssm = @import("ssm");
 
-const fs_utils = @import("../fs.zig");
+const fs = @import("../fs.zig");
 const s3 = @import("s3.zig");
 
 const scoped_log = std.log.scoped(.aws_ssm);
@@ -231,7 +231,7 @@ pub const SsmClient = struct {
             const dest_path = if (param.relative_name.len == 0)
                 try self.allocator.dupe(u8, destination)
             else
-                try fs_utils.joinPath(
+                try fs.joinPath(
                     self.allocator,
                     destination,
                     param.relative_name,
@@ -240,7 +240,7 @@ pub const SsmClient = struct {
 
             scoped_log.debug("writing {s} ({d} bytes)", .{ dest_path, param.value.len });
 
-            fs_utils.writeFile(
+            fs.writeFile(
                 io,
                 dest_path,
                 param.value,
