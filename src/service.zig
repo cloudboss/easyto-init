@@ -152,7 +152,7 @@ pub const Supervisor = struct {
 
     fn startService(self: *Supervisor, svc: *ServiceState) !void {
         if (svc.def.init_fn) |init_fn| {
-            try init_fn(self.allocator, self.io);
+            try init_fn(self.allocator, self.io, svc.def.init_ctx);
         }
 
         const thread = try std.Thread.spawn(.{}, serviceLoop, .{ self, svc });
@@ -259,8 +259,6 @@ pub const Supervisor = struct {
             self.allocator.free(self.service_states);
             self.service_states = &[_]ServiceState{};
         }
-        // Clean up global service state
-        services.deinit();
     }
 
     fn gracefulShutdown(self: *Supervisor) void {

@@ -14,27 +14,17 @@ pub const ServiceDef = struct {
     name: []const u8,
     args: []const []const u8,
     optional: bool = false,
-    init_fn: ?*const fn (Allocator, Io) anyerror!void = null,
+    init_fn: ?*const fn (Allocator, Io, ?*anyopaque) anyerror!void = null,
+    init_ctx: ?*anyopaque = null,
 };
 
-/// Context for SSH service initialization, stored globally since init_fn cannot take extra args.
-var ssh_pub_key: ?[]const u8 = null;
-var ssh_pub_key_allocator: ?Allocator = null;
-
-/// Free any globally allocated service state.
-pub fn deinit() void {
-    if (ssh_pub_key) |key| {
-        if (ssh_pub_key_allocator) |alloc| {
-            alloc.free(key);
-        }
-    }
-    ssh_pub_key = null;
-    ssh_pub_key_allocator = null;
-}
+const SshContext = struct {
+    pub_key: []const u8,
+};
 
 /// Initialize the chrony service.
 /// Creates the run directory and sets ownership to the chrony user.
-pub fn initChrony(allocator: Allocator, io: Io) !void {
+pub fn initChrony(allocator: Allocator, io: Io, _: ?*anyopaque) !void {
     std.log.info("initializing chrony", .{});
 
     const passwd_contents = fs.readFileAlloc(io, allocator, constants.file_etc_passwd) catch |err| {
@@ -64,13 +54,16 @@ pub fn initChrony(allocator: Allocator, io: Io) !void {
 /// Initialize the SSH service.
 /// - Writes the SSH public key to the login user's authorized_keys file
 /// - Generates host keys if they don't exist
-pub fn initSsh(allocator: Allocator, io: Io) !void {
+pub fn initSsh(allocator: Allocator, io: Io, ctx_ptr: ?*anyopaque) !void {
     std.log.info("initializing sshd", .{});
 
-    const pub_key = ssh_pub_key orelse {
-        std.log.err("SSH public key not set", .{});
-        return error.SshPubKeyNotSet;
-    };
+    const ctx_raw = ctx_ptr orelse return error.SshContextMissing;
+    const ctx: *SshContext = @ptrCast(@alignCast(ctx_raw));
+    defer {
+        allocator.free(ctx.pub_key);
+        allocator.destroy(ctx);
+    }
+    const pub_key = ctx.pub_key;
 
     // Get the login user (single directory under /.easyto/home)
     const login_user_buf = getLoginUser(io) catch |err| {
@@ -258,10 +251,11 @@ pub fn findEnabledServices(
             // SSH service requires IMDS to fetch the public key
             if (imds_client) |imds| {
                 if (try fetchSshPubKey(allocator, imds)) |key| {
-                    // Store the key globally for initSsh to use
-                    ssh_pub_key = key;
-                    ssh_pub_key_allocator = allocator;
-                    try enabled.append(allocator, ssh_service);
+                    const ctx = try allocator.create(SshContext);
+                    ctx.* = .{ .pub_key = key };
+                    var def = ssh_service;
+                    def.init_ctx = ctx;
+                    try enabled.append(allocator, def);
                 } else {
                     std.log.info("disabling service ssh as no public key was assigned", .{});
                 }
