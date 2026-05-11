@@ -9,6 +9,10 @@ pub fn build(b: *std.Build) void {
         .abi = .musl,
     });
 
+    const version = b.option([]const u8, "version", "Build version") orelse "dev";
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
+
     // Dependencies
     const aws_sdk_dep = b.dependency("aws_sdk", .{ .target = target, .optimize = optimize });
     const dhcpz_dep = b.dependency("dhcpz", .{ .target = target });
@@ -63,6 +67,9 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
+    mod.addOptions("build_options", build_options);
+    exe.root_module.addOptions("build_options", build_options);
 
     b.installArtifact(exe);
 

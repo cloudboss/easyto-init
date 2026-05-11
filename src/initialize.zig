@@ -7,6 +7,7 @@ const Io = std.Io;
 const linux = std.os.linux;
 const posix = std.posix;
 const testing = std.testing;
+const build_options = @import("build_options");
 
 const aws = @import("aws");
 const k8s_expand = @import("k8s_expand");
@@ -94,7 +95,7 @@ pub fn run(allocator: Allocator, io: Io, env_map: *std.process.Environ.Map) !voi
     try baseMounts(io);
     try setupTestMode(env_map);
     const boot_start = Io.Timestamp.now(io, .awake);
-    std.log.info("easyto-init started", .{});
+    std.log.info("easyto-init version {s} started", .{build_options.version});
     std.log.info("creating base symlinks", .{});
     try baseLinks(io);
 

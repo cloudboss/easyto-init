@@ -87,7 +87,12 @@ $(DIR_STG_INIT)/$(DIR_ET)/sbin/init: \
 		$(DIR_OUT)/zig-out-release/bin/init | $(DIR_STG_INIT)/$(DIR_ET)/sbin/
 	@install -m 0755 $(DIR_OUT)/zig-out-release/bin/init $(DIR_STG_INIT)/$(DIR_ET)/sbin/init
 
-ZIG_BUILD_FLAGS = --cache-dir $(DIR_OUT)/zig-cache --global-cache-dir $(DIR_OUT)/zig-cache
+GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null)
+GIT_DIRTY := $(shell git diff --quiet 2>/dev/null || echo -dirty)
+GIT_VERSION := $(GIT_SHA)$(GIT_DIRTY)
+BUILD_VERSION = $(if $(VERSION),$(VERSION),$(GIT_VERSION))
+
+ZIG_BUILD_FLAGS = --cache-dir $(DIR_OUT)/zig-cache --global-cache-dir $(DIR_OUT)/zig-cache -Dversion=$(BUILD_VERSION)
 
 ZIG_SOURCES = build.zig build.zig.zon $(shell find src -type f -name '*.zig')
 
