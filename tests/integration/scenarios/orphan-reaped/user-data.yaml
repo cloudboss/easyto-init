@@ -1,0 +1,31 @@
+disable-services:
+  - chrony
+  - ssh
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+
+    # Double-fork an orphan: the middle sh exits before its child
+    # finishes, so the child gets reparented to PID 1. When it exits,
+    # init must reap it via the SIGCHLD/signalfd path; otherwise it
+    # stays as a zombie under init forever.
+    sh -c '(sleep 0.5) &'
+    sleep 2
+
+    for d in /proc/[0-9]*/; do
+        pid=$(basename "${d}")
+        [ "${pid}" = "1" ] && continue
+        [ -r "${d}status" ] || continue
+        state=$(awk '/^State:/ {print $2; exit}' "${d}status" 2>/dev/null || true)
+        ppid=$(awk '/^PPid:/ {print $2; exit}' "${d}status" 2>/dev/null || true)
+        if [ "${state}" = "Z" ] && [ "${ppid}" = "1" ]; then
+            echo "FAIL: zombie pid ${pid} reparented to init was not reaped"
+            exit 1
+        fi
+    done
+    echo "init reaped orphan: OK"
+
+    echo "PASS"

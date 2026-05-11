@@ -85,6 +85,11 @@ const Link = struct {
 };
 
 pub fn run(allocator: Allocator, io: Io, env_map: *std.process.Environ.Map) !void {
+    // Block supervisor signals before any thread spawns so every thread
+    // inherits the mask; otherwise unblocked threads would catch them and
+    // see EINTR in their syscalls.
+    service.setupSignalHandling();
+
     // Pre-DAG serial phase.
     try baseMounts(io);
     try setupTestMode(env_map);

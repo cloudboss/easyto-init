@@ -29,8 +29,8 @@ const MonitorArgs = struct {
 /// Starts the spot termination monitor in a background thread.
 ///
 /// The monitor polls IMDS every 5 seconds for spot termination notices.
-/// When a termination notice is detected, it triggers a graceful shutdown
-/// via the supervisor's shutdown_requested atomic.
+/// When a termination notice is detected, it signals PID 1 to trigger a
+/// graceful shutdown.
 pub fn startSpotTerminationMonitor(
     allocator: Allocator,
     io: Io,
@@ -66,11 +66,6 @@ fn monitorLoop(args: MonitorArgs) void {
     const poll_dur = Io.Duration.fromNanoseconds(@intCast(poll_interval_ns));
     while (true) {
         Io.sleep(args.io, poll_dur, .awake) catch {};
-
-        if (service.isShutdownRequested()) {
-            scoped_log.debug("shutdown already requested, stopping spot monitor", .{});
-            return;
-        }
 
         switch (checkSpotTermination(args.allocator, &imds_client)) {
             .termination_scheduled => {

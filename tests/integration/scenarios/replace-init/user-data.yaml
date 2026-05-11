@@ -29,5 +29,12 @@ command:
     fi
     echo "/proc/1/cmdline contains our script: OK"
 
+    mask=$(awk '/^SigBlk:/ {print $2}' /proc/self/status)
+    if [ "${mask}" != "0000000000000000" ]; then
+        echo "FAIL: SigBlk=${mask} (expected 0000000000000000)"
+        poweroff -f
+    fi
+    echo "signal mask clear: OK"
+
     echo "PASS"
     poweroff -f

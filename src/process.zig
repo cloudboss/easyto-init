@@ -56,6 +56,7 @@ pub fn replace(allocator: Allocator, spec: SpawnSpec) Error!noreturn {
     defer envp_buf.deinit(allocator);
 
     try applyChildIdentity(spec);
+    clearSignalMask();
     const exec_result = linux.execve(
         argv_buf.argv[0].?,
         @ptrCast(argv_buf.argv.ptr),
@@ -72,6 +73,7 @@ fn execChild(
     envp: []?[*:0]const u8,
 ) noreturn {
     applyChildIdentity(spec) catch linux.exit(1);
+    clearSignalMask();
     const exec_result = linux.execve(
         argv[0].?,
         @ptrCast(argv.ptr),
@@ -80,6 +82,14 @@ fn execChild(
     const exec_err = posix.errno(exec_result);
     std.log.err("execve failed: {s}", .{errnoDescription(exec_err)});
     linux.exit(1);
+}
+
+/// Restore the default (empty) signal mask before execve so the new
+/// process is not born with PID 1's signals blocked. execve resets
+/// signal handlers but preserves the mask, so this has to be done by us.
+fn clearSignalMask() void {
+    const empty = posix.sigemptyset();
+    _ = linux.sigprocmask(linux.SIG.SETMASK, &empty, null);
 }
 
 const ArgvBuf = struct {
@@ -301,6 +311,28 @@ test "buildEnvp handles 300+ env vars without fixed-size limit" {
     const built = try buildEnvp(a, &env_map, &.{});
     defer built.deinit(a);
     try testing.expectEqual(@as(usize, 301), built.envp.len);
+}
+
+test "clearSignalMask drops any blocked signals" {
+    var saved: posix.sigset_t = undefined;
+    _ = linux.sigprocmask(linux.SIG.BLOCK, null, &saved);
+    defer _ = linux.sigprocmask(linux.SIG.SETMASK, &saved, null);
+
+    var blocked = posix.sigemptyset();
+    posix.sigaddset(&blocked, linux.SIG.TERM);
+    posix.sigaddset(&blocked, linux.SIG.USR1);
+    _ = linux.sigprocmask(linux.SIG.BLOCK, &blocked, null);
+
+    var current: posix.sigset_t = undefined;
+    _ = linux.sigprocmask(linux.SIG.BLOCK, null, &current);
+    try testing.expect(posix.sigismember(&current, linux.SIG.TERM));
+    try testing.expect(posix.sigismember(&current, linux.SIG.USR1));
+
+    clearSignalMask();
+
+    _ = linux.sigprocmask(linux.SIG.BLOCK, null, &current);
+    try testing.expect(!posix.sigismember(&current, linux.SIG.TERM));
+    try testing.expect(!posix.sigismember(&current, linux.SIG.USR1));
 }
 
 test "buildArgv handles 100+ args without fixed-size limit" {

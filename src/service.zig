@@ -15,30 +15,58 @@ const ServiceDef = services.ServiceDef;
 const system = @import("system.zig");
 
 // Default value of config ACPI_TINY_POWER_BUTTON_SIGNAL in kernel.
-const ACPI_TINY_POWER_BUTTON_SIGNAL: posix.SIG = @enumFromInt(38);
+const ACPI_TINY_POWER_BUTTON_SIGNAL: linux.SIG = @enumFromInt(38);
 // Identifies a kernel thread, from linux/sched.h.
 const PF_KTHREAD: u32 = 0x00200000;
 
-var shutdown_requested = std.atomic.Value(bool).init(false);
+// Wait this many milliseconds before restarting a service that exited.
+const restart_delay_ms: i64 = 5_000;
 
-fn ioSleep(io: Io, nanoseconds: u64) void {
-    Io.sleep(io, Io.Duration.fromNanoseconds(@intCast(nanoseconds)), .awake) catch {};
+/// Block the signals the supervisor consumes via signalfd, and install
+/// no-op sigactions so PID 1's SIGNAL_UNKILLABLE protection doesn't drop
+/// them. Must be called before any thread is spawned, since sigprocmask
+/// is per-thread and children inherit the caller's mask.
+pub fn setupSignalHandling() void {
+    const sa = posix.Sigaction{
+        .handler = .{ .handler = noopSignalHandler },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    posix.sigaction(linux.SIG.TERM, &sa, null);
+    posix.sigaction(linux.SIG.INT, &sa, null);
+    posix.sigaction(linux.SIG.CHLD, &sa, null);
+    posix.sigaction(ACPI_TINY_POWER_BUTTON_SIGNAL, &sa, null);
+
+    var mask = supervisorSignalMask();
+    _ = linux.sigprocmask(linux.SIG.BLOCK, &mask, null);
 }
 
-/// Request a graceful shutdown.
+fn supervisorSignalMask() posix.sigset_t {
+    var mask = posix.sigemptyset();
+    posix.sigaddset(&mask, linux.SIG.TERM);
+    posix.sigaddset(&mask, linux.SIG.INT);
+    posix.sigaddset(&mask, linux.SIG.CHLD);
+    posix.sigaddset(&mask, ACPI_TINY_POWER_BUTTON_SIGNAL);
+    return mask;
+}
+
+fn noopSignalHandler(_: linux.SIG) callconv(.c) void {}
+
+/// Request a graceful shutdown by signalling PID 1. Safe to call from any
+/// thread; the supervisor's signalfd picks it up on the next poll iteration.
 pub fn requestShutdown() void {
-    shutdown_requested.store(true, .release);
-}
-
-/// Check if shutdown has been requested.
-pub fn isShutdownRequested() bool {
-    return shutdown_requested.load(.acquire);
+    _ = linux.kill(1, linux.SIG.TERM);
 }
 
 const ServiceState = struct {
     def: ServiceDef,
     pid: ?posix.pid_t = null,
-    thread: ?std.Thread = null,
+    restart_timerfd: ?posix.fd_t = null,
+};
+
+const PollEntry = union(enum) {
+    signal,
+    service_restart: usize,
 };
 
 pub const Supervisor = struct {
@@ -57,6 +85,7 @@ pub const Supervisor = struct {
     disable_services: ?[]const []const u8,
     imds_client: ?*aws.ImdsClient,
     service_states: []ServiceState = &[_]ServiceState{},
+    signalfd: posix.fd_t = -1,
 
     pub fn init(
         allocator: Allocator,
@@ -91,7 +120,11 @@ pub const Supervisor = struct {
     }
 
     pub fn start(self: *Supervisor) !void {
-        setupSignalHandlers();
+        self.signalfd = try installSignalfd();
+        errdefer {
+            _ = linux.close(self.signalfd);
+            self.signalfd = -1;
+        }
 
         const enabled_services = services.findEnabledServices(
             self.allocator,
@@ -142,10 +175,19 @@ pub const Supervisor = struct {
         if (self.readonly_root_fs) {
             try system.remountRootReadonly();
         }
-
         std.log.info("starting main process: {s}", .{self.command[0]});
 
-        const pid = try self.spawnProcess();
+        const argv = try concatArgv(self.allocator, self.command, self.args);
+        defer self.allocator.free(argv);
+
+        const pid = try process.spawn(self.allocator, .{
+            .argv = argv,
+            .env_map = self.env_map,
+            .env = self.env orelse &.{},
+            .working_dir = self.working_dir,
+            .uid = self.uid,
+            .gid = self.gid,
+        });
         self.main_pid = pid;
         std.log.info("main process started with pid {d}", .{pid});
     }
@@ -154,181 +196,252 @@ pub const Supervisor = struct {
         if (svc.def.init_fn) |init_fn| {
             try init_fn(self.allocator, self.io, svc.def.init_ctx);
         }
-
-        const thread = try std.Thread.spawn(.{}, serviceLoop, .{ self, svc });
-        svc.thread = thread;
-    }
-
-    fn serviceLoop(self: *Supervisor, svc: *ServiceState) void {
-        const io = self.io;
-        var first_start = true;
-
-        while (!shutdown_requested.load(.acquire)) {
-            if (!first_start) {
-                ioSleep(io, 5 * std.time.ns_per_s);
-                if (shutdown_requested.load(.acquire)) return;
-            }
-            first_start = false;
-
-            const pid = process.spawn(self.allocator, .{
-                .argv = svc.def.args,
-                .env_map = self.env_map,
-            }) catch |err| {
-                std.log.err("failed to spawn {s}: {s}", .{ svc.def.name, @errorName(err) });
-                continue;
-            };
-
-            svc.pid = pid;
-            std.log.debug("started service {s} with pid {d}", .{ svc.def.name, pid });
-
-            while (!shutdown_requested.load(.acquire)) {
-                var status: u32 = 0;
-                const result = linux.wait4(pid, &status, linux.W.NOHANG, null);
-                const e = posix.errno(result);
-
-                if (result > 0) {
-                    svc.pid = null;
-                    if (!shutdown_requested.load(.acquire)) {
-                        std.log.info("service {s} exited, will restart", .{svc.def.name});
-                    }
-                    break;
-                } else if (e == .CHILD) {
-                    svc.pid = null;
-                    break;
-                }
-
-                ioSleep(io, 100 * std.time.ns_per_ms);
-            }
-        }
+        const pid = try process.spawn(self.allocator, .{
+            .argv = svc.def.args,
+            .env_map = self.env_map,
+        });
+        svc.pid = pid;
+        std.log.debug("started service {s} with pid {d}", .{ svc.def.name, pid });
     }
 
     pub fn wait(self: *Supervisor) void {
-        var main_exited = false;
+        defer self.cleanup();
 
+        var shutdown_initiated = false;
+        var deadline_ms: i64 = -1;
+        var sigkill_sent = false;
+
+        while (self.aliveCount() > 0) {
+            const timeout_ms: i32 = if (deadline_ms < 0)
+                -1
+            else
+                @intCast(@max(@as(i64, 0), deadline_ms - nowMs()));
+
+            var pollfds_buf: [16]linux.pollfd = undefined;
+            var pollmap: [16]PollEntry = undefined;
+            const n = self.buildPollSet(&pollfds_buf, &pollmap);
+
+            const rc = linux.poll(&pollfds_buf, n, timeout_ms);
+            const e = posix.errno(rc);
+            if (e == .INTR) continue;
+            if (e != .SUCCESS) {
+                std.log.err("poll failed: {s}", .{@tagName(e)});
+                return;
+            }
+
+            if (rc == 0) {
+                if (shutdown_initiated and !sigkill_sent) {
+                    std.log.info("grace period expired, sending SIGKILL to all processes", .{});
+                    self.broadcast(linux.SIG.KILL);
+                    sigkill_sent = true;
+                    deadline_ms = -1;
+                }
+                continue;
+            }
+
+            for (pollfds_buf[0..n], pollmap[0..n]) |pf, entry| {
+                if ((pf.revents & @as(i16, linux.POLL.IN)) == 0) continue;
+                switch (entry) {
+                    .signal => self.handleSignals(&shutdown_initiated, &deadline_ms),
+                    .service_restart => |idx| self.handleRestart(idx),
+                }
+            }
+        }
+        std.log.info("all processes terminated", .{});
+    }
+
+    fn buildPollSet(self: *Supervisor, fds: []linux.pollfd, map: []PollEntry) linux.nfds_t {
+        var n: usize = 0;
+        fds[n] = .{ .fd = self.signalfd, .events = linux.POLL.IN, .revents = 0 };
+        map[n] = .signal;
+        n += 1;
+        for (self.service_states, 0..) |*svc, idx| {
+            if (svc.restart_timerfd) |fd| {
+                fds[n] = .{ .fd = fd, .events = linux.POLL.IN, .revents = 0 };
+                map[n] = .{ .service_restart = idx };
+                n += 1;
+            }
+        }
+        return @intCast(n);
+    }
+
+    fn handleSignals(
+        self: *Supervisor,
+        shutdown_initiated: *bool,
+        deadline_ms: *i64,
+    ) void {
+        var buf: [16]linux.signalfd_siginfo = undefined;
         while (true) {
-            if (shutdown_requested.load(.acquire) and !main_exited) {
-                std.log.info("shutdown requested, terminating processes", .{});
-                self.gracefulShutdown();
-                self.waitServiceThreads();
+            const rc = linux.read(self.signalfd, @ptrCast(&buf), @sizeOf(@TypeOf(buf)));
+            const e = posix.errno(rc);
+            if (e == .AGAIN) return;
+            if (e == .INTR) continue;
+            if (e != .SUCCESS) {
+                std.log.err("signalfd read failed: {s}", .{@tagName(e)});
                 return;
             }
-
-            var status: u32 = 0;
-            const result = linux.wait4(-1, &status, linux.W.NOHANG, null);
-            const e = posix.errno(result);
-
-            if (result > 0) {
-                const reaped_pid: posix.pid_t = @intCast(result);
-                std.log.debug("reaped process {d}", .{reaped_pid});
-                if (self.main_pid != null and reaped_pid == self.main_pid.?) {
-                    std.log.info("main process exited", .{});
-                    main_exited = true;
-                    // Signal service threads to stop restarting
-                    requestShutdown();
-                    self.gracefulShutdown();
-                    self.waitServiceThreads();
-                    return;
+            const got = rc / @sizeOf(linux.signalfd_siginfo);
+            for (buf[0..got]) |si| {
+                const signo: linux.SIG = @enumFromInt(si.signo);
+                if (signo == linux.SIG.CHLD) {
+                    self.reapChildren(shutdown_initiated.*);
+                } else if (signo == linux.SIG.TERM or
+                    signo == linux.SIG.INT or
+                    signo == ACPI_TINY_POWER_BUTTON_SIGNAL)
+                {
+                    if (!shutdown_initiated.*) {
+                        self.initiateShutdown(shutdown_initiated, deadline_ms);
+                    }
                 }
-            } else if (e == .CHILD) {
-                if (main_exited) {
-                    std.log.info("all processes exited", .{});
-                    self.waitServiceThreads();
-                    return;
-                }
-                ioSleep(self.io, 10 * std.time.ns_per_ms);
-            } else if (result == 0) {
-                ioSleep(self.io, 10 * std.time.ns_per_ms);
-            }
-
-            if (shutdown_requested.load(.acquire) and !main_exited) {
-                std.log.info("shutdown requested, terminating processes", .{});
-                self.gracefulShutdown();
-                self.waitServiceThreads();
-                return;
             }
         }
     }
 
-    fn waitServiceThreads(self: *Supervisor) void {
+    fn reapChildren(self: *Supervisor, shutting_down: bool) void {
+        while (true) {
+            var status: u32 = 0;
+            const r = linux.wait4(-1, &status, linux.W.NOHANG, null);
+            const e = posix.errno(r);
+            if (e == .CHILD) return;
+            if (r == 0) return;
+            if (e != .SUCCESS) {
+                std.log.err("wait4 failed: {s}", .{@tagName(e)});
+                return;
+            }
+            const reaped: posix.pid_t = @intCast(r);
+
+            if (self.main_pid == reaped) {
+                std.log.info("main process exited", .{});
+                self.main_pid = null;
+                if (!shutting_down) requestShutdown();
+            } else if (self.findServiceByPid(reaped)) |svc| {
+                svc.pid = null;
+                if (shutting_down) {
+                    std.log.info("service {s} exited", .{svc.def.name});
+                } else {
+                    std.log.info("service {s} exited, will restart", .{svc.def.name});
+                    svc.restart_timerfd = createRestartTimer(restart_delay_ms) catch |err| blk: {
+                        std.log.err(
+                            "failed to arm restart timer for {s}: {s}",
+                            .{ svc.def.name, @errorName(err) },
+                        );
+                        break :blk null;
+                    };
+                }
+            }
+        }
+    }
+
+    fn findServiceByPid(self: *Supervisor, pid: posix.pid_t) ?*ServiceState {
+        for (self.service_states) |*svc| {
+            if (svc.pid == pid) return svc;
+        }
+        return null;
+    }
+
+    fn handleRestart(self: *Supervisor, idx: usize) void {
+        const svc = &self.service_states[idx];
+        if (svc.restart_timerfd) |fd| {
+            var expirations: u64 = 0;
+            _ = linux.read(fd, @ptrCast(&expirations), @sizeOf(u64));
+            _ = linux.close(fd);
+            svc.restart_timerfd = null;
+        }
+        self.startService(svc) catch |err| {
+            std.log.err("failed to restart {s}: {s}", .{ svc.def.name, @errorName(err) });
+        };
+    }
+
+    fn initiateShutdown(
+        self: *Supervisor,
+        shutdown_initiated: *bool,
+        deadline_ms: *i64,
+    ) void {
+        std.log.info("shutdown requested, terminating processes", .{});
+        shutdown_initiated.* = true;
+        for (self.service_states) |*svc| {
+            if (svc.restart_timerfd) |fd| {
+                _ = linux.close(fd);
+                svc.restart_timerfd = null;
+            }
+        }
+        self.broadcast(linux.SIG.TERM);
+        deadline_ms.* = nowMs() + @as(i64, @intCast(self.shutdown_grace_period * 1000));
+    }
+
+    fn broadcast(self: *Supervisor, sig: linux.SIG) void {
+        const pids = getAllPids(self.allocator, self.io) catch |err| {
+            std.log.err("failed to enumerate pids: {s}", .{@errorName(err)});
+            return;
+        };
+        defer self.allocator.free(pids);
+        for (pids) |pid| _ = linux.kill(pid, sig);
+    }
+
+    fn aliveCount(self: *Supervisor) usize {
+        var n: usize = if (self.main_pid != null) 1 else 0;
         for (self.service_states) |svc| {
-            if (svc.thread) |thread| {
-                thread.join();
+            if (svc.pid != null) n += 1;
+            if (svc.restart_timerfd != null) n += 1;
+        }
+        return n;
+    }
+
+    fn cleanup(self: *Supervisor) void {
+        for (self.service_states) |*svc| {
+            if (svc.restart_timerfd) |fd| {
+                _ = linux.close(fd);
+                svc.restart_timerfd = null;
             }
         }
         if (self.service_states.len > 0) {
             self.allocator.free(self.service_states);
             self.service_states = &[_]ServiceState{};
         }
-    }
-
-    fn gracefulShutdown(self: *Supervisor) void {
-        std.log.info("sending SIGTERM to all processes", .{});
-        self.signalAll(posix.SIG.TERM);
-
-        const grace_ns = self.shutdown_grace_period * std.time.ns_per_s;
-        const start_time = Io.Timestamp.now(self.io, .awake);
-
-        while (true) {
-            const elapsed_dur = start_time.durationTo(Io.Timestamp.now(self.io, .awake));
-            const elapsed_ns: u64 = @intCast(elapsed_dur.toNanoseconds());
-            if (elapsed_ns >= grace_ns) {
-                break;
-            }
-
-            var status: u32 = 0;
-            const result = linux.wait4(-1, &status, linux.W.NOHANG, null);
-            const e = posix.errno(result);
-
-            if (e == .CHILD) {
-                std.log.info("all processes exited during grace period", .{});
-                return;
-            }
-
-            if (result == 0) {
-                ioSleep(self.io, 100 * std.time.ns_per_ms);
-            }
+        if (self.signalfd >= 0) {
+            _ = linux.close(self.signalfd);
+            self.signalfd = -1;
         }
-
-        std.log.info("grace period expired, sending SIGKILL to all processes", .{});
-        self.signalAll(posix.SIG.KILL);
-
-        while (true) {
-            var status: u32 = 0;
-            const result = linux.wait4(-1, &status, 0, null);
-            const e = posix.errno(result);
-            if (e == .CHILD) {
-                break;
-            }
-        }
-        std.log.info("all processes terminated", .{});
-    }
-
-    fn signalAll(self: *Supervisor, sig: posix.SIG) void {
-        const pids = getAllPids(self.allocator, self.io) catch |err| {
-            std.log.err("failed to enumerate pids: {s}", .{@errorName(err)});
-            return;
-        };
-        defer self.allocator.free(pids);
-
-        for (pids) |pid| {
-            _ = linux.kill(pid, sig);
-        }
-    }
-
-    fn spawnProcess(self: *Supervisor) !posix.pid_t {
-        const argv = try concatArgv(self.allocator, self.command, self.args);
-        defer self.allocator.free(argv);
-
-        return process.spawn(self.allocator, .{
-            .argv = argv,
-            .env_map = self.env_map,
-            .env = self.env orelse &.{},
-            .working_dir = self.working_dir,
-            .uid = self.uid,
-            .gid = self.gid,
-        });
     }
 };
+
+fn nowMs() i64 {
+    var ts: linux.timespec = undefined;
+    _ = linux.clock_gettime(.MONOTONIC, &ts);
+    return @as(i64, ts.sec) * 1000 + @divFloor(@as(i64, ts.nsec), 1_000_000);
+}
+
+fn installSignalfd() !posix.fd_t {
+    var mask = supervisorSignalMask();
+    const flags: u32 = linux.SFD.NONBLOCK | linux.SFD.CLOEXEC;
+    const rc = linux.signalfd(-1, &mask, flags);
+    const e = posix.errno(rc);
+    if (e != .SUCCESS) {
+        std.log.err("signalfd failed: {s}", .{@tagName(e)});
+        return error.SignalfdFailed;
+    }
+    return @intCast(rc);
+}
+
+fn createRestartTimer(delay_ms: i64) !posix.fd_t {
+    const rc = linux.timerfd_create(.MONOTONIC, .{});
+    const e = posix.errno(rc);
+    if (e != .SUCCESS) return error.TimerfdCreateFailed;
+
+    const fd: posix.fd_t = @intCast(rc);
+    errdefer _ = linux.close(fd);
+
+    const spec: linux.itimerspec = .{
+        .it_interval = .{ .sec = 0, .nsec = 0 },
+        .it_value = .{
+            .sec = @intCast(@divFloor(delay_ms, 1000)),
+            .nsec = @intCast(@mod(delay_ms, 1000) * 1_000_000),
+        },
+    };
+    const set_rc = linux.timerfd_settime(fd, .{}, &spec, null);
+    if (posix.errno(set_rc) != .SUCCESS) return error.TimerfdSettimeFailed;
+    return fd;
+}
 
 fn concatArgv(
     allocator: Allocator,
@@ -342,21 +455,22 @@ fn concatArgv(
     return argv;
 }
 
-fn setupSignalHandlers() void {
-    const handler = posix.Sigaction{
-        .handler = .{ .handler = signalHandler },
-        .mask = posix.sigemptyset(),
-        .flags = 0,
+pub fn errnoDescription(err: posix.E) []const u8 {
+    return switch (err) {
+        .NOENT => "No such file or directory",
+        .ACCES => "Permission denied",
+        .PERM => "Operation not permitted",
+        .IO => "Input/output error",
+        .NOTDIR => "Not a directory",
+        .ISDIR => "Is a directory",
+        .NOEXEC => "Exec format error",
+        .TXTBSY => "Text file busy",
+        .NOMEM => "Cannot allocate memory",
+        .FAULT => "Bad address",
+        .NAMETOOLONG => "File name too long",
+        .LOOP => "Too many levels of symbolic links",
+        else => @tagName(err),
     };
-
-    posix.sigaction(posix.SIG.TERM, &handler, null);
-    posix.sigaction(posix.SIG.INT, &handler, null);
-    posix.sigaction(ACPI_TINY_POWER_BUTTON_SIGNAL, &handler, null);
-}
-
-fn signalHandler(sig: posix.SIG) callconv(.c) void {
-    _ = sig;
-    shutdown_requested.store(true, .release);
 }
 
 fn getAllPids(allocator: Allocator, io: Io) ![]posix.pid_t {
@@ -404,24 +518,6 @@ fn parseKernelThreadStatus(content: []const u8) !bool {
     return error.FieldNotFound;
 }
 
-pub fn errnoDescription(err: posix.E) []const u8 {
-    return switch (err) {
-        .NOENT => "No such file or directory",
-        .ACCES => "Permission denied",
-        .PERM => "Operation not permitted",
-        .IO => "Input/output error",
-        .NOTDIR => "Not a directory",
-        .ISDIR => "Is a directory",
-        .NOEXEC => "Exec format error",
-        .TXTBSY => "Text file busy",
-        .NOMEM => "Cannot allocate memory",
-        .FAULT => "Bad address",
-        .NAMETOOLONG => "File name too long",
-        .LOOP => "Too many levels of symbolic links",
-        else => @tagName(err),
-    };
-}
-
 fn isKernelThread(io: Io, pid: posix.pid_t) bool {
     var path_buf: [64]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/stat", .{pid}) catch return true;
@@ -451,7 +547,6 @@ test "getAllPids does not include pid 1" {
     }
 }
 
-// Test parseKernelThreadStatus with realistic /proc/[pid]/stat content
 test "parseKernelThreadStatus with normal process" {
     // Real example from /proc/1/stat - init is not a kernel thread (flags don't have PF_KTHREAD)
     const content = "1 (init) S 0 1 1 0 -1 4194560 1234 0 0 0 10 5 0 0 20 0 1 0 1 12345678 1024 " ++
@@ -556,16 +651,4 @@ test "Supervisor.init with null args" {
 
     try testing.expect(supervisor.args == null);
     try testing.expect(supervisor.env == null);
-}
-
-test "shutdown_requested atomic operations" {
-    // Reset state
-    shutdown_requested.store(false, .release);
-    try testing.expect(!shutdown_requested.load(.acquire));
-
-    shutdown_requested.store(true, .release);
-    try testing.expect(shutdown_requested.load(.acquire));
-
-    // Reset for other tests
-    shutdown_requested.store(false, .release);
 }

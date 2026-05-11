@@ -1,0 +1,18 @@
+disable-services:
+  - chrony
+  - ssh
+command:
+  - /bin/sh
+  - -c
+  - |
+    exec >/dev/ttyS0 2>&1
+    set -e
+
+    mask=$(awk '/^SigBlk:/ {print $2}' /proc/self/status)
+    [ "${mask}" = "0000000000000000" ] || {
+        echo "FAIL: SigBlk=${mask} (expected 0000000000000000)"
+        exit 1
+    }
+    echo "signal mask clear: OK"
+
+    echo "PASS"
