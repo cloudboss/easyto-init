@@ -8,6 +8,7 @@ const testing = std.testing;
 const aws = @import("aws");
 
 const constants = @import("constants.zig");
+const fs = @import("fs.zig");
 const NameValue = @import("vmspec.zig").NameValue;
 const process = @import("process.zig");
 const services = @import("services.zig");
@@ -173,7 +174,7 @@ pub const Supervisor = struct {
 
     fn startMainProcess(self: *Supervisor) !void {
         if (self.readonly_root_fs) {
-            try system.remountRootReadonly();
+            try fs.remountRootReadonly();
         }
         std.log.info("starting main process: {s}", .{self.command[0]});
 

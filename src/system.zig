@@ -5,8 +5,6 @@ const Io = std.Io;
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
-const mount = linux.mount;
-const ms = linux.MS;
 
 const GptContext = @import("zgpt").GptContext;
 const GptEntry = @import("zgpt").gpt.GptEntry;
@@ -19,25 +17,6 @@ const nvme = @import("nvme-amz.zig");
 const process = @import("process.zig");
 
 const sys_block_path = "/sys/block";
-
-pub fn remountRootReadonly() !void {
-    std.log.info("remounting root filesystem as readonly", .{});
-    const ret = mount(
-        null,
-        @ptrCast(constants.dir_root),
-        null,
-        ms.REMOUNT | ms.RDONLY,
-        0,
-    );
-    const e = posix.errno(ret);
-    if (e != .SUCCESS) {
-        std.log.err(
-            "unable to remount root filesystem as readonly: {s}",
-            .{@tagName(e)},
-        );
-        return error.RemountFailed;
-    }
-}
 
 pub fn linkNvmeDevices(allocator: Allocator, io: Io) !void {
     var dir = Io.Dir.openDirAbsolute(

@@ -158,7 +158,31 @@ pub fn run(allocator: Allocator, io: Io, env_map: *std.process.Environ.Map) !voi
         supervisor.wait();
 
         std.log.info("supervisor finished, shutting down", .{});
+
+        const mount_points = try collectEbsMountPoints(allocator, vmspec.volumes);
+        defer allocator.free(mount_points);
+        fs.remountRootReadonly() catch |err| {
+            std.log.warn("unable to remount root read-only: {s}", .{@errorName(err)});
+        };
+        fs.unmountAll(mount_points) catch |err| {
+            std.log.err("unmount failed: {s}", .{@errorName(err)});
+        };
+        fs.waitForUnmounts(allocator, io, mount_points, 10_000) catch |err| {
+            std.log.err("waiting for unmounts failed: {s}", .{@errorName(err)});
+        };
     }
+}
+
+fn collectEbsMountPoints(allocator: Allocator, volumes: ?[]const Volume) ![][]const u8 {
+    const vols = volumes orelse return &[_][]const u8{};
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (vols) |v| {
+        const ebs = v.ebs orelse continue;
+        const mp = ebs.mount orelse continue;
+        try out.append(allocator, mp.destination);
+    }
+    return try out.toOwnedSlice(allocator);
 }
 
 fn baseMounts(io: Io) !void {
@@ -396,7 +420,7 @@ fn replaceInit(
     }
 
     if (readonly_root_fs) {
-        try system.remountRootReadonly();
+        try fs.remountRootReadonly();
     }
 
     const argv = try concatArgv(allocator, command, args);

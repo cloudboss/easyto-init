@@ -4,6 +4,8 @@ const linux = std.os.linux;
 const posix = std.posix;
 const Io = std.Io;
 
+const constants = @import("constants.zig");
+
 pub fn mkdirRecursive(io: Io, path: []const u8, mode: posix.mode_t) !void {
     try mkdirRecursiveAt(io, Io.Dir.cwd(), path, mode);
 }
@@ -188,6 +190,111 @@ pub fn joinPath(allocator: std.mem.Allocator, base: []const u8, relative: []cons
     }
 
     return try std.fmt.allocPrint(allocator, "{s}/{s}", .{ b, rel });
+}
+
+pub fn remountRootReadonly() !void {
+    std.log.info("remounting root filesystem as readonly", .{});
+    const ret = linux.mount(
+        null,
+        @ptrCast(constants.dir_root),
+        null,
+        linux.MS.REMOUNT | linux.MS.RDONLY,
+        0,
+    );
+    const e = posix.errno(ret);
+    if (e != .SUCCESS) {
+        std.log.err(
+            "unable to remount root filesystem as readonly: {s}",
+            .{@tagName(e)},
+        );
+        return error.RemountFailed;
+    }
+}
+
+/// Unmount all the given mount points. Logs failures but only returns an error if every
+/// unmount failed, so a single stuck mount does not block the rest.
+pub fn unmountAll(mount_points: []const []const u8) !void {
+    var error_count: usize = 0;
+    for (mount_points) |mount_point| {
+        var path_buf: [posix.PATH_MAX]u8 = undefined;
+        if (mount_point.len >= path_buf.len) {
+            std.log.err("mount point too long: {s}", .{mount_point});
+            error_count += 1;
+            continue;
+        }
+        @memcpy(path_buf[0..mount_point.len], mount_point);
+        path_buf[mount_point.len] = 0;
+        const e = posix.errno(linux.umount2(@ptrCast(&path_buf), 0));
+        if (e != .SUCCESS) {
+            std.log.err("unable to unmount {s}: {s}", .{ mount_point, @tagName(e) });
+            error_count += 1;
+        }
+    }
+
+    if (mount_points.len > 0 and error_count == mount_points.len) {
+        return error.UnmountFailed;
+    }
+}
+
+/// Poll /proc/mounts until all of the given paths are missing or the timeout elapses.
+pub fn waitForUnmounts(
+    allocator: std.mem.Allocator,
+    io: Io,
+    mount_points: []const []const u8,
+    timeout_ms: u64,
+) !void {
+    const timeout_ns: u64 = timeout_ms * std.time.ns_per_ms;
+    const start = Io.Timestamp.now(io, .awake);
+    while (true) {
+        const mounts = readFileAlloc(io, allocator, "/proc/mounts") catch |err| {
+            std.log.err("unable to read /proc/mounts: {s}", .{@errorName(err)});
+            return err;
+        };
+        defer allocator.free(mounts);
+
+        var mounts_remain = false;
+        for (mount_points) |mp| {
+            if (isMounted(mounts, mp)) {
+                mounts_remain = true;
+                break;
+            }
+        }
+        if (!mounts_remain) {
+            std.log.info("all filesystems unmounted", .{});
+            return;
+        }
+
+        const elapsed = start.durationTo(Io.Timestamp.now(io, .awake));
+        if (@as(u64, @intCast(elapsed.toNanoseconds())) >= timeout_ns) {
+            return error.UnmountTimeout;
+        }
+
+        Io.sleep(io, Io.Duration.fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
+    }
+}
+
+fn isMounted(mounts: []const u8, mount_point: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, mounts, '\n');
+    while (lines.next()) |line| {
+        var fields = std.mem.splitScalar(u8, line, ' ');
+        _ = fields.next() orelse continue; // device
+        const dest = fields.next() orelse continue;
+        if (std.mem.eql(u8, dest, mount_point)) return true;
+    }
+    return false;
+}
+
+test "isMounted finds the given mount point" {
+    const mounts =
+        \\proc /proc proc rw,relatime 0 0
+        \\sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
+        \\/dev/sda1 /mnt/data ext4 rw,relatime 0 0
+        \\
+    ;
+    try std.testing.expect(isMounted(mounts, "/mnt/data"));
+    try std.testing.expect(isMounted(mounts, "/proc"));
+    try std.testing.expect(!isMounted(mounts, "/mnt/other"));
+    try std.testing.expect(!isMounted(mounts, ""));
 }
 
 test "mkdirRecursiveAt creates nested directories" {
