@@ -50,7 +50,7 @@ pub const Mount = struct {
     options: ?[]const u8 = null,
     target: []const u8,
 
-    pub fn execute(self: Mount, io: Io, errno: *usize) !void {
+    pub fn execute(self: Mount, io: Io) !void {
         fs.mkdirRecursive(io, self.target, self.mode) catch |err| {
             std.log.err("failed to create directory {s}: {s}", .{ self.target, @errorName(err) });
             return err;
@@ -73,7 +73,6 @@ pub const Mount = struct {
                     "mount {s} on {s} failed: {s}",
                     .{ self.source, self.target, @tagName(e) },
                 );
-                errno.* = @intFromEnum(e);
                 return Error.MountError;
             },
         }
@@ -234,10 +233,7 @@ fn baseMounts(io: Io) !void {
         },
     };
 
-    for (mounts) |m| {
-        var errno: usize = 0;
-        try m.execute(io, &errno);
-    }
+    for (mounts) |m| try m.execute(io);
 }
 
 fn baseLinks(io: Io) !void {

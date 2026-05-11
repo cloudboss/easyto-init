@@ -227,7 +227,6 @@ pub const DagExecutor = struct {
 
     pending_deps: [TaskId.count]std.atomic.Value(u32),
     task_states: [TaskId.count]TaskState,
-    task_errors: [TaskId.count]?anyerror,
 
     queue_mutex: Io.Mutex,
     queue_cond: Io.Condition,
@@ -246,7 +245,6 @@ pub const DagExecutor = struct {
         var self: Self = .{
             .pending_deps = undefined,
             .task_states = .{.pending} ** TaskId.count,
-            .task_errors = .{null} ** TaskId.count,
             .queue_mutex = .init,
             .queue_cond = .init,
             .queue_buf = undefined,
@@ -348,7 +346,6 @@ pub const DagExecutor = struct {
         } else |err| {
             std.log.err("task failed: {s}: {s}", .{ desc.name, @errorName(err) });
             self.task_states[idx] = .failed;
-            self.task_errors[idx] = err;
             if (!self.fatal_error.swap(true, .acq_rel)) {
                 self.first_error = err;
                 self.error_task = task_id;
