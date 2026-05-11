@@ -18,7 +18,7 @@ pub fn networkInit(ctx: *BootContext) !void {
     try network.initializeNetwork(ctx.allocator, ctx.io, ctx.aws_ctx.?.getImds());
 }
 
-pub fn fetchUserData(ctx: *BootContext) anyerror!void {
+pub fn fetchUserData(ctx: *BootContext) !void {
     ctx.user_data = initialize.fetchUserData(ctx.allocator, &ctx.aws_ctx.?) catch |err| blk: {
         std.log.warn("failed to fetch user data: {s}, continuing without", .{@errorName(err)});
         break :blk null;
