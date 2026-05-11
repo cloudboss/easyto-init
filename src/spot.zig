@@ -5,6 +5,7 @@
 //! spot instance termination.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
 const aws = @import("aws");
@@ -20,6 +21,7 @@ const poll_interval_ns: u64 = 5 * std.time.ns_per_s;
 const spot_instance_action_path = "/latest/meta-data/spot/instance-action";
 
 const MonitorArgs = struct {
+    allocator: Allocator,
     io: Io,
     env_map: *const std.process.Environ.Map,
 };
@@ -29,8 +31,12 @@ const MonitorArgs = struct {
 /// The monitor polls IMDS every 5 seconds for spot termination notices.
 /// When a termination notice is detected, it triggers a graceful shutdown
 /// via the supervisor's shutdown_requested atomic.
-pub fn startSpotTerminationMonitor(io: Io, env_map: *const std.process.Environ.Map) void {
-    const args = MonitorArgs{ .io = io, .env_map = env_map };
+pub fn startSpotTerminationMonitor(
+    allocator: Allocator,
+    io: Io,
+    env_map: *const std.process.Environ.Map,
+) void {
+    const args = MonitorArgs{ .allocator = allocator, .io = io, .env_map = env_map };
     const thread = std.Thread.spawn(
         .{ .stack_size = 1024 * 1024 },
         monitorLoop,
@@ -48,8 +54,7 @@ pub fn startSpotTerminationMonitor(io: Io, env_map: *const std.process.Environ.M
 /// outlive the caller's aws_ctx. Sharing the main IMDS client would risk
 /// use-after-free when the main thread cleans up.
 fn monitorLoop(args: MonitorArgs) void {
-    const allocator = std.heap.page_allocator;
-    var imds_client = aws.ImdsClient.init(allocator, args.io, args.env_map, .{}) catch |err| {
+    var imds_client = aws.ImdsClient.init(args.allocator, args.io, args.env_map, .{}) catch |err| {
         scoped_log.err(
             "failed to initialize IMDS client for spot monitor: {s}",
             .{@errorName(err)},
@@ -67,7 +72,7 @@ fn monitorLoop(args: MonitorArgs) void {
             return;
         }
 
-        switch (checkSpotTermination(&imds_client)) {
+        switch (checkSpotTermination(args.allocator, &imds_client)) {
             .termination_scheduled => {
                 scoped_log.info("initiating graceful shutdown due to spot termination", .{});
                 service.requestShutdown();
@@ -88,7 +93,7 @@ const CheckResult = union(enum) {
     check_error: []const u8,
 };
 
-fn checkSpotTermination(imds_client: *aws.ImdsClient) CheckResult {
+fn checkSpotTermination(allocator: Allocator, imds_client: *aws.ImdsClient) CheckResult {
     var diagnostic: aws.imds.ServiceError = undefined;
     const response = imds_client.getMetadata(
         spot_instance_action_path,
@@ -99,12 +104,12 @@ fn checkSpotTermination(imds_client: *aws.ImdsClient) CheckResult {
         }
         return .{ .check_error = @errorName(err) };
     };
-    defer std.heap.page_allocator.free(response);
+    defer allocator.free(response);
 
     // Parse JSON response: {"action": "terminate", "time": "2024-01-15T12:00:00Z"}
     const parsed = std.json.parseFromSlice(
         struct { action: []const u8, time: []const u8 },
-        std.heap.page_allocator,
+        allocator,
         response,
         .{ .ignore_unknown_fields = true },
     ) catch {

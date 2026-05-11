@@ -145,7 +145,7 @@ pub fn run(allocator: Allocator, io: Io, env_map: *std.process.Environ.Map) !voi
         );
 
         try supervisor.start();
-        spot.startSpotTerminationMonitor(io, env_map);
+        spot.startSpotTerminationMonitor(allocator, io, env_map);
         std.log.info(
             "easyto-init boot completed in {d}ms",
             .{boot_start.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds()},

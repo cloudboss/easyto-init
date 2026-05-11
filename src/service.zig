@@ -304,11 +304,11 @@ pub const Supervisor = struct {
     }
 
     fn signalAll(self: *Supervisor, sig: posix.SIG) void {
-        const pids = getAllPids(self.io) catch |err| {
+        const pids = getAllPids(self.allocator, self.io) catch |err| {
             std.log.err("failed to enumerate pids: {s}", .{@errorName(err)});
             return;
         };
-        defer std.heap.page_allocator.free(pids);
+        defer self.allocator.free(pids);
 
         for (pids) |pid| {
             _ = linux.kill(pid, sig);
@@ -359,11 +359,9 @@ fn signalHandler(sig: posix.SIG) callconv(.c) void {
     shutdown_requested.store(true, .release);
 }
 
-fn getAllPids(io: Io) ![]posix.pid_t {
-    var pids = std.ArrayList(posix.pid_t).initCapacity(std.heap.page_allocator, 100) catch {
-        return error.OutOfMemory;
-    };
-    errdefer pids.deinit(std.heap.page_allocator);
+fn getAllPids(allocator: Allocator, io: Io) ![]posix.pid_t {
+    var pids = try std.ArrayList(posix.pid_t).initCapacity(allocator, 100);
+    errdefer pids.deinit(allocator);
 
     var dir = Io.Dir.openDirAbsolute(io, constants.dir_proc, .{ .iterate = true }) catch |err| {
         std.log.err("failed to open {s}: {s}", .{ constants.dir_proc, @errorName(err) });
@@ -379,10 +377,10 @@ fn getAllPids(io: Io) ![]posix.pid_t {
         if (pid == 1) continue;
         if (isKernelThread(io, pid)) continue;
 
-        try pids.append(std.heap.page_allocator, pid);
+        try pids.append(allocator, pid);
     }
 
-    return try pids.toOwnedSlice(std.heap.page_allocator);
+    return try pids.toOwnedSlice(allocator);
 }
 
 /// Parse /proc/[pid]/stat content and determine if the process is a kernel thread.
@@ -445,8 +443,8 @@ test "isKernelThread returns false for init process" {
 }
 
 test "getAllPids does not include pid 1" {
-    const pids = try getAllPids(testing.io);
-    defer std.heap.page_allocator.free(pids);
+    const pids = try getAllPids(testing.allocator, testing.io);
+    defer testing.allocator.free(pids);
 
     for (pids) |pid| {
         try testing.expect(pid != 1);
