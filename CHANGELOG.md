@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.6.0] - 2026-05-12
+
+### Added
+
+- Bake the build version into the binary and report it to console.
+- Log IMDS diagnostic on every failed metadata call.
+
+### Changed
+
+- Migrate to Zig 0.16.
+- Style and formatting changes.
+- Refactor process handling to remove duplicate implementations.
+- Pass SSH key through service init context instead of setting global variable.
+- Use inferred error set for `fetchUserData`.
+- Expand README.md.
+- Replace supervisor busy poll with signalfd/timerfd.
+
+### Fixed
+
+- Fix double-free in Supervisor.spawnProcess.
+- Make `log_level.current_level` atomic.
+- Build environment list only once in `resolveEnvFrom`.
+- Unmount filesystems on shutdown (regression from Rust rewrite).
+
+### Removed
+
+- Remove `string.zig` and use std.mem equivalents for string comparision.
+- Remove unused code (`DagExecutor.task_errors` and unused `errno` field in `Mount`).
+- Remove use of `std.heap.page_allocator`.
+
 ## [0.5.1] - 2026-04-23
 
 ### Fixed
@@ -87,6 +117,7 @@ The most user visible change is the addition of "template" pseudo-volumes to ena
 
 Initial release
 
+[0.6.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.6.0
 [0.5.1]: https://github.com/cloudboss/easyto-init/releases/tag/v0.5.1
 [0.5.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.5.0
 [0.4.1]: https://github.com/cloudboss/easyto-init/releases/tag/v0.4.1
