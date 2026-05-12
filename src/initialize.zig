@@ -370,7 +370,10 @@ pub fn fetchUserData(allocator: Allocator, aws_ctx: *AwsContext) !?[]const u8 {
         if (err == error.HttpError and diagnostic.httpStatus() == 404) {
             return null;
         }
-        std.log.err("failed to fetch user data from IMDS: {s}", .{@errorName(err)});
+        std.log.err(
+            "failed to fetch user data from IMDS: {s} (http_status={d}, message={s})",
+            .{ @errorName(err), diagnostic.httpStatus(), diagnostic.message() },
+        );
         return err;
     };
     defer aws_ctx.allocator.free(raw);
@@ -469,12 +472,24 @@ pub fn resolveEnvFrom(
             );
             defer allocator.free(imds_path);
 
-            const value = imds_client.getMetadata(imds_path, .{}) catch |err| {
+            var diagnostic: aws.imds.ServiceError = undefined;
+            const value = imds_client.getMetadata(
+                imds_path,
+                .{ .diagnostic = &diagnostic },
+            ) catch |err| {
                 if (imds.optional orelse false) {
                     std.log.info("optional IMDS path {s} not found, skipping", .{imds.path});
                     continue;
                 }
-                std.log.err("failed to fetch IMDS path {s}: {s}", .{ imds.path, @errorName(err) });
+                std.log.err(
+                    "failed to fetch IMDS path {s}: {s} (http_status={d}, message={s})",
+                    .{
+                        imds.path,
+                        @errorName(err),
+                        diagnostic.httpStatus(),
+                        diagnostic.message(),
+                    },
+                );
                 return err;
             };
             defer allocator.free(value);
@@ -943,21 +958,29 @@ fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource)
         const imds_client = aws_ctx.getImds();
 
         // Get availability zone from IMDS
+        var az_diag: aws.imds.ServiceError = undefined;
         const az = imds_client.getMetadata(
             "/latest/meta-data/placement/availability-zone",
-            .{},
+            .{ .diagnostic = &az_diag },
         ) catch |err| {
-            std.log.err("failed to get availability zone from IMDS: {s}", .{@errorName(err)});
+            std.log.err(
+                "failed to get availability zone from IMDS: {s} (http_status={d}, message={s})",
+                .{ @errorName(err), az_diag.httpStatus(), az_diag.message() },
+            );
             return err;
         };
         defer aws_ctx.allocator.free(az);
 
         // Get instance ID from IMDS
+        var id_diag: aws.imds.ServiceError = undefined;
         const instance_id = imds_client.getMetadata(
             "/latest/meta-data/instance-id",
-            .{},
+            .{ .diagnostic = &id_diag },
         ) catch |err| {
-            std.log.err("failed to get instance ID from IMDS: {s}", .{@errorName(err)});
+            std.log.err(
+                "failed to get instance ID from IMDS: {s} (http_status={d}, message={s})",
+                .{ @errorName(err), id_diag.httpStatus(), id_diag.message() },
+            );
             return err;
         };
         defer aws_ctx.allocator.free(instance_id);

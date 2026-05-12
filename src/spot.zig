@@ -97,6 +97,10 @@ fn checkSpotTermination(allocator: Allocator, imds_client: *aws.ImdsClient) Chec
         if (err == error.HttpError and diagnostic.httpStatus() == 404) {
             return .no_termination;
         }
+        scoped_log.warn(
+            "failed to check spot termination: {s} (http_status={d}, message={s})",
+            .{ @errorName(err), diagnostic.httpStatus(), diagnostic.message() },
+        );
         return .{ .check_error = @errorName(err) };
     };
     defer allocator.free(response);

@@ -380,10 +380,17 @@ fn configureLoopback(allocator: Allocator, socket: *nlz.Socket, lo_ifindex: ?u32
 fn discoverDeviceNumbers(imds_client: *aws.ImdsClient) !DeviceNumberMap {
     const imds_alloc = imds_client.allocator;
 
+    var diagnostic: aws.imds.ServiceError = undefined;
     const macs_list = imds_client.getMetadata(
         "/latest/meta-data/network/interfaces/macs/",
-        .{},
-    ) catch return Error.ImdsError;
+        .{ .diagnostic = &diagnostic },
+    ) catch |err| {
+        std.log.err(
+            "failed to fetch MAC list from IMDS: {s} (http_status={d}, message={s})",
+            .{ @errorName(err), diagnostic.httpStatus(), diagnostic.message() },
+        );
+        return Error.ImdsError;
+    };
     defer imds_alloc.free(macs_list);
 
     var result: DeviceNumberMap = .{
@@ -660,8 +667,17 @@ fn macToString(mac: [6]u8) [17]u8 {
 }
 
 fn setHostname(imds_client: *aws.ImdsClient) !void {
-    const hostname = imds_client.getMetadata("/latest/meta-data/local-hostname", .{}) catch
+    var diagnostic: aws.imds.ServiceError = undefined;
+    const hostname = imds_client.getMetadata(
+        "/latest/meta-data/local-hostname",
+        .{ .diagnostic = &diagnostic },
+    ) catch |err| {
+        std.log.err(
+            "failed to fetch hostname from IMDS: {s} (http_status={d}, message={s})",
+            .{ @errorName(err), diagnostic.httpStatus(), diagnostic.message() },
+        );
         return Error.ImdsError;
+    };
     defer imds_client.allocator.free(hostname);
 
     const trimmed = std.mem.trim(u8, hostname, " \t\r\n");

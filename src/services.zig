@@ -279,7 +279,10 @@ fn fetchSshPubKey(allocator: Allocator, imds: *aws.ImdsClient) !?[]const u8 {
         if (err == error.HttpError and diagnostic.httpStatus() == 404) {
             return null;
         }
-        std.log.err("failed to fetch SSH public key from IMDS: {s}", .{@errorName(err)});
+        std.log.err(
+            "failed to fetch SSH public key from IMDS: {s} (http_status={d}, message={s})",
+            .{ @errorName(err), diagnostic.httpStatus(), diagnostic.message() },
+        );
         return err;
     };
 
