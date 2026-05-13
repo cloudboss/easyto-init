@@ -25,23 +25,18 @@ pub fn mkdirRecursiveOwn(
     uid: ?u32,
     gid: ?u32,
 ) !void {
+    try mkdirRecursive(io, path, mode);
+    if (uid == null and gid == null) return;
+
     var start: usize = 0;
     while (start < path.len) {
         const end = std.mem.indexOfScalarPos(u8, path, start + 1, '/') orelse path.len;
         const dir_path = path[0..end];
-
         if (dir_path.len > 0) {
-            Io.Dir.cwd().createDir(io, dir_path, .fromMode(mode)) catch |err| {
-                if (err != error.PathAlreadyExists) return err;
-            };
-
-            if (uid != null or gid != null) {
-                var dir = try Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true });
-                defer dir.close(io);
-                try dir.setOwner(io, uid, gid);
-            }
+            var dir = try Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true });
+            defer dir.close(io);
+            try dir.setOwner(io, uid, gid);
         }
-
         start = end;
     }
 }
