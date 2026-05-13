@@ -104,10 +104,6 @@ pub fn initializeNetwork(allocator: Allocator, io: Io, imds_client: *aws.ImdsCli
     } else {
         try configureMultiEni(allocator, io, &socket, candidates, imds_client);
     }
-
-    setHostname(imds_client) catch |err| {
-        std.log.warn("failed to set hostname: {s}", .{@errorName(err)});
-    };
 }
 
 fn configureSingleEni(
@@ -126,6 +122,7 @@ fn configureSingleEni(
     defer ack.deinit();
 
     try applyLease(allocator, io, socket, primary.ifindex, &ack);
+    setHostnameFromDhcp(&ack);
 }
 
 const DeviceNumberMap = struct {
@@ -176,6 +173,7 @@ fn configureMultiEni(
             try flushAndRename(allocator, socket, bootstrap, &bootstrap_ack, "eth0");
             try applyLease(allocator, io, socket, bootstrap.ifindex, &bootstrap_ack);
         }
+        setHostnameFromDhcp(&bootstrap_ack);
         return;
     };
 
@@ -222,6 +220,7 @@ fn configureMultiEni(
     defer primary_ack.deinit();
 
     try applyLease(allocator, io, socket, primary.ifindex, &primary_ack);
+    setHostnameFromDhcp(&primary_ack);
 }
 
 fn bringUpAndWaitCarrier(allocator: Allocator, socket: *nlz.Socket, ifindex: u32) !void {
@@ -666,25 +665,15 @@ fn macToString(mac: [6]u8) [17]u8 {
     return out;
 }
 
-fn setHostname(imds_client: *aws.ImdsClient) !void {
-    var diagnostic: aws.imds.ServiceError = undefined;
-    const hostname = imds_client.getMetadata(
-        "/latest/meta-data/local-hostname",
-        .{ .diagnostic = &diagnostic },
-    ) catch |err| {
-        std.log.err(
-            "failed to fetch hostname from imds: {s} (http_status={d}, message={s})",
-            .{ @errorName(err), diagnostic.httpStatus(), diagnostic.message() },
-        );
-        return Error.ImdsError;
-    };
-    defer imds_client.allocator.free(hostname);
-
+fn setHostnameFromDhcp(ack: *const dhcpz.v4.Message) void {
+    const hostname = ack.options.get(.host_name) orelse return;
     const trimmed = std.mem.trim(u8, hostname, " \t\r\n");
     if (trimmed.len == 0) return;
 
     const ret = linux.syscall2(.sethostname, @intFromPtr(trimmed.ptr), trimmed.len);
-    if (posix.errno(ret) != .SUCCESS) return Error.ImdsError;
+    if (posix.errno(ret) != .SUCCESS) {
+        std.log.warn("failed to set hostname to {s}", .{trimmed});
+    }
 }
 
 test "subnetMaskToPrefix /24" {

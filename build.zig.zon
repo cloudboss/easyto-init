@@ -8,8 +8,8 @@
             .hash = "aws_sdk-0.0.1-ApQSL-HdixBVxS0U-xc2jrtlR4oL90TbPgVBl9BoLpJi",
         },
         .dhcpz = .{
-            .url = "git+https://github.com/cloudboss/dhcpz#65875af66ec7afde9a285db7cf221edf32ced3e9",
-            .hash = "dhcpz-0.1.0-bVngAyl5AABpL5J8B0z-CbydLP-Z2S7Bg64_59NYnyBD",
+            .url = "git+https://github.com/cloudboss/dhcpz#fec5f2e4f78548f0db0c9fd9ab5c861b59c89228",
+            .hash = "dhcpz-0.1.0-bVngA899AAAU9CsFB0-f2rH_Lg6D1G8bdVQhUmhXDBk5",
         },
         .k8s_expand = .{
             .url = "git+https://github.com/cloudboss/k8s-expandz#c64128682ebb66834dfea323fc5d87cc369750f4",

@@ -49,7 +49,6 @@ MACS = generate_macs(NIC_COUNT)
 # Static metadata responses
 METADATA = {
     "instance-id": "i-test12345",
-    "local-hostname": "test-host",
     "ami-id": "ami-test12345",
     "instance-type": "t3.micro",
     "placement/availability-zone": "us-east-1a",

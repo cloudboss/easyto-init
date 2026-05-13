@@ -11,7 +11,7 @@ command:
 
     fail() { echo "FAIL: ${1}"; exit 1; }
 
-    EXPECTED="test-host"
+    EXPECTED="easyto-init-host"
     ACTUAL=$(hostname)
 
     [ "${ACTUAL}" = "${EXPECTED}" ] || fail "hostname is '${ACTUAL}', expected '${EXPECTED}'"

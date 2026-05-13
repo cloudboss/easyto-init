@@ -95,7 +95,7 @@ generate_qemu_nic_args()
     while [ $i -lt "$nic_count" ]; do
         mac_suffix=$(printf "%02x" $((86 + i)))
         echo "-device virtio-net-pci,netdev=net${i},mac=52:54:00:12:34:${mac_suffix}"
-        echo "-netdev user,id=net${i}"
+        echo "-netdev user,id=net${i},hostname=easyto-init-host"
         i=$((i + 1))
     done
 }

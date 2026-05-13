@@ -168,11 +168,6 @@ class TestIMDSMetadata(unittest.TestCase):
         self.assertEqual(r.status, 200)
         self.assertEqual(body.decode(), "i-test12345")
 
-    def test_local_hostname(self):
-        r, body = self.get("/latest/meta-data/local-hostname")
-        self.assertEqual(r.status, 200)
-        self.assertEqual(body.decode(), "test-host")
-
     def test_instance_type(self):
         r, body = self.get("/latest/meta-data/instance-type")
         self.assertEqual(r.status, 200)
