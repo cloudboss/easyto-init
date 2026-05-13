@@ -427,7 +427,7 @@ fn replaceInit(
         try fs.remountRootReadonly();
     }
 
-    const argv = try concatArgv(allocator, command, args);
+    const argv = try process.concatArgv(allocator, command, args);
     defer allocator.free(argv);
 
     std.log.info("execve: {s}", .{command[0]});
@@ -438,18 +438,6 @@ fn replaceInit(
         .uid = uid,
         .gid = gid,
     });
-}
-
-fn concatArgv(
-    allocator: Allocator,
-    command: []const []const u8,
-    args: ?[]const []const u8,
-) ![][]const u8 {
-    const args_slice = args orelse &[_][]const u8{};
-    const argv = try allocator.alloc([]const u8, command.len + args_slice.len);
-    @memcpy(argv[0..command.len], command);
-    @memcpy(argv[command.len..], args_slice);
-    return argv;
 }
 
 pub fn resolveEnvFrom(

@@ -114,6 +114,21 @@ const EnvpBuf = struct {
     }
 };
 
+/// Concatenate command and optional args into a single argv slice owned by
+/// the caller. The slice contains pointers into the input slices, so the
+/// inputs must outlive the returned argv.
+pub fn concatArgv(
+    allocator: Allocator,
+    command: []const []const u8,
+    args: ?[]const []const u8,
+) ![][]const u8 {
+    const args_slice = args orelse &[_][]const u8{};
+    const argv = try allocator.alloc([]const u8, command.len + args_slice.len);
+    @memcpy(argv[0..command.len], command);
+    @memcpy(argv[command.len..], args_slice);
+    return argv;
+}
+
 fn buildArgv(allocator: Allocator, argv: []const []const u8) Error!ArgvBuf {
     if (argv.len == 0) return error.EmptyArgv;
 

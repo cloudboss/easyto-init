@@ -191,7 +191,7 @@ pub const Supervisor = struct {
         }
         std.log.info("starting main process: {s}", .{self.command[0]});
 
-        const argv = try concatArgv(self.allocator, self.command, self.args);
+        const argv = try process.concatArgv(self.allocator, self.command, self.args);
         defer self.allocator.free(argv);
 
         const pid = try process.spawn(self.allocator, .{
@@ -455,18 +455,6 @@ fn createRestartTimer(delay_ms: i64) !posix.fd_t {
     const set_rc = linux.timerfd_settime(fd, .{}, &spec, null);
     if (posix.errno(set_rc) != .SUCCESS) return error.TimerfdSettimeFailed;
     return fd;
-}
-
-fn concatArgv(
-    allocator: Allocator,
-    command: []const []const u8,
-    args: ?[]const []const u8,
-) ![][]const u8 {
-    const args_slice = args orelse &[_][]const u8{};
-    const argv = try allocator.alloc([]const u8, command.len + args_slice.len);
-    @memcpy(argv[0..command.len], command);
-    @memcpy(argv[command.len..], args_slice);
-    return argv;
 }
 
 pub fn errnoDescription(err: posix.E) []const u8 {
