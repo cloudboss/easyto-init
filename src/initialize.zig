@@ -421,7 +421,6 @@ pub fn resolveEnvFrom(
     for (env_from) |source| {
         if (source.imds) |imds| {
             const imds_client = aws_ctx.getImds();
-            const imds_alloc = imds_client.allocator;
             const imds_path = try std.fmt.allocPrint(
                 allocator,
                 "/latest/meta-data/{s}",
@@ -449,198 +448,172 @@ pub fn resolveEnvFrom(
                 );
                 return err;
             };
-            defer imds_alloc.free(value);
-
-            const trimmed = std.mem.trim(u8, value, " \t\r\n");
-            try upsertEnv(vmspec_alloc, &env, imds.name, trimmed);
-            std.log.info("resolved env {s} from IMDS path {s}", .{ imds.name, imds.path });
+            try applyScalar(
+                imds_client.allocator,
+                vmspec_alloc,
+                &env,
+                imds.name,
+                value,
+                "IMDS path",
+                imds.path,
+            );
         }
 
         if (source.s3) |s3| {
             const s3_client = try aws_ctx.getS3();
-            const s3_alloc = s3_client.allocator;
+            const descriptor = try std.fmt.allocPrint(
+                allocator,
+                "s3://{s}/{s}",
+                .{ s3.bucket, s3.key },
+            );
+            defer allocator.free(descriptor);
+            const optional = s3.optional orelse false;
 
             if (s3.name) |name| {
-                // Single value with explicit name
                 const value = s3_client.getObject(s3.bucket, s3.key) catch |err| {
-                    if (s3.optional orelse false) {
-                        std.log.info(
-                            "optional S3 object s3://{s}/{s} not found, skipping",
-                            .{ s3.bucket, s3.key },
-                        );
-                        continue;
-                    }
-                    std.log.err(
-                        "failed to fetch S3 object s3://{s}/{s}: {s}",
-                        .{ s3.bucket, s3.key, @errorName(err) },
-                    );
+                    logFetchError(err, optional, "S3 object", descriptor);
+                    if (optional) continue;
                     return err;
                 };
-                defer s3_alloc.free(value);
-
-                const trimmed = std.mem.trim(u8, value, " \t\r\n");
-                try upsertEnv(vmspec_alloc, &env, name, trimmed);
-                std.log.info("resolved env {s} from S3 s3://{s}/{s}", .{ name, s3.bucket, s3.key });
+                try applyScalar(
+                    s3_client.allocator,
+                    vmspec_alloc,
+                    &env,
+                    name,
+                    value,
+                    "S3",
+                    descriptor,
+                );
             } else {
-                // JSON map expanded to multiple env vars
                 var env_map = s3_client.getObjectMap(s3.bucket, s3.key) catch |err| {
-                    if (s3.optional orelse false) {
-                        std.log.info(
-                            "optional S3 object s3://{s}/{s} not found, skipping",
-                            .{ s3.bucket, s3.key },
-                        );
-                        continue;
-                    }
-                    std.log.err(
-                        "failed to fetch S3 object map s3://{s}/{s}: {s}",
-                        .{ s3.bucket, s3.key, @errorName(err) },
-                    );
+                    logFetchError(err, optional, "S3 object map", descriptor);
+                    if (optional) continue;
                     return err;
                 };
-                defer {
-                    var it = env_map.iterator();
-                    while (it.next()) |entry| {
-                        s3_alloc.free(entry.key_ptr.*);
-                        s3_alloc.free(entry.value_ptr.*);
-                    }
-                    env_map.deinit();
-                }
-
-                var map_it = env_map.iterator();
-                while (map_it.next()) |entry| {
-                    try upsertEnv(vmspec_alloc, &env, entry.key_ptr.*, entry.value_ptr.*);
-                    std.log.info(
-                        "resolved env {s} from S3 s3://{s}/{s}",
-                        .{ entry.key_ptr.*, s3.bucket, s3.key },
-                    );
-                }
+                try applyMap(s3_client.allocator, vmspec_alloc, &env, &env_map, "S3", descriptor);
             }
         }
 
         if (source.ssm) |ssm| {
             const ssm_client = try aws_ctx.getSsm();
-            const ssm_alloc = ssm_client.allocator;
+            const optional = ssm.optional orelse false;
 
             if (ssm.name) |name| {
-                // Single value with explicit name
                 const value = ssm_client.getParameter(ssm.path) catch |err| {
-                    if (ssm.optional orelse false) {
-                        std.log.info(
-                            "optional SSM parameter {s} not found, skipping",
-                            .{ssm.path},
-                        );
-                        continue;
-                    }
-                    std.log.err(
-                        "failed to fetch SSM parameter {s}: {s}",
-                        .{ ssm.path, @errorName(err) },
-                    );
+                    logFetchError(err, optional, "SSM parameter", ssm.path);
+                    if (optional) continue;
                     return err;
                 };
-                defer ssm_alloc.free(value);
-
-                const trimmed = std.mem.trim(u8, value, " \t\r\n");
-                try upsertEnv(vmspec_alloc, &env, name, trimmed);
-                std.log.info("resolved env {s} from SSM parameter {s}", .{ name, ssm.path });
+                try applyScalar(
+                    ssm_client.allocator,
+                    vmspec_alloc,
+                    &env,
+                    name,
+                    value,
+                    "SSM parameter",
+                    ssm.path,
+                );
             } else {
-                // JSON map expanded to multiple env vars
                 var env_map = ssm_client.getParameterMap(ssm.path) catch |err| {
-                    if (ssm.optional orelse false) {
-                        std.log.info(
-                            "optional SSM parameter {s} not found, skipping",
-                            .{ssm.path},
-                        );
-                        continue;
-                    }
-                    std.log.err(
-                        "failed to fetch SSM parameter map {s}: {s}",
-                        .{ ssm.path, @errorName(err) },
-                    );
+                    logFetchError(err, optional, "SSM parameter map", ssm.path);
+                    if (optional) continue;
                     return err;
                 };
-                defer {
-                    var it = env_map.iterator();
-                    while (it.next()) |entry| {
-                        ssm_alloc.free(entry.key_ptr.*);
-                        ssm_alloc.free(entry.value_ptr.*);
-                    }
-                    env_map.deinit();
-                }
-
-                var map_it = env_map.iterator();
-                while (map_it.next()) |entry| {
-                    try upsertEnv(vmspec_alloc, &env, entry.key_ptr.*, entry.value_ptr.*);
-                    std.log.info(
-                        "resolved env {s} from SSM parameter {s}",
-                        .{ entry.key_ptr.*, ssm.path },
-                    );
-                }
+                try applyMap(
+                    ssm_client.allocator,
+                    vmspec_alloc,
+                    &env,
+                    &env_map,
+                    "SSM parameter",
+                    ssm.path,
+                );
             }
         }
 
         if (source.@"secrets-manager") |sm| {
             const sm_client = try aws_ctx.getSecretsManager();
-            const sm_alloc = sm_client.allocator;
+            const optional = sm.optional orelse false;
 
             if (sm.name) |name| {
-                // Single value with explicit name
                 const value = sm_client.getSecretValue(sm.@"secret-id") catch |err| {
-                    if (sm.optional orelse false) {
-                        std.log.info(
-                            "optional secret {s} not found, skipping",
-                            .{sm.@"secret-id"},
-                        );
-                        continue;
-                    }
-                    std.log.err(
-                        "failed to fetch secret {s}: {s}",
-                        .{ sm.@"secret-id", @errorName(err) },
-                    );
+                    logFetchError(err, optional, "secret", sm.@"secret-id");
+                    if (optional) continue;
                     return err;
                 };
-                defer sm_alloc.free(value);
-
-                const trimmed = std.mem.trim(u8, value, " \t\r\n");
-                try upsertEnv(vmspec_alloc, &env, name, trimmed);
-                std.log.info("resolved env {s} from secret {s}", .{ name, sm.@"secret-id" });
+                try applyScalar(
+                    sm_client.allocator,
+                    vmspec_alloc,
+                    &env,
+                    name,
+                    value,
+                    "secret",
+                    sm.@"secret-id",
+                );
             } else {
-                // JSON map expanded to multiple env vars
                 var env_map = sm_client.getSecretMap(sm.@"secret-id") catch |err| {
-                    if (sm.optional orelse false) {
-                        std.log.info(
-                            "optional secret {s} not found, skipping",
-                            .{sm.@"secret-id"},
-                        );
-                        continue;
-                    }
-                    std.log.err(
-                        "failed to fetch secret map {s}: {s}",
-                        .{ sm.@"secret-id", @errorName(err) },
-                    );
+                    logFetchError(err, optional, "secret map", sm.@"secret-id");
+                    if (optional) continue;
                     return err;
                 };
-                defer {
-                    var it = env_map.iterator();
-                    while (it.next()) |entry| {
-                        sm_alloc.free(entry.key_ptr.*);
-                        sm_alloc.free(entry.value_ptr.*);
-                    }
-                    env_map.deinit();
-                }
-
-                var map_it = env_map.iterator();
-                while (map_it.next()) |entry| {
-                    try upsertEnv(vmspec_alloc, &env, entry.key_ptr.*, entry.value_ptr.*);
-                    std.log.info(
-                        "resolved env {s} from secret {s}",
-                        .{ entry.key_ptr.*, sm.@"secret-id" },
-                    );
-                }
+                try applyMap(
+                    sm_client.allocator,
+                    vmspec_alloc,
+                    &env,
+                    &env_map,
+                    "secret",
+                    sm.@"secret-id",
+                );
             }
         }
     }
 
     vmspec.env = try env.toOwnedSlice(vmspec_alloc);
+}
+
+fn logFetchError(err: anyerror, optional: bool, label: []const u8, descriptor: []const u8) void {
+    if (optional) {
+        std.log.info("optional {s} {s} not found, skipping", .{ label, descriptor });
+    } else {
+        std.log.err("failed to fetch {s} {s}: {s}", .{ label, descriptor, @errorName(err) });
+    }
+}
+
+fn applyScalar(
+    aws_alloc: Allocator,
+    vmspec_alloc: Allocator,
+    env: *std.ArrayList(NameValue),
+    name: []const u8,
+    value: []const u8,
+    label: []const u8,
+    descriptor: []const u8,
+) !void {
+    defer aws_alloc.free(value);
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    try upsertEnv(vmspec_alloc, env, name, trimmed);
+    std.log.info("resolved env {s} from {s} {s}", .{ name, label, descriptor });
+}
+
+fn applyMap(
+    aws_alloc: Allocator,
+    vmspec_alloc: Allocator,
+    env: *std.ArrayList(NameValue),
+    env_map: *std.StringHashMap([]const u8),
+    label: []const u8,
+    descriptor: []const u8,
+) !void {
+    defer {
+        var it = env_map.iterator();
+        while (it.next()) |entry| {
+            aws_alloc.free(entry.key_ptr.*);
+            aws_alloc.free(entry.value_ptr.*);
+        }
+        env_map.deinit();
+    }
+    var it = env_map.iterator();
+    while (it.next()) |entry| {
+        try upsertEnv(vmspec_alloc, env, entry.key_ptr.*, entry.value_ptr.*);
+        std.log.info("resolved env {s} from {s} {s}", .{ entry.key_ptr.*, label, descriptor });
+    }
 }
 
 fn upsertEnv(
