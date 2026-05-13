@@ -465,6 +465,7 @@ pub fn resolveEnvFrom(
     for (env_from) |source| {
         if (source.imds) |imds| {
             const imds_client = aws_ctx.getImds();
+            const imds_alloc = imds_client.allocator;
             const imds_path = try std.fmt.allocPrint(
                 allocator,
                 "/latest/meta-data/{s}",
@@ -492,7 +493,7 @@ pub fn resolveEnvFrom(
                 );
                 return err;
             };
-            defer allocator.free(value);
+            defer imds_alloc.free(value);
 
             const trimmed = std.mem.trim(u8, value, " \t\r\n");
             try upsertEnv(vmspec_alloc, &env, imds.name, trimmed);
@@ -501,6 +502,7 @@ pub fn resolveEnvFrom(
 
         if (source.s3) |s3| {
             const s3_client = try aws_ctx.getS3();
+            const s3_alloc = s3_client.allocator;
 
             if (s3.name) |name| {
                 // Single value with explicit name
@@ -518,7 +520,7 @@ pub fn resolveEnvFrom(
                     );
                     return err;
                 };
-                defer allocator.free(value);
+                defer s3_alloc.free(value);
 
                 const trimmed = std.mem.trim(u8, value, " \t\r\n");
                 try upsertEnv(vmspec_alloc, &env, name, trimmed);
@@ -542,8 +544,8 @@ pub fn resolveEnvFrom(
                 defer {
                     var it = env_map.iterator();
                     while (it.next()) |entry| {
-                        allocator.free(entry.key_ptr.*);
-                        allocator.free(entry.value_ptr.*);
+                        s3_alloc.free(entry.key_ptr.*);
+                        s3_alloc.free(entry.value_ptr.*);
                     }
                     env_map.deinit();
                 }
@@ -561,6 +563,7 @@ pub fn resolveEnvFrom(
 
         if (source.ssm) |ssm| {
             const ssm_client = try aws_ctx.getSsm();
+            const ssm_alloc = ssm_client.allocator;
 
             if (ssm.name) |name| {
                 // Single value with explicit name
@@ -578,7 +581,7 @@ pub fn resolveEnvFrom(
                     );
                     return err;
                 };
-                defer allocator.free(value);
+                defer ssm_alloc.free(value);
 
                 const trimmed = std.mem.trim(u8, value, " \t\r\n");
                 try upsertEnv(vmspec_alloc, &env, name, trimmed);
@@ -602,8 +605,8 @@ pub fn resolveEnvFrom(
                 defer {
                     var it = env_map.iterator();
                     while (it.next()) |entry| {
-                        allocator.free(entry.key_ptr.*);
-                        allocator.free(entry.value_ptr.*);
+                        ssm_alloc.free(entry.key_ptr.*);
+                        ssm_alloc.free(entry.value_ptr.*);
                     }
                     env_map.deinit();
                 }
@@ -621,6 +624,7 @@ pub fn resolveEnvFrom(
 
         if (source.@"secrets-manager") |sm| {
             const sm_client = try aws_ctx.getSecretsManager();
+            const sm_alloc = sm_client.allocator;
 
             if (sm.name) |name| {
                 // Single value with explicit name
@@ -638,7 +642,7 @@ pub fn resolveEnvFrom(
                     );
                     return err;
                 };
-                defer allocator.free(value);
+                defer sm_alloc.free(value);
 
                 const trimmed = std.mem.trim(u8, value, " \t\r\n");
                 try upsertEnv(vmspec_alloc, &env, name, trimmed);
@@ -662,8 +666,8 @@ pub fn resolveEnvFrom(
                 defer {
                     var it = env_map.iterator();
                     while (it.next()) |entry| {
-                        allocator.free(entry.key_ptr.*);
-                        allocator.free(entry.value_ptr.*);
+                        sm_alloc.free(entry.key_ptr.*);
+                        sm_alloc.free(entry.value_ptr.*);
                     }
                     env_map.deinit();
                 }

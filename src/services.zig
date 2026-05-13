@@ -285,11 +285,9 @@ fn fetchSshPubKey(allocator: Allocator, imds: *aws.ImdsClient) !?[]const u8 {
         );
         return err;
     };
+    defer imds.allocator.free(key);
 
-    // Store in allocator-owned memory
-    const owned_key = try allocator.dupe(u8, key);
-    allocator.free(key);
-    return owned_key;
+    return try allocator.dupe(u8, key);
 }
 
 fn isServiceDisabled(name: []const u8, disable_services: ?[]const []const u8) bool {
