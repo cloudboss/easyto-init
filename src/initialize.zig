@@ -122,7 +122,7 @@ pub fn run(allocator: Allocator, io: Io, env_map: *std.process.Environ.Map) !voi
             "easyto-init boot completed in {d}ms",
             .{boot_start.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds()},
         );
-        try replaceInit(
+        try process.replaceInit(
             allocator,
             command,
             args,
@@ -406,38 +406,6 @@ pub fn writeUserData(io: Io, user_data: []const u8) !void {
         std.log.err("failed to write {s}: {s}", .{ path, @errorName(err) });
         return err;
     };
-}
-
-fn replaceInit(
-    allocator: Allocator,
-    command: []const []const u8,
-    args: ?[]const []const u8,
-    env: ?[]const NameValue,
-    working_dir: []const u8,
-    uid: u32,
-    gid: u32,
-    readonly_root_fs: bool,
-) !noreturn {
-    if (command.len == 0) {
-        std.log.err("command is empty", .{});
-        return error.EmptyCommand;
-    }
-
-    if (readonly_root_fs) {
-        try fs.remountRootReadonly();
-    }
-
-    const argv = try process.concatArgv(allocator, command, args);
-    defer allocator.free(argv);
-
-    std.log.info("execve: {s}", .{command[0]});
-    return process.replace(allocator, .{
-        .argv = argv,
-        .env = env orelse &.{},
-        .working_dir = working_dir,
-        .uid = uid,
-        .gid = gid,
-    });
 }
 
 pub fn resolveEnvFrom(

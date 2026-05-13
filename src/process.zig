@@ -5,6 +5,7 @@ const posix = std.posix;
 const testing = std.testing;
 
 const errnoDescription = @import("service.zig").errnoDescription;
+const fs = @import("fs.zig");
 const NameValue = @import("vmspec.zig").NameValue;
 
 pub const SpawnSpec = struct {
@@ -127,6 +128,40 @@ pub fn concatArgv(
     @memcpy(argv[0..command.len], command);
     @memcpy(argv[command.len..], args_slice);
     return argv;
+}
+
+/// Replace PID 1 with the configured command via execve. Optionally remounts
+/// the root filesystem read-only first. Returns only on failure.
+pub fn replaceInit(
+    allocator: Allocator,
+    command: []const []const u8,
+    args: ?[]const []const u8,
+    env: ?[]const NameValue,
+    working_dir: []const u8,
+    uid: u32,
+    gid: u32,
+    readonly_root_fs: bool,
+) !noreturn {
+    if (command.len == 0) {
+        std.log.err("command is empty", .{});
+        return error.EmptyCommand;
+    }
+
+    if (readonly_root_fs) {
+        try fs.remountRootReadonly();
+    }
+
+    const argv = try concatArgv(allocator, command, args);
+    defer allocator.free(argv);
+
+    std.log.info("execve: {s}", .{command[0]});
+    return replace(allocator, .{
+        .argv = argv,
+        .env = env orelse &.{},
+        .working_dir = working_dir,
+        .uid = uid,
+        .gid = gid,
+    });
 }
 
 fn buildArgv(allocator: Allocator, argv: []const []const u8) Error!ArgvBuf {
