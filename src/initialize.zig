@@ -318,7 +318,7 @@ fn setupTestMode(env_map: *std.process.Environ.Map) !void {
     // Redirect stderr to serial console
     const dup2_errno = posix.errno(linux.dup2(tty_fd, posix.STDERR_FILENO));
     if (dup2_errno != .SUCCESS) {
-        std.log.err("unable to dup2 stderr to {s}: {s}", .{ tty_path, @tagName(dup2_errno) });
+        std.log.err("unable to redirect stderr to {s}: {s}", .{ tty_path, @tagName(dup2_errno) });
         return error.Dup2Failed;
     }
 
@@ -371,7 +371,7 @@ pub fn fetchUserData(allocator: Allocator, aws_ctx: *AwsContext) !?[]const u8 {
             return null;
         }
         std.log.err(
-            "failed to fetch user data from IMDS: {s} (http_status={d}, message={s})",
+            "failed to fetch user data from imds: {s} (http_status={d}, message={s})",
             .{ @errorName(err), diagnostic.httpStatus(), diagnostic.message() },
         );
         return err;
@@ -434,11 +434,11 @@ pub fn resolveEnvFrom(
                 .{ .diagnostic = &diagnostic },
             ) catch |err| {
                 if (imds.optional orelse false) {
-                    std.log.info("optional IMDS path {s} not found, skipping", .{imds.path});
+                    std.log.info("optional imds path {s} not found, skipping", .{imds.path});
                     continue;
                 }
                 std.log.err(
-                    "failed to fetch IMDS path {s}: {s} (http_status={d}, message={s})",
+                    "failed to fetch imds path {s}: {s} (http_status={d}, message={s})",
                     .{
                         imds.path,
                         @errorName(err),
@@ -749,7 +749,7 @@ fn handleSsmVolume(io: Io, aws_ctx: *AwsContext, volume: *const SsmVolumeSource)
     const destination = volume.mount.destination;
     const optional = volume.optional orelse false;
 
-    std.log.info("processing SSM volume {s} -> {s}", .{ path, destination });
+    std.log.info("processing ssm volume {s} -> {s}", .{ path, destination });
 
     const ssm_client = try aws_ctx.getSsm();
 
@@ -759,13 +759,13 @@ fn handleSsmVolume(io: Io, aws_ctx: *AwsContext, volume: *const SsmVolumeSource)
     }) catch |err| {
         if (optional) {
             std.log.info(
-                "optional SSM volume {s} failed, skipping: {s}",
+                "optional ssm volume {s} failed, skipping: {s}",
                 .{ path, @errorName(err) },
             );
             return;
         }
         std.log.err(
-            "failed to download SSM volume {s}: {s}",
+            "failed to download ssm volume {s}: {s}",
             .{ path, @errorName(err) },
         );
         return err;
@@ -776,12 +776,12 @@ fn handleSsmVolume(io: Io, aws_ctx: *AwsContext, volume: *const SsmVolumeSource)
             std.log.info("no parameters found at {s}, skipping (optional)", .{path});
             return;
         }
-        std.log.err("no SSM parameters found at {s}", .{path});
+        std.log.err("no ssm parameters found at {s}", .{path});
         return error.ParameterNotFound;
     }
 
     std.log.info(
-        "SSM volume {s} mounted to {s} ({d} files)",
+        "ssm volume {s} mounted to {s} ({d} files)",
         .{ path, destination, result.files_written },
     );
 }
@@ -792,7 +792,7 @@ fn handleS3Volume(io: Io, aws_ctx: *AwsContext, volume: *const S3VolumeSource) !
     const destination = volume.mount.destination;
     const optional = volume.optional orelse false;
 
-    std.log.info("processing S3 volume s3://{s}/{s} -> {s}", .{ bucket, key_prefix, destination });
+    std.log.info("processing s3 volume s3://{s}/{s} -> {s}", .{ bucket, key_prefix, destination });
 
     const s3_client = try aws_ctx.getS3();
 
@@ -802,13 +802,13 @@ fn handleS3Volume(io: Io, aws_ctx: *AwsContext, volume: *const S3VolumeSource) !
     }) catch |err| {
         if (optional) {
             std.log.info(
-                "optional S3 volume s3://{s}/{s} failed, skipping: {s}",
+                "optional s3 volume s3://{s}/{s} failed, skipping: {s}",
                 .{ bucket, key_prefix, @errorName(err) },
             );
             return;
         }
         std.log.err(
-            "failed to download S3 volume s3://{s}/{s}: {s}",
+            "failed to download s3 volume s3://{s}/{s}: {s}",
             .{ bucket, key_prefix, @errorName(err) },
         );
         return err;
@@ -822,12 +822,12 @@ fn handleS3Volume(io: Io, aws_ctx: *AwsContext, volume: *const S3VolumeSource) !
             );
             return;
         }
-        std.log.err("no S3 objects found at s3://{s}/{s}", .{ bucket, key_prefix });
+        std.log.err("no s3 objects found at s3://{s}/{s}", .{ bucket, key_prefix });
         return error.S3VolumeEmpty;
     }
 
     std.log.info(
-        "S3 volume s3://{s}/{s} mounted to {s} ({d} files)",
+        "s3 volume s3://{s}/{s} mounted to {s} ({d} files)",
         .{ bucket, key_prefix, destination, result.files_written },
     );
 }
@@ -841,7 +841,7 @@ fn handleSecretsManagerVolume(
     const destination = volume.mount.destination;
     const optional = volume.optional orelse false;
 
-    std.log.info("processing Secrets Manager volume {s} -> {s}", .{ secret_id, destination });
+    std.log.info("processing secrets manager volume {s} -> {s}", .{ secret_id, destination });
 
     const sm_client = try aws_ctx.getSecretsManager();
 
@@ -860,28 +860,28 @@ fn handleSecretsManagerVolume(
         return err;
     };
 
-    std.log.info("Secrets Manager secret {s} mounted to {s}", .{ secret_id, destination });
+    std.log.info("secrets manager secret {s} mounted to {s}", .{ secret_id, destination });
 }
 
 fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource) !void {
     const device = volume.device;
 
-    std.log.info("processing EBS volume {s}", .{device});
+    std.log.info("processing ebs volume {s}", .{device});
 
     // Validate device is specified
     if (device.len == 0) {
-        std.log.err("EBS volume must have a device", .{});
+        std.log.err("ebs volume must have a device", .{});
         return error.InvalidEbsConfig;
     }
 
     // Validate mount configuration if present
     if (volume.mount) |mnt| {
         if (mnt.destination.len == 0) {
-            std.log.err("EBS volume mount must have a destination", .{});
+            std.log.err("ebs volume mount must have a destination", .{});
             return error.InvalidEbsConfig;
         }
         if (mnt.@"fs-type" == null or mnt.@"fs-type".?.len == 0) {
-            std.log.err("EBS volume mount must have a filesystem type", .{});
+            std.log.err("ebs volume mount must have a filesystem type", .{});
             return error.InvalidEbsConfig;
         }
     }
@@ -897,7 +897,7 @@ fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource)
             .{ .diagnostic = &az_diag },
         ) catch |err| {
             std.log.err(
-                "failed to get availability zone from IMDS: {s} (http_status={d}, message={s})",
+                "failed to get availability zone from imds: {s} (http_status={d}, message={s})",
                 .{ @errorName(err), az_diag.httpStatus(), az_diag.message() },
             );
             return err;
@@ -911,7 +911,7 @@ fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource)
             .{ .diagnostic = &id_diag },
         ) catch |err| {
             std.log.err(
-                "failed to get instance ID from IMDS: {s} (http_status={d}, message={s})",
+                "failed to get instance id from imds: {s} (http_status={d}, message={s})",
                 .{ @errorName(err), id_diag.httpStatus(), id_diag.message() },
             );
             return err;
@@ -927,13 +927,13 @@ fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource)
             std.mem.trim(u8, instance_id, " \t\r\n"),
         ) catch |err| {
             std.log.err(
-                "unable to ensure EBS volume {s} is attached: {s}",
+                "unable to ensure ebs volume {s} is attached: {s}",
                 .{ device, @errorName(err) },
             );
             return err;
         };
 
-        std.log.info("EBS volume {s} is attached", .{device});
+        std.log.info("ebs volume {s} is attached", .{device});
 
         // Wait for device to appear
         const timeout = attachment.timeout orelse 300;
@@ -942,7 +942,7 @@ fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource)
             return err;
         };
 
-        std.log.info("EBS volume device {s} is available", .{device});
+        std.log.info("ebs volume device {s} is available", .{device});
     }
 
     // If no mount specified, we're done
@@ -976,7 +976,7 @@ fn handleEbsVolume(io: Io, aws_ctx: *AwsContext, volume: *const EbsVolumeSource)
         return err;
     };
 
-    std.log.info("EBS volume {s} mounted to {s}", .{ device, mnt.destination });
+    std.log.info("ebs volume {s} mounted to {s}", .{ device, mnt.destination });
 }
 
 pub fn expandCommandAndArgs(

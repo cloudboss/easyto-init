@@ -44,7 +44,7 @@ pub const SsmClient = struct {
 
     /// Fetch a single parameter value from SSM.
     pub fn getParameter(self: *Self, name: []const u8) ![]const u8 {
-        scoped_log.debug("GetParameter {s}", .{name});
+        scoped_log.debug("get parameter: {s}", .{name});
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -62,13 +62,13 @@ pub const SsmClient = struct {
             if (err == error.ServiceError) {
                 defer diagnostic.deinit();
                 scoped_log.err(
-                    "SSM GetParameter failed for {s}: {s}: {s}",
+                    "ssm get-parameter failed for {s}: {s}: {s}",
                     .{ name, diagnostic.code(), diagnostic.message() },
                 );
                 return SsmError.ServiceError;
             }
             scoped_log.err(
-                "SSM GetParameter failed for {s}: {s}",
+                "ssm get-parameter failed for {s}: {s}",
                 .{ name, @errorName(err) },
             );
             return SsmError.RequestFailed;
@@ -93,7 +93,7 @@ pub const SsmClient = struct {
 
         return s3.parseJsonToMap(self.allocator, content) catch |err| {
             scoped_log.err(
-                "Failed to parse JSON from SSM parameter {s}: {s}",
+                "failed to parse json from ssm parameter {s}: {s}",
                 .{ name, @errorName(err) },
             );
             return err;
@@ -102,7 +102,7 @@ pub const SsmClient = struct {
 
     /// Fetch all parameters under a path prefix, handling pagination.
     pub fn getParametersByPath(self: *Self, path: []const u8) ![]SsmParameter {
-        scoped_log.debug("GetParametersByPath {s}", .{path});
+        scoped_log.debug("get parameters by path: {s}", .{path});
 
         var parameters: std.ArrayList(SsmParameter) = .empty;
         errdefer {
@@ -136,13 +136,13 @@ pub const SsmClient = struct {
                 if (err == error.ServiceError) {
                     defer diagnostic.deinit();
                     scoped_log.err(
-                        "SSM GetParametersByPath failed for {s}: {s}: {s}",
+                        "ssm get-parameters-by-path failed for {s}: {s}: {s}",
                         .{ path, diagnostic.code(), diagnostic.message() },
                     );
                     return SsmError.ServiceError;
                 }
                 scoped_log.err(
-                    "SSM GetParametersByPath failed for {s}: {s}",
+                    "ssm get-parameters-by-path failed for {s}: {s}",
                     .{ path, @errorName(err) },
                 );
                 return SsmError.RequestFailed;
@@ -214,7 +214,7 @@ pub const SsmClient = struct {
         destination: []const u8,
         options: DownloadOptions,
     ) !DownloadResult {
-        scoped_log.debug("downloadPathToDir {s} -> {s}", .{ path, destination });
+        scoped_log.debug("download path to directory: {s} -> {s}", .{ path, destination });
 
         const parameters = try self.getParameters(path);
         defer {
@@ -226,7 +226,7 @@ pub const SsmClient = struct {
         }
 
         for (parameters) |param| {
-            scoped_log.debug("downloading SSM parameter {s}", .{param.name});
+            scoped_log.debug("downloading ssm parameter {s}", .{param.name});
 
             const dest_path = if (param.relative_name.len == 0)
                 try self.allocator.dupe(u8, destination)

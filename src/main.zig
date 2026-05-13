@@ -16,7 +16,7 @@ pub fn main(process_init: std.process.Init) !void {
         process_init.io,
         process_init.environ_map,
     ) catch |err| {
-        std.log.err("System error: {s}", .{@errorName(err)});
+        std.log.err("system error: {s}", .{@errorName(err)});
     };
 
     system.poweroff();

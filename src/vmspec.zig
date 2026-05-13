@@ -240,7 +240,7 @@ pub const VmSpec = struct {
         }
 
         return yaml.parseFromSlice(VmSpec, allocator, content, .{}) catch |err| {
-            std.log.err("failed to parse user data YAML: {s}", .{@errorName(err)});
+            std.log.err("failed to parse user data yaml: {s}", .{@errorName(err)});
             return error.InvalidYaml;
         };
     }

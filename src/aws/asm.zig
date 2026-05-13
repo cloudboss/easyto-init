@@ -45,7 +45,7 @@ pub const SecretsManagerClient = struct {
     /// Fetch a secret value from Secrets Manager.
     /// Returns the secret as bytes (works for both string and binary secrets).
     pub fn getSecretValue(self: *Self, secret_id: []const u8) ![]const u8 {
-        scoped_log.debug("GetSecretValue {s}", .{secret_id});
+        scoped_log.debug("getting secret value: {s}", .{secret_id});
 
         var client = secretsmanager.Client.init(self.allocator, &self.config);
         defer client.deinit();
@@ -63,13 +63,13 @@ pub const SecretsManagerClient = struct {
             if (err == error.ServiceError) {
                 defer diagnostic.deinit();
                 scoped_log.err(
-                    "Secrets Manager GetSecretValue failed for {s}: {s}: {s}",
+                    "secrets manager get-secret-value failed for {s}: {s}: {s}",
                     .{ secret_id, diagnostic.code(), diagnostic.message() },
                 );
                 return SecretsManagerError.ServiceError;
             }
             scoped_log.err(
-                "Secrets Manager GetSecretValue failed for {s}: {s}",
+                "secrets manager get-secret-value failed for {s}: {s}",
                 .{ secret_id, @errorName(err) },
             );
             return SecretsManagerError.RequestFailed;
@@ -83,7 +83,7 @@ pub const SecretsManagerClient = struct {
             return try self.allocator.dupe(u8, secret_binary);
         }
 
-        scoped_log.err("Secret {s} has no value (neither string nor binary)", .{secret_id});
+        scoped_log.err("secret {s} has no value", .{secret_id});
         return SecretsManagerError.SecretEmpty;
     }
 
@@ -94,7 +94,7 @@ pub const SecretsManagerClient = struct {
 
         return s3.parseJsonToMap(self.allocator, content) catch |err| {
             scoped_log.err(
-                "Failed to parse JSON from secret {s}: {s}",
+                "failed to parse json from secret {s}: {s}",
                 .{ secret_id, @errorName(err) },
             );
             return err;
@@ -111,7 +111,7 @@ pub const SecretsManagerClient = struct {
         destination: []const u8,
         options: DownloadOptions,
     ) !void {
-        scoped_log.debug("downloadSecretToFile {s} -> {s}", .{ secret_id, destination });
+        scoped_log.debug("downloading secret to file: {s} -> {s}", .{ secret_id, destination });
 
         const content = try self.getSecretValue(secret_id);
         defer self.allocator.free(content);

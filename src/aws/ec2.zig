@@ -134,12 +134,12 @@ pub const Ec2Client = struct {
             if (err == error.ServiceError) {
                 defer diagnostic.deinit();
                 scoped_log.err(
-                    "DescribeVolumes failed: {s}: {s}",
+                    "describe-volumes failed: {s}: {s}",
                     .{ diagnostic.code(), diagnostic.message() },
                 );
                 return Ec2Error.ServiceError;
             }
-            scoped_log.err("DescribeVolumes failed: {s}", .{@errorName(err)});
+            scoped_log.err("describe-volumes failed: {s}", .{@errorName(err)});
             return Ec2Error.RequestFailed;
         };
 
@@ -171,11 +171,11 @@ pub const Ec2Client = struct {
             const elapsed_duration = start_time.durationTo(Io.Timestamp.now(self.io, .awake));
             const elapsed: u64 = @intCast(elapsed_duration.toNanoseconds());
             if (elapsed > timeout_ns) {
-                scoped_log.err("timeout waiting for EBS volume to be available", .{});
+                scoped_log.err("timeout waiting for ebs volume to be available", .{});
                 return Ec2Error.Timeout;
             }
 
-            scoped_log.debug("waiting for EBS volume to be available", .{});
+            scoped_log.debug("waiting for ebs volume to be available", .{});
             retry.wait(self.io);
         }
     }
@@ -209,19 +209,19 @@ pub const Ec2Client = struct {
             if (err == error.ServiceError) {
                 defer diagnostic.deinit();
                 scoped_log.err(
-                    "DescribeVolumes failed: {s}: {s}",
+                    "describe-volumes failed: {s}: {s}",
                     .{ diagnostic.code(), diagnostic.message() },
                 );
                 return Ec2Error.ServiceError;
             }
-            scoped_log.debug("DescribeVolumes failed: {s}", .{@errorName(err)});
+            scoped_log.debug("describe-volumes failed: {s}", .{@errorName(err)});
             return null;
         };
 
         if (result.volumes) |volumes| {
             if (volumes.len > 0) {
                 if (volumes[0].volume_id) |vol_id| {
-                    scoped_log.debug("found matching EBS volume: {s}", .{vol_id});
+                    scoped_log.debug("found matching ebs volume: {s}", .{vol_id});
                     return try self.allocator.dupe(u8, vol_id);
                 }
             }
@@ -257,12 +257,12 @@ pub const Ec2Client = struct {
             if (err == error.ServiceError) {
                 defer diagnostic.deinit();
                 scoped_log.err(
-                    "AttachVolume failed: {s}: {s}",
+                    "attach-volume failed: {s}: {s}",
                     .{ diagnostic.code(), diagnostic.message() },
                 );
                 return Ec2Error.ServiceError;
             }
-            scoped_log.err("AttachVolume failed: {s}", .{@errorName(err)});
+            scoped_log.err("attach-volume failed: {s}", .{@errorName(err)});
             return Ec2Error.RequestFailed;
         };
 

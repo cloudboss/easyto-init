@@ -245,7 +245,7 @@ pub const Supervisor = struct {
 
             if (rc == 0) {
                 if (shutdown_initiated and !sigkill_sent) {
-                    std.log.info("grace period expired, sending SIGKILL to all processes", .{});
+                    std.log.info("grace period expired, sending kill signal to all processes", .{});
                     self.broadcast(linux.SIG.KILL);
                     sigkill_sent = true;
                     deadline_ms = -1;

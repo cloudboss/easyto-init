@@ -56,7 +56,7 @@ pub fn startSpotTerminationMonitor(
 fn monitorLoop(args: MonitorArgs) void {
     var imds_client = aws.ImdsClient.init(args.allocator, args.io, args.env_map, .{}) catch |err| {
         scoped_log.err(
-            "failed to initialize IMDS client for spot monitor: {s}",
+            "failed to initialize imds client for spot monitor: {s}",
             .{@errorName(err)},
         );
         return;
@@ -117,7 +117,7 @@ fn checkSpotTermination(allocator: Allocator, imds_client: *aws.ImdsClient) Chec
     defer parsed.deinit();
 
     // Log before deinit frees the parsed strings
-    scoped_log.info("Spot termination notice received: action={s}, time={s}", .{
+    scoped_log.info("spot termination notice received: action={s}, time={s}", .{
         parsed.value.action,
         parsed.value.time,
     });

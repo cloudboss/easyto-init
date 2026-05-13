@@ -47,7 +47,7 @@ pub const S3Client = struct {
     pub fn getObject(self: *Self, bucket: []const u8, key: []const u8) ![]const u8 {
         const s3_object = try std.fmt.allocPrint(self.allocator, "s3://{s}/{s}", .{ bucket, key });
         defer self.allocator.free(s3_object);
-        scoped_log.debug("GetObject {s}", .{s3_object});
+        scoped_log.debug("get-object {s}", .{s3_object});
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -67,13 +67,13 @@ pub const S3Client = struct {
             if (err == error.ServiceError) {
                 defer diagnostic.deinit();
                 scoped_log.err(
-                    "S3 GetObject failed for {s}: {s}: {s}",
+                    "s3 get-object failed for {s}: {s}: {s}",
                     .{ s3_object, diagnostic.code(), diagnostic.message() },
                 );
                 return S3Error.ServiceError;
             }
             scoped_log.err(
-                "S3 GetObject failed for {s}: {s}",
+                "s3 get-object failed for {s}: {s}",
                 .{ s3_object, @errorName(err) },
             );
             return S3Error.RequestFailed;
@@ -83,7 +83,7 @@ pub const S3Client = struct {
         if (result.body) |*body| {
             return body.readAll(self.allocator, 10 * 1024 * 1024) catch |err| {
                 scoped_log.err(
-                    "Failed to read S3 body for {s}: {s}",
+                    "failed to read s3 body for {s}: {s}",
                     .{ s3_object, @errorName(err) },
                 );
                 return S3Error.ReadError;
@@ -105,7 +105,7 @@ pub const S3Client = struct {
 
         return parseJsonToMap(self.allocator, content) catch |err| {
             scoped_log.err(
-                "Failed to parse JSON from s3://{s}/{s}: {s}",
+                "failed to parse json from s3://{s}/{s}: {s}",
                 .{ bucket, key, @errorName(err) },
             );
             return err;
@@ -114,7 +114,7 @@ pub const S3Client = struct {
 
     /// List objects with a given prefix, handling pagination.
     pub fn listObjects(self: *Self, bucket: []const u8, prefix: []const u8) ![]S3Object {
-        scoped_log.debug("ListObjects s3://{s}/{s}", .{ bucket, prefix });
+        scoped_log.debug("list-objects s3://{s}/{s}", .{ bucket, prefix });
 
         var objects: std.ArrayList(S3Object) = .empty;
         errdefer {
@@ -143,12 +143,12 @@ pub const S3Client = struct {
                 if (err == error.ServiceError) {
                     defer diagnostic.deinit();
                     scoped_log.err(
-                        "S3 ListObjects failed for s3://{s}/{s}: {s}: {s}",
+                        "s3 list-objects failed for s3://{s}/{s}: {s}: {s}",
                         .{ bucket, prefix, diagnostic.code(), diagnostic.message() },
                     );
                 } else {
                     scoped_log.err(
-                        "S3 ListObjects failed for s3://{s}/{s}: {s}",
+                        "s3 list-objects failed for s3://{s}/{s}: {s}",
                         .{ bucket, prefix, @errorName(err) },
                     );
                 }
@@ -191,7 +191,7 @@ pub const S3Client = struct {
         options: DownloadOptions,
     ) !DownloadResult {
         scoped_log.debug(
-            "downloadPrefixToDir s3://{s}/{s} -> {s}",
+            "downloading prefix to directory: s3://{s}/{s} -> {s}",
             .{ bucket, prefix, destination },
         );
 

@@ -169,7 +169,7 @@ fn configureMultiEni(
     // Get MAC -> device-number mapping for all interfaces from IMDS.
     const devmap = discoverDeviceNumbers(imds_client) catch |err| {
         std.log.warn(
-            "IMDS device-number discovery failed: {s}, using bootstrap interface as primary",
+            "imds device-number discovery failed: {s}, using bootstrap interface as primary",
             .{@errorName(err)},
         );
         if (!std.mem.eql(u8, bootstrap.name(), "eth0")) {
@@ -191,7 +191,7 @@ fn configureMultiEni(
     }
 
     const pidx = primary_idx orelse {
-        std.log.err("no candidate matched IMDS device-number 0", .{});
+        std.log.err("no candidate matched imds device-number 0", .{});
         return Error.NoPrimaryInterface;
     };
 
@@ -232,7 +232,7 @@ fn bringUpAndWaitCarrier(allocator: Allocator, socket: *nlz.Socket, ifindex: u32
     defer carrier_mon.close();
 
     socket.setLinkUp(ifindex, allocator) catch |err| {
-        std.log.err("setLinkUp failed on ifindex {d}: {s}", .{ ifindex, @errorName(err) });
+        std.log.err("failed to set link up on ifindex {d}: {s}", .{ ifindex, @errorName(err) });
         return Error.NetlinkError;
     };
 
@@ -386,7 +386,7 @@ fn discoverDeviceNumbers(imds_client: *aws.ImdsClient) !DeviceNumberMap {
         .{ .diagnostic = &diagnostic },
     ) catch |err| {
         std.log.err(
-            "failed to fetch MAC list from IMDS: {s} (http_status={d}, message={s})",
+            "failed to fetch mac list from imds: {s} (http_status={d}, message={s})",
             .{ @errorName(err), diagnostic.httpStatus(), diagnostic.message() },
         );
         return Error.ImdsError;
@@ -513,7 +513,7 @@ fn sendBroadcast(sock: posix.fd_t, packet: []const u8) !void {
     );
     const e = posix.errno(ret);
     if (e != .SUCCESS) {
-        std.log.warn("DHCP sendto failed: {s}", .{@tagName(e)});
+        std.log.warn("dhcp sendto failed: {s}", .{@tagName(e)});
         return Error.SocketError;
     }
 }
@@ -613,11 +613,11 @@ fn applyLease(
     const gateway = routers[0];
 
     socket.addAddressIPv4(ifindex, ack.yiaddr, prefix_len, allocator) catch |err| {
-        std.log.err("addAddressIPv4: {s}", .{@errorName(err)});
+        std.log.err("failed to add ipv4 address: {s}", .{@errorName(err)});
         return Error.NetlinkError;
     };
     socket.addRouteIPv4(ifindex, .{ 0, 0, 0, 0 }, gateway, 0, allocator) catch |err| {
-        std.log.err("addRouteIPv4: {s}", .{@errorName(err)});
+        std.log.err("failed to add ipv4 route: {s}", .{@errorName(err)});
         return Error.NetlinkError;
     };
 
@@ -673,7 +673,7 @@ fn setHostname(imds_client: *aws.ImdsClient) !void {
         .{ .diagnostic = &diagnostic },
     ) catch |err| {
         std.log.err(
-            "failed to fetch hostname from IMDS: {s} (http_status={d}, message={s})",
+            "failed to fetch hostname from imds: {s} (http_status={d}, message={s})",
             .{ @errorName(err), diagnostic.httpStatus(), diagnostic.message() },
         );
         return Error.ImdsError;

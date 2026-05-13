@@ -126,7 +126,7 @@ pub const AwsContext = struct {
         try self.resolveRegion();
         var creds = self.imds.getIamCredentials(.{}) catch |err| {
             scoped_log.err(
-                "user data config requires an IAM instance profile: {s}",
+                "user data config requires an iam instance profile: {s}",
                 .{@errorName(err)},
             );
             return Error.NoInstanceProfile;
@@ -141,10 +141,10 @@ pub const AwsContext = struct {
             "/latest/meta-data/placement/region",
             .{},
         ) catch |err| {
-            scoped_log.err("failed to get region from IMDS: {s}", .{@errorName(err)});
+            scoped_log.err("failed to get region from imds: {s}", .{@errorName(err)});
             return err;
         };
-        scoped_log.info("AWS region: {s}", .{region});
+        scoped_log.info("aws region: {s}", .{region});
         self.region = region;
     }
 };

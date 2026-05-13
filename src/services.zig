@@ -145,7 +145,7 @@ fn writeAuthorizedKeys(
     // Write authorized_keys file
     try fs.writeFile(io, auth_keys_path, pub_key, 0o640, 0o700, uid, gid);
 
-    std.log.info("wrote SSH authorized_keys to {s}", .{auth_keys_path});
+    std.log.info("wrote ssh authorized_keys to {s}", .{auth_keys_path});
 }
 
 fn generateHostKeysIfMissing(io: Io) !void {
@@ -171,7 +171,7 @@ fn fileExists(io: Io, path: []const u8) bool {
 }
 
 fn runSshKeygen(io: Io, keygen_path: []const u8, key_type: []const u8, key_path: []const u8) !void {
-    std.log.info("generating SSH host key: {s}", .{key_path});
+    std.log.info("generating ssh host key: {s}", .{key_path});
 
     var child = std.process.spawn(io, .{
         .argv = &[_][]const u8{ keygen_path, "-t", key_type, "-f", key_path, "-N", "" },
@@ -260,7 +260,7 @@ pub fn findEnabledServices(
                     std.log.info("disabling service ssh as no public key was assigned", .{});
                 }
             } else {
-                std.log.warn("SSH service found but IMDS client not available, skipping", .{});
+                std.log.warn("ssh service found but imds client not available, skipping", .{});
             }
         } else {
             std.log.warn("unknown service {s}", .{entry.name});
@@ -280,7 +280,7 @@ fn fetchSshPubKey(allocator: Allocator, imds: *aws.ImdsClient) !?[]const u8 {
             return null;
         }
         std.log.err(
-            "failed to fetch SSH public key from IMDS: {s} (http_status={d}, message={s})",
+            "failed to fetch ssh public key from imds: {s} (http_status={d}, message={s})",
             .{ @errorName(err), diagnostic.httpStatus(), diagnostic.message() },
         );
         return err;
