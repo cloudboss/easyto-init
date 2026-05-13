@@ -23,6 +23,11 @@ const PF_KTHREAD: u32 = 0x00200000;
 // Wait this many milliseconds before restarting a service that exited.
 const restart_delay_ms: i64 = 5_000;
 
+// Upper bound on pollfds enrolled by Supervisor.wait: one for the signalfd
+// plus one restart timerfd per service. start() rejects configurations that
+// would exceed this.
+const max_poll_fds: usize = 16;
+
 /// Block the signals the supervisor consumes via signalfd, and install
 /// no-op sigactions so PID 1's SIGNAL_UNKILLABLE protection doesn't drop
 /// them. Must be called before any thread is spawned, since sigprocmask
@@ -138,6 +143,14 @@ pub const Supervisor = struct {
         };
         defer self.allocator.free(enabled_services);
 
+        if (enabled_services.len + 1 > max_poll_fds) {
+            std.log.err(
+                "too many services enabled ({d}); max is {d}",
+                .{ enabled_services.len, max_poll_fds - 1 },
+            );
+            return error.TooManyServices;
+        }
+
         if (enabled_services.len > 0) {
             self.service_states = self.allocator.alloc(
                 ServiceState,
@@ -218,8 +231,8 @@ pub const Supervisor = struct {
             else
                 @intCast(@max(@as(i64, 0), deadline_ms - nowMs()));
 
-            var pollfds_buf: [16]linux.pollfd = undefined;
-            var pollmap: [16]PollEntry = undefined;
+            var pollfds_buf: [max_poll_fds]linux.pollfd = undefined;
+            var pollmap: [max_poll_fds]PollEntry = undefined;
             const n = self.buildPollSet(&pollfds_buf, &pollmap);
 
             const rc = linux.poll(&pollfds_buf, n, timeout_ms);
