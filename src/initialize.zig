@@ -421,8 +421,7 @@ pub fn resolveEnvFrom(
     for (env_from) |source| {
         if (source.imds) |imds| {
             const imds_client = aws_ctx.getImds();
-            const imds_path = try std.fmt.allocPrint(
-                allocator,
+            const imds_path = try allocator.print(
                 "/latest/meta-data/{s}",
                 .{imds.path},
             );
@@ -461,8 +460,7 @@ pub fn resolveEnvFrom(
 
         if (source.s3) |s3| {
             const s3_client = try aws_ctx.getS3();
-            const descriptor = try std.fmt.allocPrint(
-                allocator,
+            const descriptor = try allocator.print(
                 "s3://{s}/{s}",
                 .{ s3.bucket, s3.key },
             );

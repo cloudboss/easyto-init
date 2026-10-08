@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) void {
     const mod = b.addModule("easyto_init", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .optimize = optimize,
         .imports = &.{
             .{ .name = "aws", .module = aws_sdk_dep.module("aws") },
             .{ .name = "s3", .module = aws_sdk_dep.module("s3") },
@@ -49,7 +50,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .strip = optimize != .Debug,
+            .strip = optimize != .debug,
             .imports = &.{
                 .{ .name = "aws", .module = aws_sdk_dep.module("aws") },
                 .{ .name = "s3", .module = aws_sdk_dep.module("s3") },
@@ -80,9 +81,7 @@ pub fn build(b: *std.Build) void {
 
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const mod_tests = b.addTest(.{
         .root_module = mod,

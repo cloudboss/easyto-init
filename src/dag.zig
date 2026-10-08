@@ -28,7 +28,7 @@ pub const TaskId = enum(u8) {
     run_init_scripts,
     expand_command_and_args,
 
-    pub const count = @typeInfo(TaskId).@"enum".fields.len;
+    pub const count = @typeInfo(TaskId).@"enum".field_names.len;
 };
 
 pub const TaskDescriptor = struct {
@@ -40,92 +40,92 @@ pub const TaskDescriptor = struct {
 pub const task_descriptors = blk: {
     var descs: [TaskId.count]TaskDescriptor = undefined;
 
-    descs[@intFromEnum(TaskId.aws_context_init)] = .{
+    descs[@backingInt(TaskId.aws_context_init)] = .{
         .name = "aws_context_init",
         .deps = &.{},
         .run_fn = &tasks.awsContextInit,
     };
-    descs[@intFromEnum(TaskId.network_init)] = .{
+    descs[@backingInt(TaskId.network_init)] = .{
         .name = "network_init",
         .deps = &.{.aws_context_init},
         .run_fn = &tasks.networkInit,
     };
-    descs[@intFromEnum(TaskId.fetch_user_data)] = .{
+    descs[@backingInt(TaskId.fetch_user_data)] = .{
         .name = "fetch_user_data",
         .deps = &.{.network_init},
         .run_fn = &tasks.fetchUserData,
     };
-    descs[@intFromEnum(TaskId.write_user_data)] = .{
+    descs[@backingInt(TaskId.write_user_data)] = .{
         .name = "write_user_data",
         .deps = &.{.fetch_user_data},
         .run_fn = &tasks.writeUserData,
     };
-    descs[@intFromEnum(TaskId.parse_user_data)] = .{
+    descs[@backingInt(TaskId.parse_user_data)] = .{
         .name = "parse_user_data",
         .deps = &.{.fetch_user_data},
         .run_fn = &tasks.parseUserData,
     };
-    descs[@intFromEnum(TaskId.enable_debug_logging)] = .{
+    descs[@backingInt(TaskId.enable_debug_logging)] = .{
         .name = "enable_debug_logging",
         .deps = &.{.parse_user_data},
         .run_fn = &tasks.enableDebugLogging,
     };
-    descs[@intFromEnum(TaskId.start_uevent_listener)] = .{
+    descs[@backingInt(TaskId.start_uevent_listener)] = .{
         .name = "start_uevent_listener",
         .deps = &.{},
         .run_fn = &tasks.startUeventListener,
     };
-    descs[@intFromEnum(TaskId.link_nvme_devices)] = .{
+    descs[@backingInt(TaskId.link_nvme_devices)] = .{
         .name = "link_nvme_devices",
         .deps = &.{.start_uevent_listener},
         .run_fn = &tasks.linkNvmeDevices,
     };
-    descs[@intFromEnum(TaskId.read_metadata)] = .{
+    descs[@backingInt(TaskId.read_metadata)] = .{
         .name = "read_metadata",
         .deps = &.{},
         .run_fn = &tasks.readMetadata,
     };
-    descs[@intFromEnum(TaskId.parse_config_file)] = .{
+    descs[@backingInt(TaskId.parse_config_file)] = .{
         .name = "parse_config_file",
         .deps = &.{.read_metadata},
         .run_fn = &tasks.parseConfigFile,
     };
-    descs[@intFromEnum(TaskId.merge_vmspec)] = .{
+    descs[@backingInt(TaskId.merge_vmspec)] = .{
         .name = "merge_vmspec",
         .deps = &.{ .parse_user_data, .parse_config_file },
         .run_fn = &tasks.mergeVmspec,
     };
-    descs[@intFromEnum(TaskId.resolve_env_from)] = .{
+    descs[@backingInt(TaskId.resolve_env_from)] = .{
         .name = "resolve_env_from",
         .deps = &.{ .network_init, .merge_vmspec },
         .run_fn = &tasks.resolveEnvFrom,
     };
-    descs[@intFromEnum(TaskId.expand_env_values)] = .{
+    descs[@backingInt(TaskId.expand_env_values)] = .{
         .name = "expand_env_values",
         .deps = &.{.resolve_env_from},
         .run_fn = &tasks.expandEnvValues,
     };
-    descs[@intFromEnum(TaskId.load_modules)] = .{
+    descs[@backingInt(TaskId.load_modules)] = .{
         .name = "load_modules",
         .deps = &.{.merge_vmspec},
         .run_fn = &tasks.loadModules,
     };
-    descs[@intFromEnum(TaskId.set_sysctls)] = .{
+    descs[@backingInt(TaskId.set_sysctls)] = .{
         .name = "set_sysctls",
         .deps = &.{ .merge_vmspec, .load_modules },
         .run_fn = &tasks.setSysctls,
     };
-    descs[@intFromEnum(TaskId.resize_root_volume)] = .{
+    descs[@backingInt(TaskId.resize_root_volume)] = .{
         .name = "resize_root_volume",
         .deps = &.{},
         .run_fn = &tasks.resizeRootVolume,
     };
-    descs[@intFromEnum(TaskId.process_volumes)] = .{
+    descs[@backingInt(TaskId.process_volumes)] = .{
         .name = "process_volumes",
         .deps = &.{ .network_init, .merge_vmspec, .expand_env_values },
         .run_fn = &tasks.processVolumes,
     };
-    descs[@intFromEnum(TaskId.run_init_scripts)] = .{
+    descs[@backingInt(TaskId.run_init_scripts)] = .{
         .name = "run_init_scripts",
         .deps = &.{
             .expand_env_values,
@@ -136,7 +136,7 @@ pub const task_descriptors = blk: {
         },
         .run_fn = &tasks.runInitScripts,
     };
-    descs[@intFromEnum(TaskId.expand_command_and_args)] = .{
+    descs[@backingInt(TaskId.expand_command_and_args)] = .{
         .name = "expand_command_and_args",
         .deps = &.{.expand_env_values},
         .run_fn = &tasks.expandCommandAndArgs,
@@ -149,7 +149,7 @@ pub const task_descriptors = blk: {
 
 fn validateDag(descs: *const [TaskId.count]TaskDescriptor) void {
     // Check for cycles using DFS with coloring: 0=unvisited, 1=in progress, 2=done.
-    var color: [TaskId.count]u8 = .{0} ** TaskId.count;
+    var color: [TaskId.count]u8 = @splat(0);
     for (0..TaskId.count) |i| {
         if (color[i] == 0) {
             validateNoCycle(descs, i, &color);
@@ -164,7 +164,7 @@ fn validateNoCycle(
 ) void {
     color[node] = 1;
     for (descs[node].deps) |dep| {
-        const dep_idx = @intFromEnum(dep);
+        const dep_idx = @backingInt(dep);
         if (color[dep_idx] == 1) {
             @compileError("cycle detected in DAG");
         }
@@ -244,7 +244,7 @@ pub const DagExecutor = struct {
     pub fn init(ctx: *BootContext) Self {
         var self: Self = .{
             .pending_deps = undefined,
-            .task_states = .{.pending} ** TaskId.count,
+            .task_states = @splat(.pending),
             .queue_mutex = .init,
             .queue_cond = .init,
             .queue_buf = undefined,
@@ -270,7 +270,7 @@ pub const DagExecutor = struct {
         // Enqueue root tasks (zero dependencies).
         for (0..TaskId.count) |i| {
             if (self.pending_deps[i].load(.acquire) == 0) {
-                self.enqueue(@enumFromInt(i));
+                self.enqueue(@fromBackingInt(@intCast(i)));
             }
         }
 
@@ -297,7 +297,7 @@ pub const DagExecutor = struct {
         }
 
         if (self.first_error) |err| {
-            const task_name = task_descriptors[@intFromEnum(self.error_task.?)].name;
+            const task_name = task_descriptors[@backingInt(self.error_task.?)].name;
             std.log.err("boot failed at task {s}: {s}", .{ task_name, @errorName(err) });
             return err;
         }
@@ -314,7 +314,7 @@ pub const DagExecutor = struct {
     }
 
     fn executeTask(self: *Self, task_id: TaskId) void {
-        const idx = @intFromEnum(task_id);
+        const idx = @backingInt(task_id);
         const desc = task_descriptors[idx];
         const io = self.ctx.io;
 
@@ -363,7 +363,7 @@ pub const DagExecutor = struct {
                 if (dep == completed_task) {
                     const prev = self.pending_deps[i].fetchSub(1, .acq_rel);
                     if (prev == 1) {
-                        self.enqueue(@enumFromInt(i));
+                        self.enqueue(@fromBackingInt(@intCast(i)));
                     }
                     break;
                 }

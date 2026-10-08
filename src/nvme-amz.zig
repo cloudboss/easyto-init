@@ -172,7 +172,7 @@ pub fn nvmeIdentifyCtrl(fd: std.posix.fd_t, errno: *usize) !NvmeIdCtrl {
     switch (std.posix.errno(ret)) {
         .SUCCESS => {},
         else => {
-            errno.* = @intFromEnum(std.posix.errno(ret));
+            errno.* = @backingInt(std.posix.errno(ret));
             return Error.IoctlError;
         },
     }

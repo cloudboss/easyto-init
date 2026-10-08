@@ -178,7 +178,7 @@ fn buildArgv(allocator: Allocator, argv: []const []const u8) Error!ArgvBuf {
     }
 
     for (argv, 0..) |arg, i| {
-        arg_strings[i] = try allocator.dupeZ(u8, arg);
+        arg_strings[i] = try allocator.dupeSentinel(u8, arg, 0);
         count += 1;
         argv_z[i] = arg_strings[i].ptr;
     }
@@ -218,13 +218,12 @@ fn buildEnvp(
 
     var iter = merged.iterator();
     while (iter.next()) |entry| {
-        const formatted = try std.fmt.allocPrint(
-            allocator,
+        const formatted = try allocator.print(
             "{s}={s}",
             .{ entry.key_ptr.*, entry.value_ptr.* },
         );
         defer allocator.free(formatted);
-        env_strings[written] = try allocator.dupeZ(u8, formatted);
+        env_strings[written] = try allocator.dupeSentinel(u8, formatted, 0);
         envp_z[written] = env_strings[written].ptr;
         written += 1;
     }
@@ -293,7 +292,7 @@ test "buildArgv rejects empty argv" {
     try testing.expectError(error.EmptyArgv, buildArgv(testing.allocator, &.{}));
 }
 
-test "buildArgv leaks nothing when a dupeZ fails mid-populate" {
+test "buildArgv leaks nothing when a sentinel duplication fails mid-populate" {
     var failing = std.testing.FailingAllocator.init(
         testing.allocator,
         .{ .fail_index = 3 },

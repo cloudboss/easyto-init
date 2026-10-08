@@ -348,15 +348,15 @@ pub fn mountDevice(io: Io, device: []const u8, destination: []const u8, fs_type:
     var dev_buf: [256]u8 = undefined;
     var dest_buf: [256]u8 = undefined;
     var fs_buf: [64]u8 = undefined;
-    const dev_z = fmt.bufPrintZ(&dev_buf, "{s}", .{device}) catch {
+    const dev_z = std.mem.printSentinel(&dev_buf, "{s}", .{device}, 0) catch {
         std.log.err("device path too long: {s}", .{device});
         return error.PathTooLong;
     };
-    const dest_z = fmt.bufPrintZ(&dest_buf, "{s}", .{destination}) catch {
+    const dest_z = std.mem.printSentinel(&dest_buf, "{s}", .{destination}, 0) catch {
         std.log.err("mount destination too long: {s}", .{destination});
         return error.PathTooLong;
     };
-    const fs_z = fmt.bufPrintZ(&fs_buf, "{s}", .{fs_type}) catch {
+    const fs_z = std.mem.printSentinel(&fs_buf, "{s}", .{fs_type}, 0) catch {
         std.log.err("fs type too long: {s}", .{fs_type});
         return error.PathTooLong;
     };
@@ -394,7 +394,7 @@ pub fn findExecutableInPath(
     var iter = std.mem.splitScalar(u8, path_var, ':');
     while (iter.next()) |dir| {
         if (dir.len == 0) continue;
-        const candidate = try fmt.allocPrint(allocator, "{s}/{s}", .{ dir, executable });
+        const candidate = try allocator.print("{s}/{s}", .{ dir, executable });
         errdefer allocator.free(candidate);
         const st = Io.Dir.cwd().statFile(io, candidate, .{}) catch {
             allocator.free(candidate);
@@ -509,7 +509,7 @@ fn runInitScript(
     };
 
     // Parent process - wait for child
-    var status: u32 = 0;
+    var status: i32 = 0;
     while (true) {
         const wait_result = linux.waitpid(pid, &status, 0);
         const wait_err = std.posix.errno(wait_result);
@@ -525,8 +525,9 @@ fn runInitScript(
         std.log.warn("failed to remove init script {s}: {s}", .{ path, @errorName(err) });
     };
 
-    if (linux.W.IFEXITED(status)) {
-        const exit_code = linux.W.EXITSTATUS(status);
+    const wait_status: u32 = @bitCast(status);
+    if (linux.W.IFEXITED(wait_status)) {
+        const exit_code = linux.W.EXITSTATUS(wait_status);
         if (exit_code != 0) {
             std.log.err(
                 "unable to run init script {s}: exited with code {d}",
@@ -534,8 +535,8 @@ fn runInitScript(
             );
             return error.InitScriptFailed;
         }
-    } else if (linux.W.IFSIGNALED(status)) {
-        const sig = linux.W.TERMSIG(status);
+    } else if (linux.W.IFSIGNALED(wait_status)) {
+        const sig = linux.W.TERMSIG(wait_status);
         std.log.err("unable to run init script {s}: killed by signal {d}", .{ path, sig });
         return error.InitScriptFailed;
     }
@@ -958,14 +959,14 @@ test "findExecutableInPath finds executable in first matching dir" {
     const bin_abs_len = try tmp.dir.realPathFile(io, "bin", &abs_buf);
     const bin_abs = abs_buf[0..bin_abs_len];
 
-    const path_var = try fmt.allocPrint(allocator, "/nonexistent:{s}", .{bin_abs});
+    const path_var = try allocator.print("/nonexistent:{s}", .{bin_abs});
     defer allocator.free(path_var);
 
     const result = try findExecutableInPath(allocator, io, path_var, "myprog");
     try testing.expect(result != null);
     defer allocator.free(result.?);
 
-    const expected = try fmt.allocPrint(allocator, "{s}/myprog", .{bin_abs});
+    const expected = try allocator.print("{s}/myprog", .{bin_abs});
     defer allocator.free(expected);
     try testing.expectEqualStrings(expected, result.?);
 }

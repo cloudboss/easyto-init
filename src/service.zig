@@ -16,7 +16,7 @@ const ServiceDef = services.ServiceDef;
 const system = @import("system.zig");
 
 // Default value of config ACPI_TINY_POWER_BUTTON_SIGNAL in kernel.
-const ACPI_TINY_POWER_BUTTON_SIGNAL: linux.SIG = @enumFromInt(38);
+const ACPI_TINY_POWER_BUTTON_SIGNAL: linux.SIG = @fromBackingInt(@intCast(38));
 // Identifies a kernel thread, from linux/sched.h.
 const PF_KTHREAD: u32 = 0x00200000;
 
@@ -296,7 +296,7 @@ pub const Supervisor = struct {
             }
             const got = rc / @sizeOf(linux.signalfd_siginfo);
             for (buf[0..got]) |si| {
-                const signo: linux.SIG = @enumFromInt(si.signo);
+                const signo: linux.SIG = @fromBackingInt(si.signo);
                 if (signo == linux.SIG.CHLD) {
                     self.reapChildren(shutdown_initiated.*);
                 } else if (signo == linux.SIG.TERM or
@@ -313,7 +313,7 @@ pub const Supervisor = struct {
 
     fn reapChildren(self: *Supervisor, shutting_down: bool) void {
         while (true) {
-            var status: u32 = 0;
+            var status: i32 = 0;
             const r = linux.wait4(-1, &status, linux.W.NOHANG, null);
             const e = posix.errno(r);
             if (e == .CHILD) return;
@@ -502,7 +502,7 @@ fn getAllPids(allocator: Allocator, io: Io) ![]posix.pid_t {
 /// Parse /proc/[pid]/stat content and determine if the process is a kernel thread.
 /// Returns error if the content is malformed, otherwise returns true if kernel thread.
 fn parseKernelThreadStatus(content: []const u8) !bool {
-    const paren_end = std.mem.lastIndexOf(u8, content, ")") orelse return error.InvalidFormat;
+    const paren_end = std.mem.findLast(u8, content, ")") orelse return error.InvalidFormat;
     const after_comm = content[paren_end + 1 ..];
 
     var iter = std.mem.tokenizeScalar(u8, after_comm, ' ');

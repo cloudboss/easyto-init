@@ -91,7 +91,7 @@ fn handleMessage(buf: []const u8) !?DeviceEvent {
     while (it.next()) |field| {
         if (field.len == 0) continue;
 
-        if (std.mem.indexOfScalar(u8, field, '=')) |eq_pos| {
+        if (std.mem.findScalar(u8, field, '=')) |eq_pos| {
             const key = field[0..eq_pos];
             const value = field[eq_pos + 1 ..];
 

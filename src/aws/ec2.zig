@@ -275,7 +275,7 @@ pub const Ec2Client = struct {
     fn addTagFilters(self: *Self, fb: *FilterBuilder, tags: []const AwsTag) !void {
         for (tags) |tag| {
             if (tag.value) |value| {
-                const name = try std.fmt.allocPrint(self.allocator, "tag:{s}", .{tag.key});
+                const name = try self.allocator.print("tag:{s}", .{tag.key});
                 try fb.addAlloc(name, value);
             } else {
                 try fb.add("tag-key", tag.key);

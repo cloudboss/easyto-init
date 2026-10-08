@@ -574,7 +574,7 @@ fn openDhcpSocket(iface_name: []const u8) !posix.fd_t {
     posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.REUSEADDR, std.mem.asBytes(&one)) catch {};
     posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.BROADCAST, std.mem.asBytes(&one)) catch {};
 
-    var ifname: [16]u8 = [_]u8{0} ** 16;
+    var ifname: [16]u8 = @splat(0);
     const ifn = @min(iface_name.len, 15);
     @memcpy(ifname[0..ifn], iface_name[0..ifn]);
     posix.setsockopt(

@@ -12,7 +12,7 @@ include $(DIR_OUT)/Makefile.inc
 endif
 
 # Override Makefile.inc for Zig build.
-ZIG_VERSION = 0.16.0
+ZIG_VERSION = 0.17.0
 CTR_IMAGE_BASE = ghcr.io/cloudboss/docker.io/library/alpine:3.23.2
 CTR_IMAGE_BASE_SHA256 = $(shell echo -n $(CTR_IMAGE_BASE) | sha256sum | awk '{print $$1}')
 ZIG_VERSION_SHA256 = $(shell echo -n $(ZIG_VERSION) | sha256sum | awk '{print $$1}')
@@ -92,21 +92,23 @@ GIT_DIRTY := $(shell git diff --quiet 2>/dev/null || echo -dirty)
 GIT_VERSION := $(GIT_SHA)$(GIT_DIRTY)
 BUILD_VERSION = $(if $(VERSION),$(VERSION),$(GIT_VERSION))
 
-ZIG_BUILD_FLAGS = --cache-dir $(DIR_OUT)/zig-cache --global-cache-dir $(DIR_OUT)/zig-cache -Dversion=$(BUILD_VERSION)
+ZIG_BUILD_FLAGS = --cache-dir $(DIR_OUT)/zig-cache --pkg-dir $(DIR_OUT)/zig-pkg -Dversion=$(BUILD_VERSION)
 
 ZIG_SOURCES = build.zig build.zig.zon $(shell find src -type f -name '*.zig')
 
 $(DIR_OUT)/zig-out/bin/init: $(HAS_IMAGE_LOCAL) $(ZIG_SOURCES)
 	@docker run --rm -t \
 		-v $(DIR_ROOT):/code:Z \
+		-e ZIG_GLOBAL_CACHE_DIR=/code/$(DIR_OUT)/zig-global-cache \
 		-w /code \
-		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build -Doptimize=ReleaseSafe $(ZIG_BUILD_FLAGS) --prefix $(DIR_OUT)/zig-out"
+		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build -Doptimize=safe $(ZIG_BUILD_FLAGS) --prefix $(DIR_OUT)/zig-out"
 
 $(DIR_OUT)/zig-out-release/bin/init: $(HAS_IMAGE_LOCAL) $(ZIG_SOURCES)
 	@docker run --rm -t \
 		-v $(DIR_ROOT):/code:Z \
+		-e ZIG_GLOBAL_CACHE_DIR=/code/$(DIR_OUT)/zig-global-cache \
 		-w /code \
-		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build -Doptimize=ReleaseFast $(ZIG_BUILD_FLAGS) --prefix $(DIR_OUT)/zig-out-release"
+		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build -Doptimize=fast $(ZIG_BUILD_FLAGS) --prefix $(DIR_OUT)/zig-out-release"
 
 build: $(DIR_OUT)/zig-out/bin/init
 
@@ -128,6 +130,7 @@ $(DIR_RELEASE)/easyto-init-$(VERSION).tar.gz: \
 test: $(HAS_IMAGE_LOCAL)
 	@docker run --rm -t \
 		-v $(DIR_ROOT):/code:Z \
+		-e ZIG_GLOBAL_CACHE_DIR=/code/$(DIR_OUT)/zig-global-cache \
 		-w /code \
 		$(CTR_IMAGE_LOCAL) /bin/sh -cx "zig build test $(ZIG_BUILD_FLAGS)"
 

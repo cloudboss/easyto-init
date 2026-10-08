@@ -30,7 +30,7 @@ pub fn mkdirRecursiveOwn(
 
     var start: usize = 0;
     while (start < path.len) {
-        const end = std.mem.indexOfScalarPos(u8, path, start + 1, '/') orelse path.len;
+        const end = std.mem.findScalarPos(u8, path, start + 1, '/') orelse path.len;
         const dir_path = path[0..end];
         if (dir_path.len > 0) {
             var dir = try Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true });
@@ -52,7 +52,7 @@ pub fn writeFile(
     gid: ?u32,
 ) !void {
     // Create parent directories
-    if (std.mem.lastIndexOfScalar(u8, path, '/')) |last_slash| {
+    if (std.mem.findScalarLast(u8, path, '/')) |last_slash| {
         if (last_slash > 0) {
             try mkdirRecursiveOwn(io, path[0..last_slash], dir_mode, uid, gid);
         }
@@ -184,7 +184,7 @@ pub fn joinPath(allocator: std.mem.Allocator, base: []const u8, relative: []cons
         return try allocator.dupe(u8, b);
     }
 
-    return try std.fmt.allocPrint(allocator, "{s}/{s}", .{ b, rel });
+    return try allocator.print("{s}/{s}", .{ b, rel });
 }
 
 pub fn remountRootReadonly() !void {

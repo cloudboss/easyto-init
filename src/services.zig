@@ -133,10 +133,10 @@ fn writeAuthorizedKeys(
     pub_key: []const u8,
 ) !void {
     // Build path: home_dir/.ssh/authorized_keys
-    const ssh_dir = try std.fmt.allocPrint(allocator, "{s}/.ssh", .{home_dir});
+    const ssh_dir = try allocator.print("{s}/.ssh", .{home_dir});
     defer allocator.free(ssh_dir);
 
-    const auth_keys_path = try std.fmt.allocPrint(allocator, "{s}/authorized_keys", .{ssh_dir});
+    const auth_keys_path = try allocator.print("{s}/authorized_keys", .{ssh_dir});
     defer allocator.free(auth_keys_path);
 
     // Create .ssh directory if needed

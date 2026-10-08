@@ -18,6 +18,8 @@ The user data is a YAML document that can be seen under `tests/integration/scena
 
 ## Building
 
+The build container uses Zig 0.17.0 and targets `x86_64-linux-musl`.
+
 ```
 make build
 make release VERSION=v0.x.y

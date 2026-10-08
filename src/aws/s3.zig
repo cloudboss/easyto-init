@@ -45,7 +45,7 @@ pub const S3Client = struct {
 
     /// Fetch an object from S3 as bytes.
     pub fn getObject(self: *Self, bucket: []const u8, key: []const u8) ![]const u8 {
-        const s3_object = try std.fmt.allocPrint(self.allocator, "s3://{s}/{s}", .{ bucket, key });
+        const s3_object = try self.allocator.print("s3://{s}/{s}", .{ bucket, key });
         defer self.allocator.free(s3_object);
         scoped_log.debug("get-object {s}", .{s3_object});
 
@@ -291,14 +291,14 @@ pub fn parseJsonToMap(allocator: Allocator, content: []const u8) !std.StringHash
                     .integer => |i| {
                         const key_copy = try allocator.dupe(u8, k);
                         errdefer allocator.free(key_copy);
-                        const value_str = try std.fmt.allocPrint(allocator, "{d}", .{i});
+                        const value_str = try allocator.print("{d}", .{i});
                         errdefer allocator.free(value_str);
                         try map.put(key_copy, value_str);
                     },
                     .float => |f| {
                         const key_copy = try allocator.dupe(u8, k);
                         errdefer allocator.free(key_copy);
-                        const value_str = try std.fmt.allocPrint(allocator, "{d}", .{f});
+                        const value_str = try allocator.print("{d}", .{f});
                         errdefer allocator.free(value_str);
                         try map.put(key_copy, value_str);
                     },
