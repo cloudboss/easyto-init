@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0] - 2026-10-10
+
+### Changed
+
+- Migrate to Zig 0.17.
+- Update easyto-assets to v0.7.0.
+
 ## [0.6.0] - 2026-05-12
 
 ### Added
@@ -117,6 +124,7 @@ The most user visible change is the addition of "template" pseudo-volumes to ena
 
 Initial release
 
+[0.7.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.7.0
 [0.6.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.6.0
 [0.5.1]: https://github.com/cloudboss/easyto-init/releases/tag/v0.5.1
 [0.5.0]: https://github.com/cloudboss/easyto-init/releases/tag/v0.5.0
